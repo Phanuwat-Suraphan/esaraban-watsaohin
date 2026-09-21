@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 
 const tmpDb = path.join(os.tmpdir(), `esaraban-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
@@ -129,14 +130,31 @@ async function dispatchGet(user, path, query = {}) {
   let status = 0;
   const chunks = [];
   const headers = {};
-  const res = {
-    headersSent: false,
-    setHeader() {},
-    writeHead(code, h) { status = code; Object.assign(headers, h || {}); this.headersSent = true; return this; },
-    end(chunk) { if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); },
-  };
+  // เส้นทางส่งไฟล์แนบใช้ .pipe(ctx.res) ไม่ใช่ res.end(buffer) — ออบเจ็กต์ปลอมที่มีแค่ writeHead/end
+  // จึงรับ pipe ไม่ได้เลย (pipe เรียก dest.on/emit/write) ทำให้เส้นทางดาวน์โหลดไฟล์ทดสอบไม่ได้ทั้งเส้น
+  // ทั้งที่เป็นเส้นทางที่หัว Content-Type/Content-Disposition สำคัญที่สุด — ตัวนี้เป็น EventEmitter จริง
+  // และรับทั้งสองแบบ
+  let ended = false;
+  const res = new EventEmitter();
+  res.headersSent = false;
+  res.setHeader = () => {};
+  res.destroy = () => {};
+  res.writeHead = (code, h) => { status = code; Object.assign(headers, h || {}); res.headersSent = true; return res; };
+  const push = (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  res.write = (chunk) => { if (chunk) push(chunk); return true; };
+  res.end = (chunk) => { if (chunk) push(chunk); ended = true; res.emit('finish'); res.emit('close'); };
   const ctx = { req: { method: 'GET', headers: {} }, res, url: new URL(`http://x${path}`), query, user, body: {}, ip: '127.0.0.1' };
   await routerForTest.dispatch('GET', path, ctx);
+  // pipe ทำงานแบบอะซิงโครนัส เส้นทางคืนค่ากลับมาก่อนที่ไบต์จะไหลครบ — ต้องรอให้ตัวตอบกลับปิดจริง
+  // ไม่งั้นจะได้ body ว่างเปล่าแบบไม่มีอะไรบอกว่าทำไม
+  if (!ended) {
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 3000);
+      const done = () => { clearTimeout(timer); resolve(); };
+      res.once('finish', done);
+      res.once('error', done);
+    });
+  }
   const buffer = Buffer.concat(chunks);
   return { status, headers, buffer, body: buffer.toString('utf8') };
 }
@@ -2877,6 +2895,207 @@ describe('แนบไฟล์ได้ทีละหลายไฟล์', (
 
     const page = await dispatchGet(registrarUser, `/documents/${docId}`, {});
     assert.match(page.body, /ไฟล์แนบ \(8\)/, 'หน้าเอกสารต้องนับไฟล์แนบครบทั้ง 8');
+  });
+});
+
+// หนังสือจริงของโรงเรียนมาเป็นชุด: ตัวหนังสือเป็น PDF ส่วน "สิ่งที่ส่งมาด้วย" มาเป็น Word/Excel
+// (แบบฟอร์มที่ต้องกรอกกลับ ตารางรายชื่อ ฯลฯ) เดิมระบบรับแต่ PDF ธุรการจึงต้องแปลงเองทุกไฟล์ หรือไม่ก็
+// เก็บไฟล์ไว้นอกระบบ ทำให้ทะเบียนไม่ครบ — ซึ่งเป็นเหตุผลทั้งหมดที่ระบบนี้มีอยู่
+//
+// เทสต์ชุดนี้ล็อกสามเรื่องที่พลาดแล้วเสียหายจริง:
+//   1. ตราประทับทุกชนิดลงได้เฉพาะ PDF ถ้าไปหยิบ "ไฟล์แรก" ที่บังเอิญเป็น Excel ตราจะล้มทั้งหมด
+//   2. ไฟล์ Word/Excel ต้องดาวน์โหลดไปเปิดในเครื่องได้จริง พร้อมชนิดไฟล์และนามสกุลที่ถูกต้อง
+//   3. ยังต้องตรวจลายเซ็นไฟล์จริงอยู่ ไม่ใช่เชื่อชนิดไฟล์ที่ฝั่งผู้ใช้แจ้งมา
+describe('ไฟล์แนบเป็น Word/Excel ได้ ไม่ใช่ PDF อย่างเดียว', () => {
+  const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const DOC = 'application/msword';
+  const XLS = 'application/vnd.ms-excel';
+  // docx/xlsx เป็นไฟล์ ZIP ข้างใน ส่วน doc/xls รุ่นเก่าเป็น OLE2 Compound File
+  const zipBytes = (tag) => Buffer.concat([Buffer.from('PK\x03\x04', 'latin1'), Buffer.from(`\x14\x00\x00\x00${tag}`)]);
+  const ole2Bytes = (tag) => Buffer.concat([Buffer.from('d0cf11e0a1b11ae1', 'hex'), Buffer.from(tag)]);
+  const pdfBytes = (tag) => Buffer.from(`%PDF-1.4\n% ${tag}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1');
+
+  const attach = (docId, fileName, fileType, buf) => dispatchPost(registrarUser, `/documents/${docId}/attachments`,
+    { fileName, fileType, fileDataBase64: buf.toString('base64') });
+  const attRow = (docId, filename) => db.prepare('SELECT * FROM attachments WHERE document_id = ? AND filename = ?').get(docId, filename);
+  // ที่เดียวกับที่ documents.js เขียนไฟล์ลง (esaraban/uploads) — ตรวจไบต์บนดิสก์จริง ไม่ใช่เชื่อแถวในฐานข้อมูล
+  const uploadsDir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'uploads');
+
+  test('แนบได้ครบทั้งสี่ชนิด และเก็บนามสกุลจริงไว้ทั้งในทะเบียนและในไฟล์บนดิสก์', async () => {
+    const doc = makeDoc({ title: 'หนังสือที่มีสิ่งที่ส่งมาด้วยเป็น Word และ Excel' });
+    const cases = [
+      { name: 'แบบฟอร์มรายงาน.docx', type: DOCX, buf: zipBytes('docx'), ext: 'docx' },
+      { name: 'ตารางรายชื่อนักเรียน.xlsx', type: XLSX, buf: zipBytes('xlsx'), ext: 'xlsx' },
+      { name: 'หนังสือรุ่นเก่า.doc', type: DOC, buf: ole2Bytes('doc'), ext: 'doc' },
+      { name: 'บัญชีรุ่นเก่า.xls', type: XLS, buf: ole2Bytes('xls'), ext: 'xls' },
+    ];
+    for (const c of cases) {
+      const res = await attach(doc.id, c.name, c.type, c.buf);
+      assert.ok(res.status < 400, `แนบ ${c.name} ไม่สำเร็จ (${res.status}): ${res.body}`);
+      const row = attRow(doc.id, c.name);
+      assert.ok(row, `ต้องมีแถวไฟล์แนบของ ${c.name}`);
+      assert.equal(row.mime_type, c.type, `ชนิดไฟล์ของ ${c.name} ต้องถูกเก็บตามจริง`);
+      // นามสกุลบนดิสก์ต้องตรงชนิดจริง ไม่ใช่ .pdf หมดทุกไฟล์ — ถ้าตั้งผิด เวลากู้ไฟล์จากดิสก์ตรงๆ
+      // หรือเปิดจาก Google Drive จะเปิดไม่ถูกโปรแกรม
+      assert.match(row.filepath, new RegExp(`\\.${c.ext}$`), `ไฟล์บนดิสก์ของ ${c.name} ต้องลงท้าย .${c.ext}`);
+      const onDisk = fs.readFileSync(path.join(uploadsDir, row.filepath));
+      assert.deepEqual(onDisk, c.buf, `ไบต์ของ ${c.name} บนดิสก์ต้องตรงกับที่อัปโหลดขึ้นไป`);
+    }
+  });
+
+  test('บอกชนิดไฟล์อย่างหนึ่งแต่เนื้อในเป็นอีกอย่าง ต้องถูกปฏิเสธทุกทาง', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบลายเซ็นไฟล์ไม่ตรงชนิด' });
+    const bad = [
+      { label: 'บอกว่าเป็น Word แต่เป็น PDF', name: 'ปลอม.docx', type: DOCX, buf: pdfBytes('pdf ปลอมเป็น docx') },
+      { label: 'บอกว่าเป็น PDF แต่เป็น Word', name: 'ปลอม.pdf', type: 'application/pdf', buf: zipBytes('docx ปลอมเป็น pdf') },
+      // ไฟล์รันได้ของ Windows ขึ้นต้นด้วย MZ — เปลี่ยนนามสกุลเป็น .docx แล้วอ้างชนิดไฟล์ให้ถูก
+      // ก็ต้องยังไม่ผ่าน เพราะไบต์จริงไม่ใช่ทั้ง ZIP และ OLE2
+      { label: 'ไฟล์รันได้ที่เปลี่ยนนามสกุลเป็น .docx', name: 'ไวรัส.docx', type: DOCX, buf: Buffer.from('MZ\x90\x00\x03 executable', 'latin1') },
+      { label: 'บอกว่าเป็น Excel รุ่นเก่าแต่เป็น ZIP', name: 'ปลอม.xls', type: XLS, buf: zipBytes('zip ปลอมเป็น xls') },
+    ];
+    for (const c of bad) {
+      const before = db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(doc.id).c;
+      const res = await attach(doc.id, c.name, c.type, c.buf);
+      assert.equal(res.status, 400, `${c.label} ต้องถูกปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+      assert.match(res.body, /ลายเซ็นไฟล์/, `${c.label} ต้องบอกสาเหตุว่าตรวจลายเซ็นไฟล์ไม่ผ่าน`);
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(doc.id).c, before,
+        `${c.label} ต้องไม่มีแถวไฟล์แนบค้างไว้`);
+    }
+  });
+
+  test('ชนิดไฟล์ที่ไม่รับเลย ต้องบอกว่ารับอะไรได้บ้าง', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบชนิดไฟล์ที่ไม่รับ' });
+    const res = await attach(doc.id, 'รูปถ่าย.png', 'image/png', Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'));
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+    // ต้องบอกรายการชนิดที่รับได้ ไม่ใช่แค่ "ไม่อนุญาต" — ผู้ใช้ต้องรู้ว่าต้องทำอะไรต่อ
+    assert.match(res.body, /PDF/, 'ต้องบอกว่ารับ PDF');
+    assert.match(res.body, /Word/, 'ต้องบอกว่ารับ Word');
+    assert.match(res.body, /Excel/, 'ต้องบอกว่ารับ Excel');
+  });
+
+  // นี่คือจุดที่พลาดง่ายที่สุดของการเปิดรับไฟล์ชนิดอื่น: ตราลงรับ/ตราธุรการ/ตรา ผอ. เดิมหยิบ "ไฟล์แรก
+  // ของหนังสือ" ถ้าธุรการแนบ Excel ขึ้นก่อน ตราจะไปลงไฟล์ที่ประทับไม่ได้แล้วล้มทั้งหมด ทั้งที่หนังสือ
+  // ฉบับนั้นมี PDF แนบอยู่ด้วย
+  test('ตราประทับต้องเล็งไฟล์ PDF เสมอ แม้ Excel จะถูกแนบขึ้นมาก่อน', async () => {
+    const doc = makeDoc({ title: 'หนังสือที่แนบ Excel ขึ้นก่อนตัวหนังสือ' });
+    assert.ok((await attach(doc.id, 'สิ่งที่ส่งมาด้วย.xlsx', XLSX, zipBytes('แนบก่อน'))).status < 400);
+    assert.ok((await attach(doc.id, 'ตัวหนังสือ.pdf', 'application/pdf', pdfBytes('ตัวหนังสือ'))).status < 400);
+    const xlsx = attRow(doc.id, 'สิ่งที่ส่งมาด้วย.xlsx');
+    const pdf = attRow(doc.id, 'ตัวหนังสือ.pdf');
+
+    const page = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+    assert.equal(page.status, 200);
+    assert.ok(page.body.includes(`var isStampTarget = ${JSON.stringify(pdf.id)}`),
+      'ตัวอย่างตราประทับต้องซ้อนบนไฟล์ PDF ไม่ใช่ไฟล์แรกที่เป็น Excel');
+    assert.ok(!page.body.includes(`var isStampTarget = ${JSON.stringify(xlsx.id)}`),
+      'ต้องไม่เล็งไฟล์ Excel เป็นไฟล์ที่จะประทับตรา');
+    // ปุ่มพิมพ์ต้องพาไปที่ตัวหนังสือ ไม่ใช่ดาวน์โหลดไฟล์ Excel
+    assert.ok(page.body.includes(`href="/files/${pdf.id}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร`),
+      'ปุ่มพิมพ์เอกสารต้องพาไปที่ไฟล์ PDF');
+  });
+
+  test('หนังสือที่มีแต่ Word/Excel ต้องบอกตรงๆ ว่าประทับตราไม่ได้เพราะยังไม่มี PDF', async () => {
+    const onlyWord = makeDoc({ title: 'หนังสือที่มีแต่ไฟล์ Word' });
+    assert.ok((await attach(onlyWord.id, 'มีแต่เวิร์ด.docx', DOCX, zipBytes('เวิร์ด'))).status < 400);
+    const page = await dispatchGet(registrarUser, `/documents/${onlyWord.id}`, {});
+    assert.match(page.body, /ยังไม่มีไฟล์ PDF/, 'ต้องเตือนว่าหนังสือฉบับนี้ยังไม่มีไฟล์ PDF ให้ประทับตรา');
+
+    const withPdf = makeDoc({ title: 'หนังสือที่มี PDF ครบแล้ว' });
+    assert.ok((await attach(withPdf.id, 'ตัวหนังสือครบ.pdf', 'application/pdf', pdfBytes('ครบ'))).status < 400);
+    const ok = await dispatchGet(registrarUser, `/documents/${withPdf.id}`, {});
+    assert.ok(!/ยังไม่มีไฟล์ PDF/.test(ok.body), 'หนังสือที่มี PDF แล้วต้องไม่ขึ้นคำเตือนนี้');
+  });
+
+  test('ไฟล์ Word/Excel ต้องดาวน์โหลดได้จริง พร้อมชนิดไฟล์และนามสกุลที่ถูกต้อง', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบการดาวน์โหลดไฟล์แนบ' });
+    const bytes = zipBytes('ไฟล์สำหรับดาวน์โหลด');
+    // ชื่อไทยล้วน — ชื่อสำรองแบบ ASCII ต้องเป็น document.docx ไม่ใช่ document.pdf ไม่งั้นเครื่องที่อ่าน
+    // filename*= ไม่ได้จะบันทึกไฟล์ Word เป็น .pdf แล้วเปิดไม่ถูกโปรแกรม
+    assert.ok((await attach(doc.id, 'สิ่งที่ส่งมาด้วย.docx', DOCX, bytes)).status < 400);
+    const att = attRow(doc.id, 'สิ่งที่ส่งมาด้วย.docx');
+
+    const res = await dispatchGet(registrarUser, `/files/${att.id}`, {});
+    assert.equal(res.status, 200, `ต้องดาวน์โหลดได้ (ได้ ${res.status})`);
+    assert.equal(res.headers['Content-Type'], DOCX, 'ต้องส่งชนิดไฟล์จริง ไม่ใช่ application/pdf');
+    assert.match(res.headers['Content-Disposition'], /^attachment/,
+      'ไฟล์ Word ต้องบังคับดาวน์โหลด ไม่ใช่พยายามเปิดในแท็บแล้วได้หน้าขาว');
+    assert.match(res.headers['Content-Disposition'], /filename="document\.docx"/,
+      'ชื่อสำรองแบบ ASCII ต้องเป็นนามสกุลของไฟล์จริง');
+    assert.match(res.headers['Content-Disposition'],
+      new RegExp(`filename\\*=UTF-8''${encodeURIComponent('สิ่งที่ส่งมาด้วย.docx')}`),
+      'ต้องคงชื่อไฟล์ไทยไว้ใน filename*');
+    assert.deepEqual(res.buffer, bytes, 'ไบต์ที่ดาวน์โหลดได้ต้องตรงกับไฟล์ที่อัปโหลดไป');
+  });
+
+  test('PDF ยังเปิดดูในแท็บได้ และกดดาวน์โหลดแล้วต้องได้ไฟล์ลงเครื่องด้วย', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบดาวน์โหลด PDF' });
+    const bytes = pdfBytes('ดาวน์โหลด');
+    assert.ok((await attach(doc.id, 'ตัวหนังสือดาวน์โหลด.pdf', 'application/pdf', bytes)).status < 400);
+    const att = attRow(doc.id, 'ตัวหนังสือดาวน์โหลด.pdf');
+
+    const open = await dispatchGet(registrarUser, `/files/${att.id}`, {});
+    assert.equal(open.status, 200);
+    assert.match(open.headers['Content-Disposition'], /^inline/, 'PDF ต้องยังเปิดอ่านในแท็บได้เหมือนเดิม');
+
+    // บนมือถือ ตัวอ่าน PDF ในเบราว์เซอร์มักไม่มีปุ่มบันทึกที่หาเจอ ธุรการที่ต้องส่งไฟล์ต่อหรือเก็บเข้าแฟ้ม
+    // ในเครื่องจึงติดอยู่แค่ "ดูได้" — ต้องมีทางบังคับดาวน์โหลดสำหรับ PDF ด้วย
+    const down = await dispatchGet(registrarUser, `/files/${att.id}`, { download: '1' });
+    assert.equal(down.status, 200);
+    assert.match(down.headers['Content-Disposition'], /^attachment/, '?download=1 ต้องบังคับบันทึกลงเครื่อง');
+    assert.equal(down.headers['Content-Type'], 'application/pdf');
+    assert.deepEqual(down.buffer, bytes, 'ไบต์ที่ดาวน์โหลดต้องเป็นไฟล์เดียวกัน');
+  });
+
+  test('ดูตัวอย่างหน้าแรกของ Word/Excel ต้องบอกเหตุผล ไม่ใช่ล้มแบบไม่มีคำอธิบาย', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบตัวอย่างไฟล์ที่ดูไม่ได้' });
+    assert.ok((await attach(doc.id, 'ดูตัวอย่างไม่ได้.xlsx', XLSX, zipBytes('ตัวอย่าง'))).status < 400);
+    const att = attRow(doc.id, 'ดูตัวอย่างไม่ได้.xlsx');
+    // ต้องหยุดตั้งแต่ต้นทางพร้อมสถานะ 415 (ชนิดไฟล์ที่รองรับไม่ได้) ไม่ใช่ปล่อยให้ตัวแปลงภาพไปล้มเอง
+    // แล้วได้ข้อความของโปรแกรมภายนอกดิบๆ ที่ไม่ได้อธิบายอะไรให้ธุรการเลย
+    const err = await dispatchGet(registrarUser, `/files/${att.id}/preview.png`, {})
+      .then(() => null, (e) => e);
+    assert.ok(err, 'ต้องปฏิเสธ ไม่ใช่พยายามแปลงไฟล์ Excel เป็นภาพ');
+    assert.equal(err.statusCode, 415, `ต้องเป็น 415 (ได้ ${err.statusCode}: ${err.message})`);
+    assert.match(err.message, /ดาวน์โหลด/, 'ต้องบอกทางออกว่าให้ดาวน์โหลดไปเปิดในเครื่อง');
+  });
+
+  test('หน้าเอกสารต้องมีปุ่มดาวน์โหลดให้ทุกไฟล์ และไม่ชวนดูตัวอย่างไฟล์ที่ดูไม่ได้', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบปุ่มในรายการไฟล์แนบ' });
+    assert.ok((await attach(doc.id, 'ตัวหนังสือปุ่ม.pdf', 'application/pdf', pdfBytes('ปุ่ม'))).status < 400);
+    assert.ok((await attach(doc.id, 'สิ่งที่ส่งมาด้วยปุ่ม.xlsx', XLSX, zipBytes('ปุ่ม'))).status < 400);
+    const pdf = attRow(doc.id, 'ตัวหนังสือปุ่ม.pdf');
+    const xlsx = attRow(doc.id, 'สิ่งที่ส่งมาด้วยปุ่ม.xlsx');
+    const page = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+
+    for (const a of [pdf, xlsx]) {
+      assert.ok(page.body.includes(`/files/${a.id}?download=1`), 'ทุกไฟล์ต้องมีปุ่มดาวน์โหลด');
+    }
+    assert.ok(page.body.includes(`togglePreview('${pdf.id}')`), 'PDF ต้องยังมีปุ่มดูตัวอย่าง');
+    assert.ok(!page.body.includes(`togglePreview('${xlsx.id}')`),
+      'ไฟล์ Excel ต้องไม่มีปุ่มดูตัวอย่าง เพราะกดไปก็ได้แต่ข้อความว่าดูไม่ได้');
+    assert.ok(!page.body.includes(`href="/files/${xlsx.id}" target="_blank"`),
+      'ไฟล์ Excel ต้องไม่มีปุ่มเปิดแท็บใหม่ เพราะเบราว์เซอร์เปิดเองไม่ได้');
+    assert.match(page.body, /Excel \(\.xlsx\)/, 'ต้องมีป้ายบอกชนิดไฟล์ให้เห็นในรายการ');
+  });
+
+  test('ทุกหน้าที่มีช่องแนบไฟล์ต้องเปิดให้เลือก Word/Excel และมีตัวเดาชนิดไฟล์ให้มือถือ', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบช่องแนบไฟล์' });
+    const pages = [
+      ['/documents/new', { direction: 'incoming' }],
+      ['/documents/bulk', { direction: 'incoming' }],
+      [`/documents/${doc.id}`, {}],
+    ];
+    for (const [p, q] of pages) {
+      const res = await dispatchGet(registrarUser, p, q);
+      assert.equal(res.status, 200, `${p} ต้องเปิดได้`);
+      assert.ok(res.body.includes('.docx') && res.body.includes('.xlsx'),
+        `${p} ต้องเปิดให้เลือกไฟล์ Word/Excel ได้ในช่องแนบไฟล์`);
+      // เบราว์เซอร์มือถือหลายรุ่นส่ง File.type มาเป็นค่าว่าง/octet-stream ให้ไฟล์ Word/Excel
+      // ถ้าส่งค่านั้นขึ้นไปตรงๆ เซิร์ฟเวอร์จะปฏิเสธทั้งที่ไฟล์ถูกต้อง หลังผู้ใช้กรอกฟอร์มจนเสร็จแล้ว
+      assert.match(res.body, /window\.attachMime = function/,
+        `${p} ต้องมีตัวเดาชนิดไฟล์จากนามสกุลไว้ให้เบราว์เซอร์ที่ไม่บอกชนิดไฟล์มา`);
+    }
   });
 });
 

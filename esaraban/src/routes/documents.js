@@ -32,7 +32,42 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
-const ALLOWED_MIME = new Set(['application/pdf']);
+/**
+ * ชนิดไฟล์แนบที่รับได้ พร้อม "ลายเซ็นไฟล์" ที่ต้องตรงจริง ไม่ใช่เชื่อ MIME ที่เบราว์เซอร์แจ้งมา
+ *
+ * เดิมรับเฉพาะ PDF แต่หนังสือที่ส่งมาจากเขตพื้นที่/หน่วยงานอื่นมาเป็น .doc/.docx/.xls/.xlsx ด้วย
+ * ธุรการจึงต้องแปลงเป็น PDF เองก่อนทุกครั้ง หรือไม่ก็แนบไม่ได้เลยแล้วเก็บไฟล์ไว้นอกระบบ
+ * ซึ่งทำให้ทะเบียนหนังสือไม่ครบ — ซึ่งเป็นเหตุผลทั้งหมดที่ระบบนี้มีอยู่
+ *
+ * ตรวจลายเซ็นไฟล์เสมอ เพราะ MIME ที่ส่งมาเป็นค่าที่ฝั่งผู้ใช้กำหนดเองได้ทั้งหมด:
+ *   - PDF       : "%PDF-"
+ *   - docx/xlsx : เป็นไฟล์ ZIP ข้างใน จึงขึ้นต้นด้วย PK\x03\x04
+ *   - doc/xls   : รูปแบบเก่า OLE2 Compound File ขึ้นต้นด้วย D0CF11E0A1B11AE1
+ * docx กับ xlsx ใช้ลายเซ็นเดียวกัน (ZIP) แยกจากกันที่ระดับนี้ไม่ได้ และไม่จำเป็นต้องแยก —
+ * สิ่งที่ต้องกันคือ "ไฟล์ที่ไม่ใช่เอกสารเลย" เช่นไฟล์รันได้ที่เปลี่ยนนามสกุลมา
+ */
+const FILE_KINDS = [
+  { mime: 'application/pdf', ext: 'pdf', label: 'PDF', sig: (b) => b.subarray(0, 5).toString('latin1') === '%PDF-' },
+  { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx', label: 'Word (.docx)', sig: isZip },
+  { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx', label: 'Excel (.xlsx)', sig: isZip },
+  { mime: 'application/msword', ext: 'doc', label: 'Word รุ่นเก่า (.doc)', sig: isOle2 },
+  { mime: 'application/vnd.ms-excel', ext: 'xls', label: 'Excel รุ่นเก่า (.xls)', sig: isOle2 },
+];
+function isZip(b) { return b.subarray(0, 4).toString('latin1') === 'PK\x03\x04'; }
+function isOle2(b) { return b.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1'; }
+const ALLOWED_MIME = new Set(FILE_KINDS.map((k) => k.mime));
+const ACCEPT_ATTR = FILE_KINDS.map((k) => `.${k.ext}`).concat([...ALLOWED_MIME]).join(',');
+const ALLOWED_LABEL = FILE_KINDS.map((k) => k.label).join(' / ');
+
+/**
+ * ไฟล์ที่ "ประทับตราลงไปได้จริง" — มีแต่ PDF เท่านั้น
+ *
+ * ตราประทับทุกชนิดทำงานด้วยการซ้อนหน้า PDF (ดู services/pdfStamp.js) ไฟล์ Word/Excel จึงประทับไม่ได้
+ * และนี่คือจุดที่พลาดง่ายที่สุดของการเปิดรับไฟล์ชนิดอื่น: ทุกที่ที่ประทับตราเดิมหยิบ "ไฟล์แรกของหนังสือ"
+ * ถ้าธุรการบังเอิญแนบ .docx ขึ้นก่อน ตราลงรับ/ตราธุรการ/ตรา ผอ. จะไปลงไฟล์ที่ประทับไม่ได้แล้วล้มทั้งหมด
+ * ทั้งที่หนังสือฉบับนั้นมี PDF แนบอยู่ด้วย — จึงต้องเลือก "ไฟล์ PDF ไฟล์แรก" เสมอ ไม่ใช่ไฟล์แรกเฉยๆ
+ */
+const STAMPABLE_MIME = 'application/pdf';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 // จำนวนไฟล์ที่เลือกแนบพร้อมกันได้ต่อหนึ่งครั้ง — ไม่ใช่เพดานของหนังสือหนึ่งฉบับ (แนบเพิ่มอีกกี่รอบก็ได้
@@ -51,6 +86,71 @@ const MAX_ATTACH_FILES = 8;
 // การแนบ 8 ไฟล์รวดผ่านเบราว์เซอร์จริง ไม่มีคู่ไหน created_at ชนกันเลย) แต่ถ้าชนกันเมื่อไร SQLite จะ
 // เลือกแถวไหนก็ได้ และ "ไฟล์หลัก" จะสลับตัวเองได้ระหว่างสองคำขอ — ตัวตัดสินรองทำให้ผลคงที่เสมอ
 const ATTACHMENT_ORDER = 'ORDER BY created_at, rowid';
+
+/**
+ * ไฟล์ที่ตราประทับจะไปลง — "ไฟล์ PDF ไฟล์แรก" ไม่ใช่ไฟล์แรกเฉยๆ
+ *
+ * หนังสือจริงของโรงเรียนคือ ตัวหนังสือเป็น PDF ส่วนสิ่งที่ส่งมาด้วยเป็น Word/Excel ถ้าเลือกไฟล์แรก
+ * เฉยๆ แล้วธุรการบังเอิญแนบไฟล์ Excel ขึ้นก่อน ตราลงรับ/ตราธุรการ/ตรา ผอ. จะไปลงไฟล์ที่ประทับไม่ได้
+ * แล้วล้มทั้งหมด ทั้งที่หนังสือฉบับนั้นมี PDF แนบอยู่ด้วย
+ */
+function stampTargetAttachment(documentId) {
+  return db.prepare(`
+    SELECT * FROM attachments WHERE document_id = ? AND mime_type = ? ${ATTACHMENT_ORDER} LIMIT 1
+  `).get(documentId, STAMPABLE_MIME);
+}
+
+function fileKindOf(mimeType) {
+  return FILE_KINDS.find((k) => k.mime === mimeType) || null;
+}
+
+// ไอคอนหน้าชื่อไฟล์ — ให้ดูออกตั้งแต่ตายังไม่อ่านชื่อว่าอันไหนคือตัวหนังสือ (PDF) อันไหนคือสิ่งที่ส่งมาด้วย
+function attachmentIcon(mimeType) {
+  const kind = fileKindOf(mimeType);
+  if (!kind) return '📎';
+  if (kind.ext === 'pdf') return '📄';
+  if (kind.ext === 'doc' || kind.ext === 'docx') return '📝';
+  return '📊';
+}
+
+/**
+ * ชื่อไฟล์สำรองแบบ ASCII ตอนดาวน์โหลด — ต้องตรงชนิดของไฟล์จริง ไม่ใช่ document.pdf หมดทุกไฟล์
+ *
+ * contentDispositionHeader จะถอยไปใช้ชื่อสำรองเมื่อชื่อจริงไม่เหลือตัวอักษร ASCII เลย ซึ่งเกิดกับ
+ * ชื่อไฟล์ไทยล้วนแทบทุกไฟล์ในโรงเรียน ("สิ่งที่ส่งมาด้วย.docx") ถ้าชื่อสำรองเป็น .pdf ไคลเอนต์ที่อ่าน
+ * filename*= ไม่ได้จะบันทึกไฟล์ Word เป็น .pdf แล้วเครื่องผู้ใช้จะเปิดไม่ถูกโปรแกรม
+ */
+function fallbackFilename(mimeType) {
+  const kind = fileKindOf(mimeType);
+  return `document.${kind ? kind.ext : 'pdf'}`;
+}
+
+/**
+ * ตัวช่วยฝั่งเบราว์เซอร์: เดาชนิดไฟล์จากนามสกุลเมื่อเบราว์เซอร์ไม่ได้บอกมา
+ *
+ * เบราว์เซอร์บนมือถือหลายรุ่น (และแอปที่แชร์ไฟล์เข้ามา เช่น LINE) ส่ง File.type มาเป็นค่าว่างหรือ
+ * application/octet-stream ให้กับไฟล์ Word/Excel ถ้าส่งค่านั้นขึ้นไปตรงๆ เซิร์ฟเวอร์จะปฏิเสธทั้งที่
+ * ไฟล์ถูกต้อง — และปฏิเสธหลังจากที่ผู้ใช้กรอกฟอร์มจนเสร็จแล้ว ซึ่งเสียเวลาเปล่าทั้งรอบ
+ *
+ * สร้างตารางจาก FILE_KINDS ตัวเดียวกับที่เซิร์ฟเวอร์ใช้ตรวจ จะได้ไม่มีตารางชนิดไฟล์สองชุดที่หลุดจากกันได้
+ * และการเดาผิดไม่ทำให้ไฟล์แปลกปลอมหลุดเข้าไป เพราะเซิร์ฟเวอร์ตรวจลายเซ็นไฟล์จริงซ้ำอยู่ดี
+ */
+function attachMimeScript() {
+  const extToMime = {};
+  for (const k of FILE_KINDS) extToMime[k.ext] = k.mime;
+  return `<script>
+    (function(){
+      var EXT_MIME = ${JSON.stringify(extToMime)};
+      var KNOWN = Object.keys(EXT_MIME).map(function (e) { return EXT_MIME[e]; });
+      window.attachMime = function (name, type) {
+        if (type && KNOWN.indexOf(type) !== -1) return type;
+        var m = /\\.([A-Za-z0-9]+)$/.exec(String(name || ''));
+        var ext = m ? m[1].toLowerCase() : '';
+        return EXT_MIME[ext] || type || 'application/octet-stream';
+      };
+    })();
+  </script>`;
+}
 
 /**
  * ใครประทับ "ตรารับ" (เลขรับ/วันที่/เวลา) ลงไฟล์ PDF ได้
@@ -433,18 +533,20 @@ router.get('/documents/new', requirePage((ctx) => {
         </details>
         <div class="field">
           <label for="fileInput">ไฟล์แนบ (เลือกได้ทีละหลายไฟล์)</label>
-          <input type="file" id="fileInput" accept="application/pdf" multiple />
+          <input type="file" id="fileInput" accept="${ACCEPT_ATTR}" multiple />
           <div id="filePreview"></div>
           <div class="help-text">
             เลือกได้สูงสุด ${MAX_ATTACH_FILES} ไฟล์ต่อครั้ง (กด Ctrl หรือ Shift ค้างไว้เพื่อเลือกหลายไฟล์ บนมือถือแตะเลือกได้หลายไฟล์เลย)
             — เลือกเพิ่มทีหลังได้อีก ไฟล์ที่เลือกไว้แล้วจะไม่หาย และแนบเพิ่มได้อีกเรื่อยๆ หลังบันทึกเอกสารแล้ว
           </div>
-          <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB ต่อไฟล์ (ระบบจะตรวจ magic number และคำนวณ SHA-256 hash)</div>
+          <div class="help-text">รองรับ ${ALLOWED_LABEL} ขนาดไม่เกิน 10MB ต่อไฟล์ (ระบบจะตรวจลายเซ็นไฟล์และคำนวณ SHA-256 hash)</div>
+          <div class="help-text">ตัวหนังสือควรเป็น <strong>PDF</strong> เพราะตราลงรับ ตราธุรการ และตรา ผอ. ประทับลงได้เฉพาะไฟล์ PDF — สิ่งที่ส่งมาด้วยเป็น Word/Excel ได้ตามปกติ แนบไว้ให้ดาวน์โหลดไปใช้ต่อ</div>
         </div>
         <button class="btn btn-primary" type="submit">บันทึกและออกเลข${direction === 'incoming' ? 'รับ' : 'ส่ง'}อัตโนมัติ</button>
         <a class="btn btn-outline" href="/documents?direction=${direction}">ยกเลิก</a>
       </form>
     </div>
+    ${attachMimeScript()}
     <script>
       // ช่องแนบไฟล์แบบหลายไฟล์ — window.attachMultiPreview อยู่ใน /app.js ซึ่งโหลดท้าย body จึงผูกตอน
       // load เท่านั้น และต้องผูก "ก่อน" ตัวรับไฟล์ที่แชร์มาด้านล่าง (listener ทำงานตามลำดับที่ลงทะเบียน)
@@ -481,7 +583,7 @@ router.get('/documents/new', requirePage((ctx) => {
           // บางแอป (รวมถึง LINE บางรุ่น) แชร์ไฟล์มาเป็น application/octet-stream ทั้งที่เป็น PDF —
           // ถ้าปล่อยไว้จะไปตกตอนกดบันทึก (เซิร์ฟเวอร์รับเฉพาะ application/pdf) หลังผู้ใช้กรอกฟอร์มจนเสร็จ
           // แล้ว เสียเวลาเปล่า จึงตั้ง type ให้ถูกตั้งแต่ตรงนี้ (เซิร์ฟเวอร์ยังตรวจ magic number ซ้ำอยู่ดี)
-          var sharedType = /\.pdf$/i.test(name) ? 'application/pdf' : (blob.type || 'application/pdf');
+          var sharedType = window.attachMime(name, blob.type);
           // ใส่ผ่าน picker.add ไม่ใช่เขียน input.files ตรงๆ — ไม่งั้นรายการที่แสดงอยู่กับสิ่งที่จะถูกส่งจริง
           // จะไม่ตรงกัน และไฟล์ที่แชร์มาจะหายไปทันทีที่ผู้ใช้กดเลือกไฟล์เพิ่มเอง
           picker.add([new File([blob], name, { type: sharedType })]);
@@ -507,7 +609,7 @@ router.get('/documents/new', requirePage((ctx) => {
           for (var pair of formData.entries()) payload[pair[0]] = pair[1];
           if (mainFile) {
             payload.fileName = mainFile.name;
-            payload.fileType = mainFile.type || 'application/octet-stream';
+            payload.fileType = window.attachMime(mainFile.name, mainFile.type);
             payload.fileDataBase64 = await window.fileToBase64(mainFile);
           }
           // ผ่าน postJson เพื่อให้กรณี "เพิ่งลงทะเบียนเรื่องนี้ไปเมื่อครู่" ถามยืนยันก่อนลงซ้ำ
@@ -528,7 +630,7 @@ router.get('/documents/new', requirePage((ctx) => {
             window.setBtnLoading(btn, 'กำลังแนบไฟล์ ' + (i + 2) + '/' + picked.length + '...');
             try {
               var b64 = await window.fileToBase64(ef);
-              var r2 = await fetch('/documents/' + docId + '/attachments', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ fileName: ef.name, fileType: ef.type || 'application/octet-stream', fileDataBase64: b64 }) });
+              var r2 = await fetch('/documents/' + docId + '/attachments', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ fileName: ef.name, fileType: window.attachMime(ef.name, ef.type), fileDataBase64: b64 }) });
               if (!r2.ok) failedExtras.push(ef.name);
             } catch (e) { failedExtras.push(ef.name); }
           }
@@ -581,11 +683,14 @@ async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, 
   // ตัดชื่อไฟล์ตั้งแต่ตอนบันทึก ไม่ใช่ตอนส่งออกอย่างเดียว — ผู้ใช้จะได้เห็นชื่อเดียวกันทั้งในหน้าเว็บและ
   // ตอนดาวน์โหลด (ชื่อยาวเกินทำให้หัว HTTP ล้นจนดาวน์โหลดไม่ได้เลย ดู truncateFilename ใน router.js)
   fileName = truncateFilename(fileName);
-  if (!ALLOWED_MIME.has(fileType)) throw httpError(400, 'อนุญาตเฉพาะไฟล์ PDF เท่านั้น');
+  const kind = fileKindOf(fileType);
+  if (!kind) throw httpError(400, `ชนิดไฟล์นี้แนบไม่ได้ — รับเฉพาะ ${ALLOWED_LABEL}`);
   const buf = Buffer.from(fileDataBase64, 'base64');
   if (buf.length > MAX_FILE_BYTES) throw httpError(413, 'ไฟล์มีขนาดใหญ่เกิน 10MB');
-  // magic-number check (file signature), not just declared MIME type
-  if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') throw httpError(400, 'ไฟล์ไม่ใช่ PDF ที่ถูกต้อง (ตรวจสอบ file signature ไม่ผ่าน)');
+  // ตรวจลายเซ็นไฟล์จริง ไม่ใช่เชื่อ MIME ที่แจ้งมา — ค่านั้นฝั่งผู้ใช้กำหนดเองได้ทั้งหมด
+  if (!kind.sig(buf)) {
+    throw httpError(400, `ไฟล์นี้ไม่ใช่ ${kind.label} ที่ถูกต้อง (ตรวจลายเซ็นไฟล์ไม่ผ่าน) — ถ้าเปลี่ยนนามสกุลไฟล์เอง ให้บันทึกเป็นชนิดที่ถูกต้องก่อน`);
+  }
   const hash = createHash('sha256').update(buf).digest('hex');
   // คำเตือน "ไฟล์นี้ซ้ำกับเอกสาร 0042/2569" ต้องบอกได้เฉพาะเลขของหนังสือที่ผู้อัปโหลดมีสิทธิ์เห็น —
   // เดิมค้นทั้งฐานข้อมูล ครูที่บังเอิญอัปโหลดไฟล์เดียวกับที่แนบอยู่กับหนังสือ "ลับมาก" จึงได้เลขที่หนังสือ
@@ -596,7 +701,9 @@ async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, 
     WHERE a.hash_sha256 = :hash AND d.deleted_at IS NULL AND ${dupVisible.sql}
   `).get({ ...dupVisible.params, hash });
   const id = uuid();
-  const safeName = `${id}.pdf`;
+  // เก็บนามสกุลจริงไว้ในชื่อไฟล์บนดิสก์ด้วย ไม่ใช่ตั้งเป็น .pdf หมดทุกไฟล์เหมือนเดิม — ถ้าตั้งผิด
+  // ตอนเปิดจาก Google Drive หรือตอนกู้ไฟล์จากดิสก์ตรงๆ จะเปิดไม่ถูกโปรแกรม
+  const safeName = `${id}.${kind.ext}`;
 
   let storageProvider = 'local';
   let filepath = null;
@@ -607,7 +714,7 @@ async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, 
       SELECT d.year_be, dt.name as type_name FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id WHERE d.id = ?
     `).get(documentId);
     const folderId = await ensureCategoryFolder({ yearBe: doc.year_be, typeName: doc.type_name });
-    driveFileId = await uploadFile({ buffer: buf, filename: `${safeName}__${fileName || 'document.pdf'}`, mimeType: fileType, folderId });
+    driveFileId = await uploadFile({ buffer: buf, filename: `${safeName}__${fileName || `document.${kind.ext}`}`, mimeType: fileType, folderId });
     storageProvider = 'google_drive';
   } else {
     fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
@@ -617,7 +724,7 @@ async function saveAttachment({ documentId, fileName, fileType, fileDataBase64, 
   db.prepare(`
     INSERT INTO attachments (id, document_id, filename, storage_provider, filepath, drive_file_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, documentId, fileName || 'document.pdf', storageProvider, filepath, driveFileId, buf.length, fileType, hash, uploader.id, nowIso());
+  `).run(id, documentId, fileName || `document.${kind.ext}`, storageProvider, filepath, driveFileId, buf.length, fileType, hash, uploader.id, nowIso());
   audit({ userId: uploader.id, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, storageProvider, duplicateOf: dup ? dup.doc_number_display : null } });
   return { id, duplicateWarning: dup ? `พบไฟล์นี้ซ้ำกับเอกสาร ${dup.doc_number_display} (Hash ตรงกัน)` : null };
 }
@@ -667,7 +774,7 @@ router.get('/documents/bulk', requirePage((ctx) => {
       <div>
         <h2 class="mt-0">${isIn ? '📥 ลงรับหลายฉบับรวดเดียว' : '📤 ออกเลขส่งหลายฉบับรวดเดียว'}</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
-          เลือกไฟล์ PDF ทั้งกองพร้อมกัน ระบบจะตั้งแถวให้ไฟล์ละ 1 ฉบับ แล้วออกเลข${isIn ? 'รับ' : 'ส่ง'}เรียงให้ทั้งชุดในครั้งเดียว
+          เลือกไฟล์ทั้งกองพร้อมกัน (${ALLOWED_LABEL}) ระบบจะตั้งแถวให้ไฟล์ละ 1 ฉบับ แล้วออกเลข${isIn ? 'รับ' : 'ส่ง'}เรียงให้ทั้งชุดในครั้งเดียว
         </p>
       </div>
       <a class="btn btn-outline" href="/documents/new?direction=${direction}">ลงทีละฉบับแทน</a>
@@ -717,13 +824,13 @@ router.get('/documents/bulk', requirePage((ctx) => {
     <div class="card">
       <h3 style="margin-top:0">2. รายการหนังสือ</h3>
       <div class="flex gap-2 flex-wrap items-center" style="margin-bottom:.9rem">
-        <input type="file" id="bulkFiles" accept="application/pdf" multiple hidden />
-        <button class="btn btn-primary" type="button" id="pickFiles">📎 เลือกไฟล์ PDF (เลือกได้หลายไฟล์)</button>
+        <input type="file" id="bulkFiles" accept="${ACCEPT_ATTR}" multiple hidden />
+        <button class="btn btn-primary" type="button" id="pickFiles">📎 เลือกไฟล์ (เลือกได้หลายไฟล์)</button>
         <button class="btn btn-outline" type="button" id="addRow">+ เพิ่มแถวว่าง (ไม่มีไฟล์)</button>
         <span class="text-muted" style="font-size:.85rem" id="rowCount"></span>
       </div>
       <div id="rows"></div>
-      <div id="emptyRows">${emptyState('📥', 'ยังไม่มีรายการ — กด "เลือกไฟล์ PDF" หรือ "เพิ่มแถวว่าง" เพื่อเริ่ม')}</div>
+      <div id="emptyRows">${emptyState('📥', 'ยังไม่มีรายการ — กด "เลือกไฟล์" หรือ "เพิ่มแถวว่าง" เพื่อเริ่ม')}</div>
     </div>
 
     <div class="card" id="submitCard" style="display:none">
@@ -738,6 +845,7 @@ router.get('/documents/bulk', requirePage((ctx) => {
       <div id="result"></div>
     </div>
 
+    ${attachMimeScript()}
     <script>
     (function(){
       var DIRECTION = ${JSON.stringify(direction)};
@@ -761,7 +869,11 @@ router.get('/documents/bulk', requirePage((ctx) => {
       }
       // ชื่อไฟล์สแกนมักเป็นชื่อเรื่องอยู่แล้ว (เช่น "ขอเชิญประชุมผู้บริหาร.pdf") ตั้งเป็นชื่อเรื่องให้เลย
       // ธุรการจะได้แค่แก้คำ ไม่ต้องพิมพ์ใหม่ทั้งหมด — ถ้าเป็นชื่อจากเครื่องสแกน (scan0001.pdf) ก็ลบทิ้งง่าย
-      function titleFromFile(name){ return name.replace(/\\.pdf$/i, '').replace(/[_-]+/g, ' ').trim(); }
+      //
+      // ตัดนามสกุลของทุกชนิดที่แนบได้ ไม่ใช่แค่ .pdf — ไม่งั้นหนังสือที่มาเป็นไฟล์ Word จะได้ชื่อเรื่องว่า
+      // "ขอเชิญประชุมผู้บริหาร.docx" ติดนามสกุลไปอยู่ในทะเบียนและในหัวหนังสือที่พิมพ์ออกมา
+      var EXT_RE = new RegExp('\\\\.(' + ${JSON.stringify(FILE_KINDS.map((k) => k.ext).join('|'))} + ')$', 'i');
+      function titleFromFile(name){ return name.replace(EXT_RE, '').replace(/[_-]+/g, ' ').trim(); }
 
       function addRows(newRows){
         var room = MAX_ROWS - rows.length;
@@ -893,7 +1005,7 @@ router.get('/documents/bulk', requirePage((ctx) => {
               var b64 = await window.fileToBase64(row.file);
               var r2 = await fetch('/documents/' + data.documents[j].id + '/attachments', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fileName: row.file.name, fileType: row.file.type || 'application/pdf', fileDataBase64: b64 }),
+                body: JSON.stringify({ fileName: row.file.name, fileType: window.attachMime(row.file.name, row.file.type), fileDataBase64: b64 }),
               });
               if (!r2.ok) {
                 var e2 = await r2.json().catch(function(){ return {}; });
@@ -1302,6 +1414,11 @@ router.get('/documents/:id', requirePage((ctx) => {
   // ไฟล์ที่ยังเปิดได้จริง — ปุ่มทุกปุ่มที่พาไปเปิดไฟล์ต้องดูจากรายการนี้ ไม่ใช่ attachments ทั้งหมด
   // เพราะไฟล์ที่ถูกทำลายตามระเบียบยังมีแถวอยู่ (เก็บไว้เป็นหลักฐาน) แต่ตัวไฟล์ไม่มีแล้ว
   const liveAttachments = attachments.filter((a) => !a.destroyed_at);
+  // ไฟล์ที่ตราประทับทุกชนิดจะไปลงจริง — ต้องเป็น PDF (ดู stampTargetAttachment) ทุกปุ่ม/ทุกช่องกรอก
+  // ที่เกี่ยวกับตราประทับต้องดูตัวนี้ ไม่ใช่ "มีไฟล์แนบไหม" หรือ "ไฟล์แรกของรายการ" — หนังสือที่แนบมาแต่
+  // Word/Excel ประทับไม่ได้เลย ถ้ายังโชว์ช่องให้กรอกความเห็นอยู่ ผู้ใช้จะพิมพ์จนเสร็จแล้วกดส่ง
+  // โดยไม่มีอะไรไปโผล่บนหน้ากระดาษ
+  const stampAtt = liveAttachments.find((a) => a.mime_type === STAMPABLE_MIME) || null;
   const steps = getWorkflowSteps(doc.id);
   // ต้องเป็นขั้นตอน "ของคนที่เปิดดู" ไม่ใช่ขั้นล่าสุดของเอกสาร — ตั้งแต่ ผอ. ส่งให้หลายคนพร้อมกันได้
   // หนังสือฉบับเดียวมีขั้นตอนค้างพร้อมกันได้หลายอัน (ดู currentStepFor)
@@ -1390,7 +1507,7 @@ router.get('/documents/:id', requirePage((ctx) => {
           </div>
           <div class="help-text" id="nextAssigneeHint">ยังไม่ได้เลือกใคร — ถ้าจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง"</div>
         </div>
-        ${attachments.length && isRegistrarComment ? `
+        ${stampAtt && isRegistrarComment ? `
         <div class="field">
           <div class="flex items-center justify-between gap-2" style="flex-wrap:nowrap">
             <label style="margin-bottom:0"><span class="step-num">2</span> ตราธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
@@ -1410,7 +1527,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             ระบบยังบันทึกไว้อยู่ว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่ ทั้งในประวัติการใช้งานและในความเห็นของหนังสือฉบับนี้
           </div>
         </div>` : ''}
-        ${attachments.length && isDirectorDecision ? `
+        ${stampAtt && isDirectorDecision ? `
         <div class="field">
           <label><span class="step-num">2</span> เครื่องหมายบนตราประทับ <span class="text-muted" style="font-weight:400">(ติ๊กได้หลายอัน — เฉพาะอันที่ติ๊กจะขึ้นบนตราใน PDF จริง)</span></label>
           <div class="stack" style="gap:.35rem">
@@ -1614,7 +1731,7 @@ router.get('/documents/:id', requirePage((ctx) => {
           <label>ข้อความ/คำสั่ง</label>
           <textarea id="assignInstruction" placeholder="เช่น เพื่อโปรดพิจารณา"></textarea>
         </div>
-        ${attachments.length && ctx.user.roleCodes.includes('registrar') ? `
+        ${stampAtt && ctx.user.roleCodes.includes('registrar') ? `
         <div class="field">
           <label>ตราธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <div class="help-text" style="margin-bottom:.4rem">ฝนเลือกข้อที่ต้องการ — ตรงกับตรายางจริงของโรงเรียน ติ๊กได้หลายข้อ</div>
@@ -1699,7 +1816,9 @@ router.get('/documents/:id', requirePage((ctx) => {
         }${dueSummaryChip}</div>
       </div>
       <div class="chip-row">
-        <a class="btn btn-outline btn-sm" href="${liveAttachments.length ? `/files/${liveAttachments[0].id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${liveAttachments.length ? ' (PDF ที่บันทึกไว้)' : ''}</a>
+        <!-- ปุ่มพิมพ์ต้องพาไปที่ไฟล์ PDF ไม่ใช่ไฟล์แรกเฉยๆ — ถ้าสิ่งที่ส่งมาด้วยเป็น Word แล้วถูกแนบขึ้นก่อน
+             ปุ่ม "พิมพ์เอกสาร" จะกลายเป็นการดาวน์โหลดไฟล์ Word แทนที่จะเปิดตัวหนังสือให้สั่งพิมพ์ -->
+        <a class="btn btn-outline btn-sm" href="${stampAtt ? `/files/${stampAtt.id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${stampAtt ? ' (PDF ที่บันทึกไว้)' : ''}</a>
         ${liveAttachments.length ? `<a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">📝 บันทึกข้อความ/สรุปลายเซ็น</a>` : ''}
         ${canShareToLine(doc) ? `<a class="btn btn-outline btn-sm" href="${esc(lineShareUrl(documentShareText(doc)))}" target="_blank" rel="noopener"
           title="เปิดหน้าต่างแชร์ของ LINE พร้อมเลขที่ ชื่อเรื่อง และลิงก์กลับมาที่หนังสือฉบับนี้ (ใช้บนมือถือที่มีแอป LINE)">💬 ส่งเข้าไลน์</a>` : ''}
@@ -1780,7 +1899,16 @@ router.get('/documents/:id', requirePage((ctx) => {
 
         <div class="card">
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
-          ${attachments.length ? attachments.map((a, i) => (a.destroyed_at ? `
+          ${liveAttachments.length && !stampAtt ? `
+          <!-- หนังสือที่มีแต่ไฟล์ Word/Excel ประทับตราไม่ได้เลยสักขั้นตอน และช่องกรอกความเห็น/ตราประทับ
+               ทั้งหมดจะไม่ขึ้นให้เห็น ถ้าไม่บอกตรงนี้ ธุรการจะนึกว่าระบบเสียหรือสิทธิ์ไม่พอ -->
+          <div class="alert alert-warning" style="font-size:.85rem">
+            <strong>หนังสือฉบับนี้ยังไม่มีไฟล์ PDF</strong> — ตราลงรับ ตราธุรการ และตรา ผอ.
+            ประทับลงได้เฉพาะไฟล์ PDF เท่านั้น ช่องกรอกความเห็น/ตราประทับจึงยังไม่ขึ้นให้ใช้
+            <div style="margin-top:.3rem">แนบตัวหนังสือเป็นไฟล์ PDF เพิ่มเข้ามา แล้วช่องเหล่านั้นจะขึ้นเองทันที
+              (ไฟล์ Word/Excel ที่แนบไว้แล้วยังอยู่ครบ ดาวน์โหลดได้ตามปกติ)</div>
+          </div>` : ''}
+          ${attachments.length ? attachments.map((a) => (a.destroyed_at ? `
             <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
               <!-- ไฟล์ถูกทำลายตามระเบียบแล้ว: คงชื่อไว้เป็นหลักฐานว่าเคยมีอะไร แต่ห้ามมีปุ่มให้กดเปิด
                    เพราะไฟล์ไม่มีอยู่จริงแล้ว กดไปก็ได้แต่หน้าที่บอกว่าหาไม่เจอ -->
@@ -1794,16 +1922,25 @@ router.get('/documents/:id', requirePage((ctx) => {
             </div>` : `
             <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
               <div class="flex items-center justify-between flex-wrap gap-2">
-                <div>📄 ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span>
+                <div>${attachmentIcon(a.mime_type)} ${esc(a.filename)} <span class="text-muted" style="font-size:.78rem">(${Math.round(a.filesize / 1024)} KB)</span>
+                  ${a.mime_type !== STAMPABLE_MIME ? `<span class="badge" style="margin-left:.4rem">${esc(fileKindOf(a.mime_type) ? fileKindOf(a.mime_type).label : 'ไฟล์แนบ')}</span>` : ''}
                   ${a.stamped_storage_provider ? '<span class="badge badge-success" style="margin-left:.4rem">✅ ประทับตราแล้ว</span>' : ''}
                 </div>
                 <div class="chip-row">
-                  ${i === 0 && canStampReceived ? `<button type="button" class="btn btn-sm btn-primary" onclick="applyStamp('${a.id}', this)">🖋️ ประทับตราลงไฟล์ PDF จริง</button>` : ''}
+                  ${stampAtt && stampAtt.id === a.id && canStampReceived ? `<button type="button" class="btn btn-sm btn-primary" onclick="applyStamp('${a.id}', this)">🖋️ ประทับตราลงไฟล์ PDF จริง</button>` : ''}
+                  ${a.mime_type === STAMPABLE_MIME ? `
                   <button type="button" class="btn btn-sm btn-outline" onclick="togglePreview('${a.id}')">👁️ ดูตัวอย่าง</button>
-                  <a class="btn btn-sm btn-outline" href="/files/${a.id}" target="_blank" rel="noopener">เปิดแท็บใหม่</a>
+                  <a class="btn btn-sm btn-outline" href="/files/${a.id}" target="_blank" rel="noopener">เปิดแท็บใหม่</a>` : ''}
+                  <!-- ทุกไฟล์ต้องดาวน์โหลดได้ รวมถึง PDF ด้วย — บนมือถือตัวอ่าน PDF ในเบราว์เซอร์มักไม่มี
+                       ปุ่มบันทึกที่หาเจอ ธุรการที่ต้องส่งไฟล์ต่อหรือเก็บเข้าแฟ้มในเครื่องจึงติดอยู่แค่ "ดูได้" -->
+                  <a class="btn btn-sm btn-outline" href="/files/${a.id}?download=1" download>⬇️ ดาวน์โหลด</a>
                   ${a.stamped_storage_provider ? `<a class="btn btn-sm btn-outline" href="/files/${a.id}?original=1" target="_blank" rel="noopener">ดูต้นฉบับ (ไม่มีตรา)</a>` : ''}
                 </div>
               </div>
+              ${a.mime_type !== STAMPABLE_MIME ? `
+              <div class="text-muted" style="font-size:.78rem;margin-top:.2rem">
+                ไฟล์ชนิดนี้ดูในหน้าเว็บไม่ได้และประทับตราลงไปไม่ได้ — กดดาวน์โหลดเพื่อเปิดด้วยโปรแกรมในเครื่อง
+              </div>` : ''}
               ${a.stamp_failed_at ? `
               <!-- เตือนค้างไว้จนกว่าจะประทับสำเร็จ — เรื่องนี้ทำให้ไฟล์หนังสือราชการขาดความเห็นและ
                    ลายเซ็นของผู้มีอำนาจ ซึ่งเป็นสาระสำคัญ แถบเตือนชั่วคราวบนหน้าแรกจึงไม่พอ -->
@@ -1862,7 +1999,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             // ตัวอย่างตรา "รับทราบและปฏิบัติตามคำสั่ง" ต้องแสดงตรงกับที่จะประทับจริง — กรอบมีบรรทัดเลข
             // ให้ผู้ที่ ผอ. สั่งการถึงลงชื่อคนละบรรทัด เราจะได้บรรทัดที่เท่าไหร่ขึ้นกับว่ามาเป็นคนที่เท่าไหร่
             var CAN_MARK = ${(isCurrentAssignee && !isDirectorDecision && !isRegistrarComment) ? 'true' : 'false'};
-            var ACK_SIGNER_INDEX = ${attachments.length ? ackSignerIndex(attachments[0].id) : 0};
+            var ACK_SIGNER_INDEX = ${stampAtt ? ackSignerIndex(stampAtt.id) : 0};
             var ACK_ROWS = Math.max(${ACK_BOX_ROWS}, ACK_SIGNER_INDEX + 1);
             var ACK_ENTRY = ${ctx.user.signature_image ? `'<img class="ack-sig" src="${esc(ctx.user.signature_image)}" />'` : "''"} +
               '<span class="ack-who">(${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)})</span>';
@@ -2017,11 +2154,13 @@ router.get('/documents/:id', requirePage((ctx) => {
               if (el.style.display === 'none') {
                 el.style.display = '';
                 if (!el.dataset.loaded) {
-                  var isFirstFile = ${JSON.stringify(attachments.length ? attachments[0].id : null)} === id;
-                  var showStamp = isFirstFile && STAMP_DIRECTION === 'incoming';
-                  var showMark = isFirstFile && CAN_MARK;
-                  var showDecision = isFirstFile && CAN_DECIDE;
-                  var showRegistrar = isFirstFile && CAN_REGISTRAR;
+                  // ตัวอย่างตราประทับซ้อนได้เฉพาะไฟล์ที่ตราจะไปลงจริง = ไฟล์ PDF ไฟล์แรก ไม่ใช่ไฟล์แรก
+                  // เฉยๆ ถ้าธุรการแนบ Word/Excel ขึ้นก่อน ตัวอย่างจะไปโชว์บนไฟล์ที่ประทับไม่ได้
+                  var isStampTarget = ${JSON.stringify(stampAtt ? stampAtt.id : null)} === id;
+                  var showStamp = isStampTarget && STAMP_DIRECTION === 'incoming';
+                  var showMark = isStampTarget && CAN_MARK;
+                  var showDecision = isStampTarget && CAN_DECIDE;
+                  var showRegistrar = isStampTarget && CAN_REGISTRAR;
                   el.innerHTML = '<div class="pdf-preview-wrap" id="stampWrap">' +
                     '<img class="pdf-frame" src="/files/' + id + '/preview.png" alt="ตัวอย่างไฟล์แนบ" onerror="window.pdfPreviewError(this)" />' +
                     (showStamp ? STAMP_HTML : '') +
@@ -2041,11 +2180,12 @@ router.get('/documents/:id', requirePage((ctx) => {
           </script>
           ${canAttachTo(doc) ? `<form id="addAttachForm" style="margin-top:.9rem">
             <label for="addAttachInput">แนบไฟล์เพิ่ม (เลือกได้ทีละหลายไฟล์)</label>
-            <input type="file" id="addAttachInput" accept="application/pdf" multiple />
+            <input type="file" id="addAttachInput" accept="${ACCEPT_ATTR}" multiple />
             <div id="addAttachPreview"></div>
-            <div class="help-text">เลือกได้สูงสุด ${MAX_ATTACH_FILES} ไฟล์ต่อครั้ง · PDF ขนาดไม่เกิน 10MB ต่อไฟล์</div>
+            <div class="help-text">เลือกได้สูงสุด ${MAX_ATTACH_FILES} ไฟล์ต่อครั้ง · ${ALLOWED_LABEL} ขนาดไม่เกิน 10MB ต่อไฟล์ (ประทับตราได้เฉพาะไฟล์ PDF)</div>
             <button class="btn btn-outline btn-sm" style="margin-top:.5rem" type="submit">แนบไฟล์เพิ่ม</button>
           </form>
+          ${attachMimeScript()}
           <script>
             window.addEventListener('load', function(){
               // ที่นี่ไม่ต้องมีป้าย "ไฟล์หลัก" — ไฟล์หลักคือไฟล์แรกของหนังสือที่แนบไว้ตั้งแต่ตอนลงทะเบียน
@@ -2067,7 +2207,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                     var b64 = await window.fileToBase64(files[i]);
                     var r = await fetch('/documents/${doc.id}/attachments', {
                       method: 'POST', headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ fileName: files[i].name, fileType: files[i].type || 'application/octet-stream', fileDataBase64: b64 }),
+                      body: JSON.stringify({ fileName: files[i].name, fileType: window.attachMime(files[i].name, files[i].type), fileDataBase64: b64 }),
                     });
                     if (!r.ok) failed.push(files[i].name + ' (' + ((await r.json().catch(function(){ return {}; })).error || 'ไม่สำเร็จ') + ')');
                   } catch (err) { failed.push(files[i].name); }
@@ -2478,7 +2618,7 @@ async function stampAcknowledgeMarkIfApplicable({ documentId, stepId, actorUser,
   // ลายเซ็นก็เหลือแต่ชื่อลอยๆ ที่ดูไม่ออกว่าคืออะไร — ตราใหม่มีบรรทัดเลขกำกับชัดเจน ชื่อเปล่าๆ บนบรรทัดที่
   // 2 จึงอ่านออกอยู่แล้วว่าเป็นผู้รับทราบคนที่สอง และการข้ามไปเงียบๆ แย่กว่ามาก เพราะหนังสือที่สั่งการ
   // หลายคนจะมีบรรทัดหายไปโดยไม่มีอะไรบอกว่าใครหาย
-  const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
+  const att = stampTargetAttachment(documentId);
   if (!att) return;
   try {
     const originalBuffer = await readAttachmentBytes(att, { preferStamped: true });
@@ -2538,7 +2678,7 @@ async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser
   // (เดิมต้องมีข้อความเท่านั้น เพราะตราเก่าไม่มีตัวเลือกให้ติ๊กเลย)
   if (!marks.length && !text) return;
   if (!canWriteRegistrarComment(stepId, actorUser)) return;
-  const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
+  const att = stampTargetAttachment(documentId);
   if (!att) return;
 
   // เก็บไว้ในระบบ "ก่อน" ลงมือปั๊มไฟล์ และไม่ผูกกับว่าการปั๊มจะสำเร็จหรือไม่
@@ -2588,7 +2728,7 @@ async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser
 async function stampDirectorDecisionIfApplicable({ documentId, stepId, actorUser, decision, note, marks, notifyTarget, decisionX, decisionY }) {
   const titleMode = directorTitleMode(stepId, actorUser);
   if (titleMode === 'generic') return;
-  const att = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER} LIMIT 1`).get(documentId);
+  const att = stampTargetAttachment(documentId);
   if (!att) return;
   const doc = getDocument(documentId);
   const forLabel = actingForLabel(stepId, actorUser);
@@ -2797,6 +2937,11 @@ router.get('/files/:attachmentId/preview.png', requirePage(async (ctx) => {
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(403, 'คุณไม่มีสิทธิ์เปิดไฟล์นี้');
   // ปฏิเสธตั้งแต่ต้นทาง ไม่ปล่อยให้ readAttachmentBytes ไปล้มเองกลางทางแล้วได้ error ที่ไม่ได้อธิบายอะไร
   if (att.destroyed_at) throw httpError(410, 'ไฟล์นี้ถูกทำลายตามมติคณะกรรมการทำลายหนังสือแล้ว จึงดูตัวอย่างไม่ได้');
+  // ตัวอย่างหน้าแรกทำได้เฉพาะ PDF — ตัวแปลงภาพอ่านได้แต่ PDF ถ้าส่ง Word/Excel เข้าไปจะล้มพร้อม
+  // ข้อความของโปรแกรมภายนอกดิบๆ แทนที่จะบอกตรงๆ ว่าไฟล์ชนิดนี้ดูตัวอย่างไม่ได้
+  if (att.mime_type !== STAMPABLE_MIME) {
+    throw httpError(415, 'ไฟล์ชนิดนี้ดูตัวอย่างในหน้าเว็บไม่ได้ — กดเปิด/ดาวน์โหลดไฟล์เพื่อเปิดด้วยโปรแกรมของเครื่อง');
+  }
   const buf = await readAttachmentBytes(att, { preferStamped: ctx.query.original !== '1' });
   const png = await renderPdfFirstPageImage(buf);
   ctx.res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store' });
@@ -2836,6 +2981,18 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const filepath = useStamped ? att.stamped_filepath : att.filepath;
   const driveFileId = useStamped ? att.stamped_drive_file_id : att.drive_file_id;
 
+  // ?download=1 = บังคับให้เครื่องบันทึกไฟล์ลงเครื่องเสมอ ไม่ว่าจะเป็นไฟล์ชนิดไหน
+  //
+  // PDF เปิดในแท็บได้อยู่แล้ว แต่ "เปิดดูได้" กับ "เอาไฟล์ไปเก็บ/ส่งต่อได้" เป็นคนละเรื่อง — บนมือถือ
+  // โดยเฉพาะ ตัวอ่าน PDF ในเบราว์เซอร์มักไม่มีปุ่มบันทึกที่หาเจอ ธุรการที่ต้องส่งไฟล์ต่อทางไลน์หรือ
+  // เก็บเข้าแฟ้มในเครื่องจึงติดตรงนี้ ส่วนไฟล์ Word/Excel บังคับดาวน์โหลดอยู่แล้วเพราะเบราว์เซอร์
+  // เปิดเองไม่ได้ ทางนี้ทำให้ทุกไฟล์มีปุ่ม "ดาวน์โหลด" ที่ทำงานเหมือนกันหมด
+  const asDownload = ctx.query.download === '1';
+  // สำเนาที่ประทับตราแล้วเป็น PDF เสมอ ไม่ว่าต้นฉบับจะเป็นชนิดไหน
+  const serveMime = useStamped ? 'application/pdf' : (att.mime_type || 'application/pdf');
+  const disposition = !asDownload && (useStamped || att.mime_type === STAMPABLE_MIME) ? 'inline' : 'attachment';
+  const fallbackName = useStamped ? 'document.pdf' : fallbackFilename(att.mime_type);
+
   if (storageProvider === 'google_drive') {
     let stream;
     try {
@@ -2846,8 +3003,10 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
     if (!stream) return html(ctx, 404, '<h1>ไม่พบไฟล์บน Google Drive</h1>');
     audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip, detail: { variant: useStamped ? 'stamped' : 'original' } });
     ctx.res.writeHead(200, {
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': contentDispositionHeader(att.filename),
+      // ต้องเป็นชนิดจริงของไฟล์ ไม่ใช่ application/pdf เสมอ — ถ้าส่งชนิดผิด เบราว์เซอร์จะพยายามเปิด
+      // ไฟล์ Word/Excel เป็น PDF แล้วได้หน้าขาวหรือไฟล์เสีย
+      'Content-Type': serveMime,
+      'Content-Disposition': contentDispositionHeader(att.filename, fallbackName, disposition),
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
     });
@@ -2859,8 +3018,12 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
   if (!fs.existsSync(filePath)) return html(ctx, 404, '<h1>ไม่พบไฟล์</h1>');
   audit({ userId: ctx.user.id, action: 'attachment_opened', tableName: 'attachments', recordId: att.id, ip: ctx.ip, detail: { variant: useStamped ? 'stamped' : 'original' } });
   ctx.res.writeHead(200, {
-    'Content-Type': 'application/pdf',
-    'Content-Disposition': contentDispositionHeader(att.filename),
+    // ชนิดจริงของไฟล์ — ส่งชนิดผิดแล้วเบราว์เซอร์จะพยายามเปิดไฟล์ Word/Excel เป็น PDF แล้วได้หน้าขาว
+    // หรือไฟล์เสีย โดยเฉพาะเมื่อมี nosniff บังคับไว้ด้วย
+    'Content-Type': serveMime,
+    // ไฟล์ Word/Excel ต้องบังคับดาวน์โหลด ไม่ใช่พยายามเปิดในแท็บ เพราะเบราว์เซอร์เปิดเองไม่ได้อยู่แล้ว
+    // ถ้าปล่อยเป็น inline ผู้ใช้จะได้หน้าว่างๆ แทนที่จะได้ไฟล์ไปเปิดด้วยโปรแกรมของเครื่อง
+    'Content-Disposition': contentDispositionHeader(att.filename, fallbackName, disposition),
     'Cache-Control': 'private, no-store',
     'X-Content-Type-Options': 'nosniff',
   });

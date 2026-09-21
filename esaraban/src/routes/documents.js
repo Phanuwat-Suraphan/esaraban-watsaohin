@@ -12,6 +12,7 @@ import {
   broadcastDocument, listBroadcasts, canBroadcast,
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
+import { canIssueOutgoingNumber } from '../services/outgoingRequest.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
 import {
   stampPdf, stampDirectorDecision, stampAcknowledgeMark, stampRegistrarComment,
@@ -399,6 +400,8 @@ router.get('/documents', requirePage((ctx) => {
       <a class="btn btn-outline btn-sm" href="${exportLink('/documents/register')}" target="_blank" rel="noopener">🖨️ พิมพ์ทะเบียน / PDF</a>
     </div>`;
 
+  const canIssueOutgoing = canIssueOutgoingNumber(ctx.user);
+
   // หนังสือเข้าที่ลงทะเบียนวันนี้ — ใช้ทำปุ่ม "ส่งสรุปวันนี้เข้าไลน์" ข้อความเดียวจบ แทนการแชร์ทีละฉบับ
   // ซึ่งวันที่มีหนังสือเข้าหกฉบับจะกลายเป็นยิงเข้ากลุ่มหกข้อความติดกัน จนคนในกลุ่มเลื่อนผ่าน
   // กรองสิทธิ์ด้วยเงื่อนไขเดียวกับรายการที่คนนี้เห็นอยู่แล้ว ไม่ใช่ดึงทั้งฐานข้อมูล
@@ -429,7 +432,14 @@ router.get('/documents', requirePage((ctx) => {
           href="${esc(lineShareUrl(incomingDigestText(todayIncoming, fmtThaiDateLong(todayInBangkok()))))}"
           title="ส่งสรุปหนังสือเข้าของวันนี้เข้ากลุ่มไลน์เป็นข้อความเดียว">💬 ส่งสรุปวันนี้เข้าไลน์ (${todayIncoming.length})</a>` : ''}
         <a class="btn btn-outline" href="/documents/bulk?direction=${direction}">📎 ลงหลายฉบับรวดเดียว</a>
-        <a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>
+        <!-- ทะเบียนหนังสือส่งเป็นสมุดของธุรการ ครูที่จะส่งหนังสือออกต้อง "ขอเลข" ไม่ใช่กดออกเลขเอง
+             (ดูเหตุผลเต็มใน services/outgoingRequest.js) ปุ่มขอเลขจึงเป็นปุ่มหลักของหน้าหนังสือออก
+             สำหรับครู ส่วนธุรการ/ผู้ดูแลยังมีปุ่มสร้างหนังสือส่งเองตามเดิม เพราะเป็นงานประจำของเขา -->
+        ${direction === 'outgoing' ? `<a class="btn ${canIssueOutgoing ? 'btn-outline' : 'btn-primary'}"
+          href="${canIssueOutgoing ? '/outgoing-requests' : '/outgoing-requests/mine'}">🔢 ${canIssueOutgoing ? 'คำขอเลขหนังสือส่ง' : 'ขอเลขหนังสือส่ง'}</a>` : ''}
+        ${direction === 'incoming' || canIssueOutgoing
+          ? `<a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>`
+          : ''}
       </div>`}
     </div>
     <div class="card">

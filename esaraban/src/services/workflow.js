@@ -86,16 +86,24 @@ function assertNotJustRegistered(clean) {
         message: `เรื่อง "${title}" เพิ่งถูกลงทะเบียนไปแล้วเป็นเลขที่ ${recent.doc_number_display} เมื่อครู่นี้\n\nถ้าเป็นหนังสือคนละฉบับที่บังเอิญชื่อเรื่องเหมือนกัน กด "ตกลง" เพื่อลงทะเบียนเพิ่มอีกฉบับ\nถ้ากดพลาดสองครั้ง กด "ยกเลิก"` } });
 }
 
+/**
+ * inTransaction: ผู้เรียกเปิดธุรกรรมไว้เองแล้ว ให้ข้าม BEGIN/COMMIT ของที่นี่
+ *
+ * SQLite ซ้อนธุรกรรมไม่ได้ ถ้าไม่มีทางเลือกนี้ การเรียกจากข้างในธุรกรรมอื่นจะล้มทันทีด้วยข้อความ
+ * "cannot start a transaction within a transaction" — ใช้ตอนออกเลขหนังสือส่งให้คำขอของครู ซึ่ง
+ * "สร้างหนังสือ" กับ "ปิดคำขอ" ต้องสำเร็จหรือล้มไปด้วยกัน (ดู services/outgoingRequest.js)
+ */
 export function createDocument(input) {
   const clean = normalizeDocumentInput(input);
+  const nested = input.inTransaction === true;
   let result;
-  db.exec('BEGIN IMMEDIATE');
+  if (!nested) db.exec('BEGIN IMMEDIATE');
   try {
     if (!input.allowDuplicate) assertNotJustRegistered(clean);
     result = insertDocumentRow(clean);
-    db.exec('COMMIT');
+    if (!nested) db.exec('COMMIT');
   } catch (e) {
-    db.exec('ROLLBACK');
+    if (!nested) db.exec('ROLLBACK');
     throw e;
   }
   auditDocumentCreated(clean, result);

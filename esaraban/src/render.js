@@ -180,6 +180,14 @@ function pendingRegistrations() {
   }
 }
 
+function pendingOutgoingRequests() {
+  try {
+    return db.prepare("SELECT COUNT(*) c FROM outgoing_number_requests WHERE status = 'pending'").get().c;
+  } catch {
+    return 0; // ฐานข้อมูลที่ยังไม่ได้ migrate ตารางนี้ — ไม่ใช่เหตุให้ทั้งหน้าพัง
+  }
+}
+
 function navItem(href, icon, label, currentPath, count = 0) {
   const active = currentPath === href || (href !== '/' && currentPath.startsWith(href));
   // ป้ายตัวเลขบนเมนู — ใช้กับของที่ "ค้างรอคนทำ" เท่านั้น ไม่ใช่ทุกเมนู ไม่งั้นจะกลายเป็นสิ่งที่ทุกคน
@@ -265,6 +273,10 @@ function renderAppShell({ user, currentPath, content, flash, avatar }) {
     <div class="nav-section-label">ทะเบียนหนังสือ</div>
     ${navItem('/documents?direction=incoming', '📥', 'หนังสือเข้า', currentPath)}
     ${navItem('/documents?direction=outgoing', '📤', 'หนังสือออก', currentPath)}
+    <!-- ธุรการ/ผู้ดูแลเห็น "คำขอเลขที่รออยู่" พร้อมจำนวนค้าง ส่วนครูเห็นรายการคำขอของตัวเอง -->
+    ${user.roleCodes.some((r) => ['admin', 'registrar'].includes(r))
+      ? navItem('/outgoing-requests', '🔢', 'คำขอเลขหนังสือส่ง', currentPath, pendingOutgoingRequests())
+      : navItem('/outgoing-requests/mine', '🔢', 'ขอเลขหนังสือส่ง', currentPath)}
     ${navItem('/summary', '🗒️', 'สรุปงานที่ต้องทำ', currentPath)}
     ${navItem('/daily-summary', '📅', 'สรุปงานรายวัน', currentPath)}
 

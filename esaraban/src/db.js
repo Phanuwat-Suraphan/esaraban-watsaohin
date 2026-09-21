@@ -564,6 +564,32 @@ export function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_regreq_status ON registration_requests(status, created_at DESC);
 
+  -- คำขอเลขหนังสือส่ง — ครูขอ ธุรการเป็นคนออกเลขให้
+  --
+  -- ตามระเบียบงานสารบรรณ ทะเบียนหนังสือส่งเป็นสมุดของเจ้าหน้าที่ธุรการ ครูที่จะส่งหนังสือออกต้อง
+  -- "ขอเลข" จากธุรการ ไม่ใช่ดึงเลขถัดไปมาใช้เอง เพราะเลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ ถ้าใครก็
+  -- กดออกเลขได้ จะเกิดเลขที่จองไว้แล้วไม่ได้ใช้ กลายเป็นรูโหว่ในทะเบียนที่อธิบายไม่ได้ตอนตรวจ
+  --
+  -- แถวนี้ยังไม่ใช่หนังสือ — จะกลายเป็นหนังสือจริงเมื่อธุรการกดออกเลข (document_id ถึงจะมีค่า)
+  CREATE TABLE IF NOT EXISTS outgoing_number_requests (
+    id TEXT PRIMARY KEY,
+    requester_id TEXT NOT NULL REFERENCES users(id),
+    title TEXT NOT NULL,              -- ชื่อเรื่องของหนังสือที่จะส่ง
+    correspondent_name TEXT NOT NULL, -- หน่วยงาน/บุคคลปลายทาง (ช่อง "เรียน")
+    department_id TEXT REFERENCES departments(id),
+    priority TEXT NOT NULL DEFAULT 'normal',
+    secret_level TEXT NOT NULL DEFAULT 'normal',
+    note TEXT,                        -- ข้อความถึงธุรการ เช่น "ขอใช้ส่งวันศุกร์นี้"
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | issued | rejected
+    reviewed_by TEXT REFERENCES users(id),
+    reviewed_at TEXT,
+    reject_reason TEXT,
+    document_id TEXT REFERENCES documents(id), -- หนังสือที่ถูกสร้างเมื่อออกเลขให้แล้ว
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_outreq_status ON outgoing_number_requests(status, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_outreq_requester ON outgoing_number_requests(requester_id, created_at DESC);
+
   -- สรุปงานรายวันที่ธุรการอัปโหลดมาเป็นไฟล์ Excel แล้วระบบแตกออกมาเก็บเป็นรายการ เพื่อให้แก้ไขต่อในระบบได้
   -- และรวมดูข้ามวันได้ — แยกเก็บทีละวัน (summary_date) เพื่อให้ย้อนหาเอกสารของวันนั้นๆ ได้ง่าย
   CREATE TABLE IF NOT EXISTS daily_summaries (

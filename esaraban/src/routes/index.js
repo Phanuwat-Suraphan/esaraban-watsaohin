@@ -17,3 +17,4 @@ import './privacy.js';
 import './manifest.js';
 import './line.js';
 import './registration.js';
+import './outgoingRequest.js';

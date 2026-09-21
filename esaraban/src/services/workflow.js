@@ -612,6 +612,194 @@ export function reassignStuckStep({ stepId, newAssigneeId, actorUser }) {
   });
 }
 
+/**
+ * ผู้ดูแลระบบแก้การมอบหมายของขั้นตอนที่ยังไม่มีใครลงนาม — ทุกขั้นที่ยังค้างอยู่ ไม่ใช่แค่ขั้นล่าสุด
+ *
+ * ต่างจาก reassignStuckStep ตรงที่ไม่ต้องรอให้บัญชีของผู้ถือเรื่องถูกปิดก่อน — เรื่องที่ต้องแก้จริงใน
+ * โรงเรียนมีมากกว่านั้นมาก: ผอ. กดเลือกผิดคน (ชื่อครูคล้ายกันอยู่ติดกันในรายการ) ครูลาคลอด/ลาป่วยยาว
+ * โดยไม่ได้ตั้งผู้รักษาการแทนไว้ หรือย้ายงานกันกลางเทอม เดิมทั้งหมดนี้ไม่มีทางแก้ในระบบเลย ต้องรอให้
+ * คนที่ถือเรื่องอยู่กดส่งต่อเอง ซึ่งถ้าเจ้าตัวไม่อยู่ก็คือหนังสือค้างถาวร
+ *
+ * เปิดให้เฉพาะแอดมิน ไม่รวมผู้บันทึกเอกสาร (ต่างจาก assertCanManageDocument ที่ใช้กับงานอื่น) เพราะ
+ * นี่คือการดึงเรื่องออกจากมือคนที่กำลังพิจารณาอยู่ ซึ่งข้ามลำดับการบังคับบัญชาใน Workflow — ต้องเป็น
+ * อำนาจของผู้ดูแลระบบของโรงเรียนเท่านั้น และต้องดังพอที่ทุกฝ่ายรู้ตัว: บังคับกรอกเหตุผล แจ้งเตือนทั้ง
+ * คนเดิมและคนใหม่ เก็บร่องรอยไว้ในหมายเหตุของขั้นตอน (ซึ่งขึ้นบนไทม์ไลน์) และใน audit log
+ *
+ * ขั้นที่ลงนามไปแล้วแก้ไม่ได้โดยตั้งใจ — สถานะนั้นแปลว่ามีคนยืนยันด้วย PIN ของตัวเองไปแล้ว และชื่อกับ
+ * ลายเซ็นอาจถูกประทับลงไฟล์ PDF ฉบับจริงไปแล้วด้วย การแก้ว่า "คนที่ลงนามคือใคร" ย้อนหลังคือการแก้
+ * หลักฐาน ไม่ใช่การแก้การมอบหมาย ถ้ามอบหมายผิดไปแล้วและเจ้าตัวลงนามไปแล้ว ให้มอบหมายเพิ่มให้คนที่
+ * ถูกต้องแทน โดยประวัติเดิมยังอยู่ครบว่าเคยผ่านมือใครมาบ้าง
+ */
+export function adminReassignStep({ stepId, newAssigneeId, reason, actorUser }) {
+  reason = asTextOrNull(reason);
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผล');
+  if (!actorUser.roleCodes.includes('admin')) {
+    throw httpError(403, 'แก้ไขการมอบหมายได้เฉพาะผู้ดูแลระบบเท่านั้น');
+  }
+  const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
+  if (!step) throw httpError(404, 'ไม่พบขั้นตอนนี้');
+  if (step.status !== 'waiting') {
+    throw httpError(409, 'ขั้นตอนนี้ลงนามไปแล้ว จึงเปลี่ยนชื่อผู้รับผิดชอบย้อนหลังไม่ได้ — เป็นหลักฐานว่าใครเป็นผู้ลงนาม ถ้าต้องให้คนอื่นทำต่อ ให้เพิ่มผู้รับผิดชอบในขั้นนี้แทน');
+  }
+  const doc = documentOfStep(step);
+  if (!reason) throw httpError(400, 'กรุณาระบุเหตุผลที่เปลี่ยนตัวผู้รับผิดชอบ — เป็นการดึงเรื่องออกจากมือคนที่ถืออยู่ จึงต้องมีบันทึกไว้');
+  if (newAssigneeId === step.assignee_id) throw httpError(400, 'เป็นผู้รับผิดชอบคนเดิมอยู่แล้ว กรุณาเลือกคนใหม่');
+  assertAssignableUser(newAssigneeId);
+  // คนใหม่ถือขั้นเดียวกันอยู่แล้ว (ผอ. ส่งให้หลายคนพร้อมกัน) — ถ้าปล่อยผ่านจะมีชื่อเดียวกันสองบรรทัด
+  // ในขั้นเดียวกัน ซึ่งบนตรายาง "รับทราบและปฏิบัติตามคำสั่ง" จะกลายเป็นคนคนเดียวต้องเซ็นสองบรรทัด
+  const dup = db.prepare(`
+    SELECT 1 x FROM workflow_steps WHERE document_id = ? AND step_order = ? AND assignee_id = ? AND id != ?
+  `).get(step.document_id, step.step_order, newAssigneeId, stepId);
+  if (dup) throw httpError(409, 'คนที่เลือกได้รับมอบหมายในขั้นนี้อยู่แล้ว');
+
+  const nameOf = (id) => {
+    const u = db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(id);
+    return u ? `${u.prefix || ''}${u.first_name} ${u.last_name}`.trim() : 'ผู้ใช้ที่ถูกลบแล้ว';
+  };
+  const oldName = nameOf(step.assignee_id);
+  const newName = nameOf(newAssigneeId);
+  const by = `${actorUser.prefix || ''}${actorUser.first_name} ${actorUser.last_name}`.trim();
+
+  db.prepare(`
+    UPDATE workflow_steps SET assignee_id = ?, instruction = COALESCE(instruction,'') || ? WHERE id = ?
+  `).run(newAssigneeId, `\n[เปลี่ยนผู้รับผิดชอบ] จาก ${oldName} เป็น ${newName} โดย ${by} — ${reason}`, stepId);
+  db.prepare('UPDATE documents SET updated_at = ? WHERE id = ?').run(nowIso(), doc.id);
+
+  // คนเดิมต้องรู้ด้วย ไม่ใช่แค่คนใหม่ — เรื่องหายไปจากรายการงานของเขาเฉยๆ โดยไม่มีอะไรบอก คือสิ่งที่
+  // ทำให้คนเลิกเชื่อระบบ และเขาอาจกำลังทำเรื่องนั้นค้างอยู่บนกระดาษ
+  notifyUser({
+    userId: step.assignee_id, documentId: doc.id,
+    title: `เรื่องนี้ถูกเปลี่ยนผู้รับผิดชอบแล้ว: ${doc.doc_number_display}`,
+    message: `${doc.title} — ผู้ดูแลระบบมอบหมายให้ ${newName} ดำเนินการแทน (${reason})`,
+    priority: 'warning',
+  });
+  notifyUser({
+    userId: newAssigneeId, documentId: doc.id,
+    title: `หนังสือที่ต้องดำเนินการ: ${doc.doc_number_display}`,
+    message: `${doc.title} — เดิมเป็นของ ${oldName} ผู้ดูแลระบบมอบหมายให้คุณดำเนินการแทน (${reason})`,
+    priority: doc.priority === 'most_urgent' || doc.priority === 'very_urgent' ? 'urgent' : 'info',
+  });
+  audit({
+    userId: actorUser.id, action: 'workflow_reassigned_by_admin', tableName: 'workflow_steps', recordId: stepId,
+    detail: { documentId: doc.id, from: step.assignee_id, to: newAssigneeId, reason },
+  });
+  return { ok: true, from: oldName, to: newName };
+}
+
+/**
+ * ผู้ดูแลระบบเพิ่มผู้รับผิดชอบเข้าไปในขั้นที่กำลังค้างอยู่
+ *
+ * ใช้เมื่อ ผอ. สั่งการถึงหลายคนแต่ตกไปคนหนึ่ง หรือเมื่อขั้นนั้นลงนามไปแล้วแต่ต้องให้คนอื่นทำต่อ
+ * (ซึ่งเปลี่ยนชื่อคนที่ลงนามย้อนหลังไม่ได้) — คนที่เพิ่มเข้ามาอยู่ขั้นเดียวกัน ไม่ใช่ต่อคิวเป็นขั้นใหม่
+ * เพราะบนกระดาษทุกคนได้รับคำสั่งเดียวกันพร้อมกัน
+ */
+export function adminAddAssignees({ documentId, stepOrder, assigneeIds, reason, actorUser }) {
+  reason = asTextOrNull(reason);
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผล');
+  if (!actorUser.roleCodes.includes('admin')) {
+    throw httpError(403, 'แก้ไขการมอบหมายได้เฉพาะผู้ดูแลระบบเท่านั้น');
+  }
+  const doc = getDocument(documentId);
+  if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  if (doc.deleted_at || doc.status === 'void' || doc.status === 'destroyed') {
+    throw httpError(409, 'เอกสารฉบับนี้ถูกยกเลิก/ทำลายไปแล้ว จึงมอบหมายงานต่อไม่ได้');
+  }
+  const order = Number(stepOrder);
+  if (!Number.isInteger(order) || order < 1) throw httpError(400, 'ไม่พบขั้นตอนที่ระบุ');
+  const existing = db.prepare('SELECT assignee_id FROM workflow_steps WHERE document_id = ? AND step_order = ?')
+    .all(doc.id, order);
+  if (!existing.length) throw httpError(404, 'ไม่พบขั้นตอนที่ระบุในเอกสารนี้');
+
+  const targets = [...new Set((Array.isArray(assigneeIds) ? assigneeIds : [assigneeIds]).filter(Boolean))];
+  if (!targets.length) throw httpError(400, 'กรุณาเลือกผู้รับผิดชอบที่จะเพิ่ม');
+  if (targets.length > MAX_PARALLEL_ASSIGNEES) {
+    throw httpError(400, `เพิ่มพร้อมกันได้สูงสุด ${MAX_PARALLEL_ASSIGNEES} คน`);
+  }
+  // ตรวจให้ครบทุกคนก่อนลงมือ ไม่ใช่เพิ่มไปได้ครึ่งหนึ่งแล้วค่อยล้ม — ผู้ดูแลจะไม่รู้ว่าใครเข้าไปแล้วบ้าง
+  const already = new Set(existing.map((e) => e.assignee_id));
+  for (const id of targets) {
+    if (already.has(id)) throw httpError(409, 'มีคนที่เลือกได้รับมอบหมายในขั้นนี้อยู่แล้ว');
+    assertAssignableUser(id);
+  }
+
+  const by = `${actorUser.prefix || ''}${actorUser.first_name} ${actorUser.last_name}`.trim();
+  const note = `[เพิ่มผู้รับผิดชอบ] โดย ${by}${reason ? ` — ${reason}` : ''}`;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const id of targets) {
+      db.prepare(`
+        INSERT INTO workflow_steps (id, document_id, step_order, assignee_id, instruction, status, created_at)
+        VALUES (?, ?, ?, ?, ?, 'waiting', ?)
+      `).run(uuid(), doc.id, order, id, note, nowIso());
+    }
+    // เอกสารที่ปิดไปแล้วต้องกลับมาเป็น "กำลังดำเนินการ" เพราะมีคนต้องทำต่อจริงๆ ไม่งั้นงานที่เพิ่ง
+    // มอบหมายจะไปค้างอยู่ในหนังสือที่ขึ้นว่าเสร็จสิ้นแล้ว ซึ่งไม่มีใครตามต่อ
+    db.prepare(`UPDATE documents SET status = 'in_progress', completed_at = NULL, updated_at = ? WHERE id = ?`)
+      .run(nowIso(), doc.id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  for (const id of targets) {
+    notifyUser({
+      userId: id, documentId: doc.id,
+      title: `หนังสือที่ต้องดำเนินการ: ${doc.doc_number_display}`,
+      message: `${doc.title} — ผู้ดูแลระบบมอบหมายให้คุณ${reason ? ` (${reason})` : ''}`,
+      priority: doc.priority === 'most_urgent' || doc.priority === 'very_urgent' ? 'urgent' : 'info',
+    });
+  }
+  audit({
+    userId: actorUser.id, action: 'workflow_assignees_added_by_admin', tableName: 'documents', recordId: doc.id,
+    detail: { stepOrder: order, assigneeIds: targets, reason },
+  });
+  return { ok: true, added: targets.length };
+}
+
+/**
+ * ผู้ดูแลระบบยกเลิกการมอบหมายของคนหนึ่งในขั้นที่ยังค้างอยู่
+ *
+ * ใช้เมื่อกดเลือกเกินมา หรือคนที่ถูกเลือกไม่เกี่ยวกับเรื่องนี้เลย — ลบแถวทิ้งได้เพราะยังไม่มีใครลงนาม
+ * จึงไม่มีหลักฐานอะไรให้รักษา แต่ห้ามลบจนไม่เหลือใครถือเรื่องเลย ไม่งั้นหนังสือจะค้างเป็นผีที่ไม่มี
+ * ใครเห็นในรายการงานของใครเลย — ถ้าตั้งใจจะจบเรื่องจริงๆ ต้องใช้ "ยกเลิกเอกสาร" ซึ่งบันทึกเหตุผลไว้
+ */
+export function adminRemoveAssignee({ stepId, reason, actorUser }) {
+  reason = asTextOrNull(reason);
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผล');
+  if (!actorUser.roleCodes.includes('admin')) {
+    throw httpError(403, 'แก้ไขการมอบหมายได้เฉพาะผู้ดูแลระบบเท่านั้น');
+  }
+  const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
+  if (!step) throw httpError(404, 'ไม่พบขั้นตอนนี้');
+  if (step.status !== 'waiting') {
+    throw httpError(409, 'ขั้นตอนนี้ลงนามไปแล้ว จึงลบออกจากประวัติไม่ได้ — เป็นหลักฐานว่าใครเป็นผู้ลงนาม');
+  }
+  const doc = documentOfStep(step);
+  const waiting = db.prepare(`SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ? AND status = 'waiting'`)
+    .get(doc.id).c;
+  if (waiting <= 1) {
+    throw httpError(409, 'เหลือผู้รับผิดชอบคนสุดท้ายแล้ว ลบออกไม่ได้ — หนังสือจะค้างโดยไม่มีใครถือเรื่อง ถ้าต้องการจบเรื่องนี้ ให้ใช้ "ยกเลิกเอกสาร" แทน');
+  }
+
+  const u = db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(step.assignee_id);
+  const name = u ? `${u.prefix || ''}${u.first_name} ${u.last_name}`.trim() : 'ผู้ใช้ที่ถูกลบแล้ว';
+  db.prepare('DELETE FROM workflow_steps WHERE id = ?').run(stepId);
+  db.prepare('UPDATE documents SET updated_at = ? WHERE id = ?').run(nowIso(), doc.id);
+
+  notifyUser({
+    userId: step.assignee_id, documentId: doc.id,
+    title: `ยกเลิกการมอบหมาย: ${doc.doc_number_display}`,
+    message: `${doc.title} — ผู้ดูแลระบบยกเลิกการมอบหมายเรื่องนี้ให้คุณแล้ว${reason ? ` (${reason})` : ''}`,
+    priority: 'warning',
+  });
+  audit({
+    userId: actorUser.id, action: 'workflow_assignee_removed_by_admin', tableName: 'workflow_steps', recordId: stepId,
+    detail: { documentId: doc.id, assigneeId: step.assignee_id, reason },
+  });
+  return { ok: true, removed: name };
+}
+
 function assertOwnsStep(step, actorUser) {
   if (!step || step.status !== 'waiting') throw httpError(409, 'ขั้นตอนนี้ถูกดำเนินการไปแล้วหรือไม่พบ');
   if (step.assignee_id === actorUser.id) return;

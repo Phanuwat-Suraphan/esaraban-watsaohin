@@ -8,6 +8,7 @@ import {
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
   isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep,
+  adminReassignStep, adminAddAssignees, adminRemoveAssignee, MAX_PARALLEL_ASSIGNEES,
   broadcastDocument, listBroadcasts, canBroadcast,
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
@@ -1719,6 +1720,159 @@ router.get('/documents/:id', requirePage((ctx) => {
       </script>` : ''}
     </div>` : '';
 
+  // ผู้ดูแลระบบแก้การมอบหมายได้ทุกขั้นที่ยังไม่มีใครลงนาม — ไม่ใช่แค่ขั้นล่าสุด และไม่ต้องรอให้บัญชี
+  // ของผู้ถือเรื่องถูกปิดก่อนแบบกล่อง "เรื่องนี้ค้างอยู่" ข้างบน (ดูเหตุผลเต็มใน workflow.js)
+  const waitingSteps = steps.filter((st) => st.status === 'waiting');
+  const stepOrders = [...new Set(steps.map((st) => st.step_order))];
+  const adminFixBox = ctx.user.roleCodes.includes('admin') && steps.length ? `
+    <div class="card">
+      <div class="card-header"><h3 class="mt-0">🛠️ แก้ไขการมอบหมาย <span class="badge badge-muted">ผู้ดูแลระบบ</span></h3></div>
+      ${waitingSteps.length ? `
+      <p class="text-muted" style="margin-top:0;font-size:.85rem">
+        เปลี่ยนตัวผู้รับผิดชอบได้ทุกขั้นที่ยังไม่มีใครลงนาม — ใช้เมื่อเลือกผิดคน ครูลายาว
+        หรือย้ายงานกันกลางเทอม ระบบจะแจ้งเตือนทั้งคนเดิมและคนใหม่ และบันทึกไว้ในประวัติของหนังสือ
+      </p>
+      ${waitingSteps.map((st) => `
+        <div class="admin-fix-row" style="padding:.6rem 0;border-top:1px solid var(--border)">
+          <div style="margin-bottom:.4rem">
+            <span class="badge badge-muted">ขั้นที่ ${st.step_order}</span>
+            <strong style="margin-left:.4rem">${esc(st.prefix || '')}${esc(st.first_name)} ${esc(st.last_name)}</strong>
+            <span class="text-muted" style="font-size:.82rem">${esc(st.position || '')}</span>
+          </div>
+          <div class="form-grid cols-2">
+            <div class="field">
+              <label>เปลี่ยนเป็น</label>
+              <select id="fixTo-${esc(st.id)}">
+                <option value="">— เลือกผู้รับผิดชอบคนใหม่ —</option>
+                ${listUserOptions(st.assignee_id)}
+              </select>
+            </div>
+            <div class="field">
+              <label>เหตุผล *</label>
+              <input type="text" id="fixWhy-${esc(st.id)}" maxlength="200" placeholder="เช่น ครูลาคลอด / เลือกผิดคน" />
+            </div>
+          </div>
+          <div class="chip-row">
+            <button class="btn btn-primary btn-sm" type="button" onclick="adminFixStep('${esc(st.id)}', this)">บันทึกการเปลี่ยนตัว</button>
+            ${waitingSteps.length > 1 ? `<button class="btn btn-outline btn-sm" type="button" onclick="adminDropStep('${esc(st.id)}', this)">✖️ ยกเลิกการมอบหมายคนนี้</button>` : ''}
+          </div>
+        </div>`).join('')}
+      ` : `<p class="text-muted" style="margin-top:0;font-size:.85rem">
+        ตอนนี้ไม่มีขั้นตอนที่ยังรอดำเนินการอยู่ — เพิ่มผู้รับผิดชอบด้านล่างได้ถ้าต้องให้มีคนทำต่อ
+      </p>`}
+
+      <div style="padding-top:.6rem;border-top:1px solid var(--border)">
+        <h4 style="margin:.2rem 0 .4rem">เพิ่มผู้รับผิดชอบในขั้นที่มีอยู่</h4>
+        <!-- ขั้นที่ลงนามไปแล้วเปลี่ยนชื่อคนลงนามย้อนหลังไม่ได้ (เป็นหลักฐาน) แต่ "เพิ่มคนให้ทำต่อ"
+             ในขั้นเดียวกันได้ ซึ่งเป็นทางออกที่ถูกต้องเมื่อมอบหมายตกหล่นหรือมอบผิดคนไปแล้ว -->
+        <div class="form-grid cols-2">
+          <div class="field">
+            <label>เพิ่มเข้าในขั้นที่</label>
+            <select id="addOrder" onchange="syncAddList()">
+              ${stepOrders.map((o) => `<option value="${o}"${o === stepOrders[stepOrders.length - 1] ? ' selected' : ''}>ขั้นที่ ${o}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label>เหตุผล <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+            <input type="text" id="addWhy" maxlength="200" placeholder="เช่น ตกหล่นตอนสั่งการ" />
+          </div>
+        </div>
+        <div class="field">
+          <label>เลือกคนที่จะเพิ่ม (ติ๊กได้หลายคน)</label>
+          <div class="assignee-pick" id="addAssigneeList">
+            ${listUserCheckboxes(null)
+              .replace(/class="nextAssignee" value="([^"]+)"/g, 'class="addAssignee" data-uid="$1" value="$1"')
+              .replace(/ onchange="[^"]*"/g, '')}
+          </div>
+        </div>
+        <button class="btn btn-outline btn-sm" type="button" onclick="adminAddPeople(this)">➕ เพิ่มผู้รับผิดชอบ</button>
+        <div class="help-text">คนที่เพิ่มจะอยู่ขั้นเดียวกับคนอื่นในขั้นนั้น ไม่ใช่ต่อคิวเป็นขั้นใหม่ — ตรงกับการสั่งการถึงหลายคนพร้อมกันบนกระดาษ</div>
+      </div>
+
+      ${steps.some(isSignedStep) ? `
+      <div class="callout-tip" style="margin-top:.7rem">
+        ขั้นที่ลงนามไปแล้วไม่มีให้เปลี่ยนตัวในรายการนี้โดยตั้งใจ — สถานะนั้นแปลว่าเจ้าตัวยืนยันด้วย PIN
+        ของตัวเองไปแล้ว และชื่อกับลายเซ็นอาจถูกประทับลงไฟล์ PDF ฉบับจริงไปแล้วด้วย
+        ถ้ามอบหมายผิดคนและเจ้าตัวลงนามไปแล้ว ให้ <strong>เพิ่มผู้รับผิดชอบ</strong> ที่ถูกต้องแทน
+      </div>` : ''}
+
+      <script>
+        // คนที่ได้รับมอบหมายในแต่ละขั้นอยู่แล้ว — ต้องปิดไม่ให้ติ๊กซ้ำ ไม่งั้นผู้ดูแลจะติ๊กแล้วกดเพิ่ม
+        // แล้วถูกเซิร์ฟเวอร์ตีกลับว่า "ได้รับมอบหมายในขั้นนี้อยู่แล้ว" โดยที่หน้าเว็บไม่เคยบอกใบ้เลย
+        // ว่าใครอยู่ในขั้นไหนบ้าง (เจอตอนเดินผ่านเบราว์เซอร์จริง)
+        var ASSIGNED_BY_ORDER = ${JSON.stringify(
+          Object.fromEntries(stepOrders.map((o) => [String(o), steps.filter((st) => st.step_order === o).map((st) => st.assignee_id)])),
+        )};
+        function syncAddList() {
+          var order = document.getElementById('addOrder').value;
+          var taken = ASSIGNED_BY_ORDER[order] || [];
+          Array.prototype.forEach.call(document.querySelectorAll('.addAssignee'), function (el) {
+            var already = taken.indexOf(el.getAttribute('data-uid')) !== -1;
+            el.disabled = already;
+            if (already) el.checked = false;
+            var row = el.closest('label');
+            if (row) {
+              row.style.opacity = already ? '.45' : '';
+              row.title = already ? 'ได้รับมอบหมายในขั้นนี้อยู่แล้ว' : '';
+            }
+          });
+        }
+        window.addEventListener('load', syncAddList);
+
+        function adminFixStep(stepId, btn) {
+          var to = document.getElementById('fixTo-' + stepId).value;
+          var why = document.getElementById('fixWhy-' + stepId).value.trim();
+          if (!to) { toast('กรุณาเลือกผู้รับผิดชอบคนใหม่', 'warning'); return; }
+          if (!why) { toast('กรุณาระบุเหตุผล', 'warning'); document.getElementById('fixWhy-' + stepId).focus(); return; }
+          if (!confirm('ยืนยันเปลี่ยนตัวผู้รับผิดชอบ?\\n\\nระบบจะแจ้งเตือนทั้งคนเดิมและคนใหม่ และบันทึกไว้ในประวัติของหนังสือฉบับนี้')) return;
+          window.setBtnLoading(btn, 'กำลังบันทึก...');
+          fetch('/documents/${doc.id}/workflow/' + stepId + '/admin-reassign', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ assigneeId: to, reason: why }),
+          }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){
+              if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
+              toast('เปลี่ยนจาก ' + res.d.from + ' เป็น ' + res.d.to + ' แล้ว', 'success');
+              setTimeout(function(){ location.reload(); }, 1200);
+            })
+            .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        }
+        function adminDropStep(stepId, btn) {
+          var why = document.getElementById('fixWhy-' + stepId).value.trim();
+          if (!confirm('ยกเลิกการมอบหมายของคนนี้?\\n\\nเรื่องจะหายจากรายการงานของเขา และระบบจะแจ้งเตือนให้ทราบ')) return;
+          window.setBtnLoading(btn, 'กำลังบันทึก...');
+          fetch('/documents/${doc.id}/workflow/' + stepId + '/admin-remove', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ reason: why }),
+          }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){
+              if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
+              toast('ยกเลิกการมอบหมายของ ' + res.d.removed + ' แล้ว', 'success');
+              setTimeout(function(){ location.reload(); }, 1200);
+            })
+            .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        }
+        function adminAddPeople(btn) {
+          var ids = Array.prototype.map.call(document.querySelectorAll('.addAssignee:checked'), function(el){ return el.value; });
+          if (!ids.length) { toast('กรุณาเลือกอย่างน้อยหนึ่งคน', 'warning'); return; }
+          window.setBtnLoading(btn, 'กำลังบันทึก...');
+          fetch('/documents/${doc.id}/workflow/add-assignees', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              stepOrder: document.getElementById('addOrder').value,
+              assigneeIds: ids,
+              reason: document.getElementById('addWhy').value.trim(),
+            }),
+          }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){
+              if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
+              toast('เพิ่มผู้รับผิดชอบ ' + res.d.added + ' คนแล้ว', 'success');
+              setTimeout(function(){ location.reload(); }, 1200);
+            })
+            .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        }
+      </script>
+    </div>` : '';
+
   const assignBox = canAssign ? `
     <div class="card">
       <h3>${doc.status === 'returned' ? 'แก้ไขแล้วเสนอใหม่' : 'เสนอ / มอบหมายงาน'}</h3>
@@ -2250,6 +2404,7 @@ router.get('/documents/:id', requirePage((ctx) => {
 
       <div class="doc-side">
         ${stuckBox}
+        ${adminFixBox}
         ${actionBox}
         ${assignBox}
         ${broadcastBox}
@@ -2409,6 +2564,27 @@ router.post('/documents/:id/workflow/:stepId/reassign', requireApi(async (ctx) =
   assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
   reassignStuckStep({ stepId: ctx.params.stepId, newAssigneeId: ctx.body.assigneeId, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
+}));
+
+// ผู้ดูแลระบบแก้การมอบหมายของขั้นที่ยังไม่มีใครลงนาม — ทุกขั้นที่ยังค้าง ไม่ใช่แค่ขั้นล่าสุด
+// (ต่างจาก /reassign ข้างบน ซึ่งใช้ได้เฉพาะตอนที่บัญชีของผู้ถือเรื่องถูกปิดไปแล้ว) ดูเหตุผลเต็มใน workflow.js
+router.post('/documents/:id/workflow/:stepId/admin-reassign', requireApi(async (ctx) => {
+  assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
+  json(ctx, 200, adminReassignStep({
+    stepId: ctx.params.stepId, newAssigneeId: ctx.body.assigneeId, reason: ctx.body.reason, actorUser: ctx.user,
+  }));
+}));
+
+router.post('/documents/:id/workflow/:stepId/admin-remove', requireApi(async (ctx) => {
+  assertStepBelongsToDocument(ctx.params.id, ctx.params.stepId);
+  json(ctx, 200, adminRemoveAssignee({ stepId: ctx.params.stepId, reason: ctx.body.reason, actorUser: ctx.user }));
+}));
+
+router.post('/documents/:id/workflow/add-assignees', requireApi(async (ctx) => {
+  json(ctx, 200, adminAddAssignees({
+    documentId: ctx.params.id, stepOrder: ctx.body.stepOrder, assigneeIds: ctx.body.assigneeIds,
+    reason: ctx.body.reason, actorUser: ctx.user,
+  }));
 }));
 
 router.post('/documents/:id/void', requireApi(async (ctx) => {

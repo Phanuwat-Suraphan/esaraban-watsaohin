@@ -6052,6 +6052,224 @@ describe('ประชาสัมพันธ์: ส่งให้ทุก�
   });
 });
 
+// ผู้ดูแลระบบแก้การมอบหมายได้ทุกขั้นที่ยังไม่มีใครลงนาม
+//
+// เดิมมีแต่ reassignStuckStep ซึ่งใช้ได้เฉพาะตอนที่บัญชีของผู้ถือเรื่องถูกปิดไปแล้ว แต่เรื่องที่ต้องแก้จริง
+// ในโรงเรียนมีมากกว่านั้นมาก: ผอ. กดเลือกผิดคน (ชื่อครูคล้ายกันอยู่ติดกันในรายการ) ครูลาคลอด/ลาป่วยยาว
+// โดยไม่ได้ตั้งผู้รักษาการแทน หรือย้ายงานกันกลางเทอม — ทั้งหมดนี้เดิมไม่มีทางแก้ในระบบเลย
+describe('ผู้ดูแลระบบแก้การมอบหมายได้ทุกขั้นที่ยังไม่ลงนาม', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  let wf;
+  before(async () => { wf = await import('../src/services/workflow.js'); });
+
+  let n = 0;
+  // หนังสือที่ ผอ. สั่งการถึงหลายคนพร้อมกัน — ขั้นเดียวกันมีหลายคน ซึ่งเป็นรูปแบบปกติของโรงเรียน
+  const makeDocWithSteps = (assignees) => {
+    const doc = makeDoc({ title: `หนังสือสำหรับแก้การมอบหมาย ${++n}` });
+    const first = assignStep({ documentId: doc.id, assigneeId: assignees[0], actorUser: registrarUser });
+    for (const id of assignees.slice(1)) {
+      db.prepare(`
+        INSERT INTO workflow_steps (id, document_id, step_order, assignee_id, status, created_at)
+        VALUES (?, ?, (SELECT step_order FROM workflow_steps WHERE id = ?), ?, 'waiting', ?)
+      `).run(uuid(), doc.id, first, id, nowIso());
+    }
+    return { doc, firstStepId: first };
+  };
+  const stepsOf = (docId) => db.prepare('SELECT * FROM workflow_steps WHERE document_id = ? ORDER BY created_at, rowid').all(docId);
+
+  test('เปลี่ยนตัวผู้รับผิดชอบได้แม้บัญชีคนเดิมยังใช้งานได้ตามปกติ', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/${firstStepId}/admin-reassign`,
+      { assigneeId: seed.userIds.head_acad, reason: 'ครูลาคลอด' });
+    assert.equal(res.status, 200, res.body);
+
+    const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(firstStepId);
+    assert.equal(step.assignee_id, seed.userIds.head_acad, 'ต้องย้ายไปที่คนใหม่');
+    assert.equal(step.status, 'waiting');
+    assert.match(step.instruction, /เปลี่ยนผู้รับผิดชอบ/, 'ต้องมีร่องรอยบนไทม์ไลน์');
+    assert.match(step.instruction, /ครูลาคลอด/, 'ต้องบันทึกเหตุผลไว้ด้วย');
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ?').get(doc.id).c, 1,
+      'ต้องไม่เกิดขั้นตอนซ้ำ ลำดับการเดินหนังสือต้องไม่เพี้ยน');
+    // คนใหม่ต้องทำงานต่อได้จริง ไม่ใช่แค่ชื่อเปลี่ยน
+    assert.doesNotThrow(() => acknowledgeAndComplete({ stepId: firstStepId, actorUser: loadUserForTest(seed.userIds.head_acad) }));
+  });
+
+  // คนเดิมต้องรู้ด้วย ไม่ใช่แค่คนใหม่ — เรื่องหายไปจากรายการงานของเขาเฉยๆ โดยไม่มีอะไรบอก
+  // คือสิ่งที่ทำให้คนเลิกเชื่อระบบ และเขาอาจกำลังทำเรื่องนั้นค้างอยู่บนกระดาษ
+  test('ต้องแจ้งเตือนทั้งคนเดิมและคนใหม่', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    const countFor = (uid) => db.prepare('SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND document_id = ?').get(uid, doc.id).c;
+    const beforeOld = countFor(seed.userIds.teacher001);
+    const beforeNew = countFor(seed.userIds.head_acad);
+
+    await dispatchPost(admin(), `/documents/${doc.id}/workflow/${firstStepId}/admin-reassign`,
+      { assigneeId: seed.userIds.head_acad, reason: 'เลือกผิดคน' });
+
+    assert.ok(countFor(seed.userIds.teacher001) > beforeOld, 'คนเดิมต้องได้รับแจ้งว่าเรื่องถูกย้ายไปแล้ว');
+    assert.ok(countFor(seed.userIds.head_acad) > beforeNew, 'คนใหม่ต้องได้รับแจ้งว่ามีงานเข้า');
+    const msg = db.prepare(`SELECT title, message FROM notifications WHERE user_id = ? AND document_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .get(seed.userIds.teacher001, doc.id);
+    assert.match(msg.title + msg.message, /เปลี่ยนผู้รับผิดชอบ|ดำเนินการแทน/, 'ข้อความต้องบอกว่าเกิดอะไรขึ้น');
+    assert.match(msg.message, /เลือกผิดคน/, 'ต้องบอกเหตุผลให้คนเดิมรู้ด้วย');
+  });
+
+  test('ต้องระบุเหตุผลเสมอ — เป็นการดึงเรื่องออกจากมือคนที่ถืออยู่', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/${firstStepId}/admin-reassign`,
+      { assigneeId: seed.userIds.head_acad, reason: '   ' });
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+    assert.equal(db.prepare('SELECT assignee_id FROM workflow_steps WHERE id = ?').get(firstStepId).assignee_id,
+      seed.userIds.teacher001, 'ต้องไม่เปลี่ยนอะไรเลย');
+  });
+
+  test('คนที่ไม่ใช่ผู้ดูแลระบบแก้ไม่ได้ แม้แต่ธุรการผู้บันทึกเอกสารเอง', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    for (const [label, who] of [['ครู', teacherUser], ['ธุรการผู้บันทึก', registrarUser]]) {
+      const res = await dispatchPost(who, `/documents/${doc.id}/workflow/${firstStepId}/admin-reassign`,
+        { assigneeId: seed.userIds.head_acad, reason: 'ลอง' });
+      assert.equal(res.status, 403, `${label} ต้องทำไม่ได้ (ได้ ${res.status})`);
+    }
+    assert.equal(db.prepare('SELECT assignee_id FROM workflow_steps WHERE id = ?').get(firstStepId).assignee_id,
+      seed.userIds.teacher001);
+  });
+
+  // ขั้นที่ลงนามไปแล้วคือหลักฐานว่าใครยืนยันด้วย PIN ของตัวเอง และชื่อกับลายเซ็นอาจถูกประทับลงไฟล์
+  // PDF ฉบับจริงไปแล้ว การแก้ว่า "คนที่ลงนามคือใคร" ย้อนหลังคือการแก้หลักฐาน ไม่ใช่การแก้การมอบหมาย
+  test('ขั้นที่ลงนามไปแล้วต้องเปลี่ยนชื่อผู้ลงนามย้อนหลังไม่ได้ และต้องบอกทางออกที่ถูกต้อง', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    acknowledgeAndComplete({ stepId: firstStepId, actorUser: loadUserForTest(seed.userIds.teacher001) });
+
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/${firstStepId}/admin-reassign`,
+      { assigneeId: seed.userIds.head_acad, reason: 'อยากเปลี่ยน' });
+    assert.equal(res.status, 409, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+    assert.match(res.json.error || '', /หลักฐาน/, 'ต้องบอกว่าเป็นหลักฐานการลงนาม');
+    assert.match(res.json.error || '', /เพิ่มผู้รับผิดชอบ/, 'ต้องบอกทางออกที่ถูกต้อง');
+    assert.equal(db.prepare('SELECT assignee_id FROM workflow_steps WHERE id = ?').get(firstStepId).assignee_id,
+      seed.userIds.teacher001, 'ชื่อผู้ลงนามต้องไม่ถูกแก้');
+  });
+
+  test('แก้ได้ทุกขั้นที่ยังค้าง ไม่ใช่แค่ขั้นล่าสุด', async () => {
+    const { doc } = makeDocWithSteps([seed.userIds.teacher001, seed.userIds.head_acad, seed.userIds.vicedir01]);
+    const all = stepsOf(doc.id);
+    assert.equal(all.length, 3, 'ต้องมีสามคนอยู่ขั้นเดียวกัน');
+
+    // แก้คนที่อยู่กลางรายการ ไม่ใช่คนแรกหรือคนล่าสุด
+    const middle = all[1];
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/${middle.id}/admin-reassign`,
+      { assigneeId: seed.userIds.director01, reason: 'ย้ายงาน' });
+    assert.equal(res.status, 200, res.body);
+    const after = stepsOf(doc.id);
+    assert.equal(after[1].assignee_id, seed.userIds.director01, 'คนกลางต้องเปลี่ยน');
+    assert.equal(after[0].assignee_id, all[0].assignee_id, 'คนอื่นในขั้นเดียวกันต้องไม่ถูกแตะ');
+    assert.equal(after[2].assignee_id, all[2].assignee_id);
+  });
+
+  test('เปลี่ยนไปเป็นคนที่ถือขั้นเดียวกันอยู่แล้ว ต้องถูกปฏิเสธ', async () => {
+    const { doc } = makeDocWithSteps([seed.userIds.teacher001, seed.userIds.head_acad]);
+    const all = stepsOf(doc.id);
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/${all[0].id}/admin-reassign`,
+      { assigneeId: seed.userIds.head_acad, reason: 'ซ้ำ' });
+    assert.equal(res.status, 409, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+  });
+
+  test('เพิ่มผู้รับผิดชอบเข้าไปในขั้นเดิมได้ และคนที่เพิ่มต้องอยู่ขั้นเดียวกัน', async () => {
+    const { doc } = makeDocWithSteps([seed.userIds.teacher001]);
+    const order = stepsOf(doc.id)[0].step_order;
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/add-assignees`,
+      { stepOrder: order, assigneeIds: [seed.userIds.head_acad, seed.userIds.vicedir01], reason: 'ตกหล่นตอนสั่งการ' });
+    assert.equal(res.status, 200, res.body);
+    assert.equal(res.json.added, 2);
+
+    const after = stepsOf(doc.id);
+    assert.equal(after.length, 3);
+    assert.ok(after.every((st) => st.step_order === order),
+      'ทุกคนต้องอยู่ขั้นเดียวกัน ไม่ใช่ต่อคิวเป็นขั้นใหม่ — บนกระดาษทุกคนได้รับคำสั่งเดียวกันพร้อมกัน');
+    assert.ok(after.every((st) => st.status === 'waiting'));
+  });
+
+  // งานที่เพิ่งมอบหมายต้องไม่ไปค้างอยู่ในหนังสือที่ขึ้นว่า "เสร็จสิ้น" แล้ว ซึ่งไม่มีใครตามต่อ
+  test('เพิ่มคนเข้าไปในหนังสือที่ปิดไปแล้ว ต้องกลับมาเป็นกำลังดำเนินการ', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    acknowledgeAndComplete({ stepId: firstStepId, actorUser: loadUserForTest(seed.userIds.teacher001) });
+    assert.equal(getDocRow(doc.id).status, 'completed', 'ต้องปิดเรื่องไปแล้วจริง');
+
+    const order = stepsOf(doc.id)[0].step_order;
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/add-assignees`,
+      { stepOrder: order, assigneeIds: [seed.userIds.head_acad], reason: 'มอบผิดคน ให้คนนี้ทำต่อ' });
+    assert.equal(res.status, 200, res.body);
+    const row = getDocRow(doc.id);
+    assert.equal(row.status, 'in_progress', 'หนังสือต้องกลับมาเป็นกำลังดำเนินการ');
+    assert.equal(row.completed_at, null, 'ต้องล้างเวลาเสร็จสิ้นด้วย ไม่งั้นตัวเลขระยะเวลาในรายงานจะเพี้ยน');
+  });
+
+  test('ยกเลิกการมอบหมายของคนหนึ่งในขั้นที่มีหลายคนได้', async () => {
+    const { doc } = makeDocWithSteps([seed.userIds.teacher001, seed.userIds.head_acad]);
+    const all = stepsOf(doc.id);
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/${all[1].id}/admin-remove`,
+      { reason: 'ไม่เกี่ยวกับเรื่องนี้' });
+    assert.equal(res.status, 200, res.body);
+    const after = stepsOf(doc.id);
+    assert.equal(after.length, 1, 'ต้องเหลือคนเดียว');
+    assert.equal(after[0].assignee_id, seed.userIds.teacher001);
+    const note = db.prepare('SELECT title, message FROM notifications WHERE user_id = ? AND document_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(seed.userIds.head_acad, doc.id);
+    assert.match(note.title, /ยกเลิกการมอบหมาย/, 'คนที่ถูกถอดต้องได้รับแจ้ง');
+  });
+
+  // ถ้าลบจนไม่เหลือใคร หนังสือจะค้างเป็นผีที่ไม่โผล่ในรายการงานของใครเลย
+  test('ลบผู้รับผิดชอบคนสุดท้ายไม่ได้ ต้องบอกให้ใช้ "ยกเลิกเอกสาร" แทน', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    const res = await dispatchPost(admin(), `/documents/${doc.id}/workflow/${firstStepId}/admin-remove`, { reason: 'ลอง' });
+    assert.equal(res.status, 409, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+    assert.match(res.json.error || '', /ยกเลิกเอกสาร/, 'ต้องบอกทางที่ถูกต้อง');
+    assert.equal(stepsOf(doc.id).length, 1, 'ต้องยังมีคนถือเรื่องอยู่');
+  });
+
+  test('ประวัติการใช้งานต้องเก็บว่าใครเปลี่ยนจากใครเป็นใคร เพราะอะไร', async () => {
+    const { doc, firstStepId } = makeDocWithSteps([seed.userIds.teacher001]);
+    await dispatchPost(admin(), `/documents/${doc.id}/workflow/${firstStepId}/admin-reassign`,
+      { assigneeId: seed.userIds.head_acad, reason: 'ครูย้ายฝ่าย' });
+    const row = db.prepare(`SELECT user_id, detail FROM audit_logs WHERE record_id = ? AND action = 'workflow_reassigned_by_admin' ORDER BY created_at DESC LIMIT 1`).get(firstStepId);
+    assert.ok(row, 'ต้องมีบันทึก');
+    assert.equal(row.user_id, seed.userIds.admin, 'ต้องรู้ว่าใครเป็นคนสั่ง');
+    const d = JSON.parse(row.detail);
+    assert.equal(d.from, seed.userIds.teacher001);
+    assert.equal(d.to, seed.userIds.head_acad);
+    assert.equal(d.reason, 'ครูย้ายฝ่าย');
+  });
+
+  // เจอตอนเดินผ่านเบราว์เซอร์จริง: ผู้ดูแลติ๊กคนที่อยู่ในขั้นนั้นอยู่แล้วแล้วกดเพิ่ม เซิร์ฟเวอร์ตีกลับว่า
+  // "ได้รับมอบหมายในขั้นนี้อยู่แล้ว" โดยที่หน้าเว็บไม่เคยบอกใบ้เลยว่าใครอยู่ในขั้นไหนบ้าง
+  test('รายชื่อสำหรับเพิ่มต้องปิดคนที่อยู่ในขั้นนั้นอยู่แล้ว ไม่ให้ติ๊กซ้ำ', async () => {
+    const { doc } = makeDocWithSteps([seed.userIds.teacher001, seed.userIds.head_acad]);
+    const res = await dispatchGet(admin(), `/documents/${doc.id}`, {});
+    assert.equal(res.status, 200);
+    // หน้าเว็บต้องส่งรายชื่อคนที่อยู่ในแต่ละขั้นไปให้สคริปต์ปิดช่องติ๊กเอง
+    assert.match(res.body, /ASSIGNED_BY_ORDER/, 'ต้องมีตารางบอกว่าใครอยู่ขั้นไหน');
+    const map = /var ASSIGNED_BY_ORDER = (\{.*?\});/s.exec(res.body);
+    assert.ok(map, 'ต้องอ่านค่าตารางได้');
+    const parsed = JSON.parse(map[1]);
+    const ids = Object.values(parsed).flat();
+    assert.ok(ids.includes(seed.userIds.teacher001) && ids.includes(seed.userIds.head_acad),
+      'ต้องมีชื่อคนที่ถือขั้นนั้นอยู่ครบ');
+    assert.match(res.body, /data-uid=/, 'ช่องติ๊กต้องมีรหัสผู้ใช้ให้สคริปต์จับคู่ได้');
+  });
+
+  test('หน้าเอกสารต้องมีกล่องแก้การมอบหมายให้แอดมินเท่านั้น', async () => {
+    const { doc } = makeDocWithSteps([seed.userIds.teacher001]);
+    const forAdmin = await dispatchGet(admin(), `/documents/${doc.id}`, {});
+    assert.equal(forAdmin.status, 200);
+    assert.match(forAdmin.body, /แก้ไขการมอบหมาย/, 'แอดมินต้องเห็นกล่องนี้');
+    assert.match(forAdmin.body, /admin-reassign/, 'ต้องมีปุ่มที่ยิงไปเส้นทางจริง');
+
+    for (const [label, who] of [['ธุรการ', registrarUser], ['ครู', teacherUser]]) {
+      const res = await dispatchGet(who, `/documents/${doc.id}`, {});
+      assert.ok(!/แก้ไขการมอบหมาย/.test(res.body), `${label} ต้องไม่เห็นกล่องนี้`);
+      assert.ok(!/admin-reassign/.test(res.body), `${label} ต้องไม่เห็นเส้นทางนี้ในหน้า`);
+    }
+  });
+});
+
 describe('หนังสือที่ค้างอยู่กับคนที่ปิดบัญชีไปแล้ว ต้องกู้ได้', () => {
   let docId; let stepId; let leaverId;
   const anyDepartmentId = () => deptId;

@@ -5353,6 +5353,112 @@ describe('ผู้ดูแลแก้ ID / อีเมล ของคำข
 // ตามระเบียบงานสารบรรณ ทะเบียนหนังสือส่งเป็นสมุดของเจ้าหน้าที่ธุรการ ครูที่จะส่งหนังสือออกต้องขอเลข
 // จากธุรการก่อน ไม่ใช่ดึงเลขถัดไปมาใช้เอง — เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ ถ้าใครก็กดออกเลขได้
 // จะเกิดเลขที่จองไว้แล้วไม่ได้ใช้ กลายเป็นเลขขาดหายในทะเบียนที่อธิบายไม่ได้ตอนตรวจ
+// รหัสหนังสือของโรงเรียน — ทำให้เลขหนังสือส่งตรงรูปแบบตามระเบียบงานสารบรรณ
+//
+// ตามระเบียบฯ ข้อ 11.1 (หนังสือภายนอก) และข้อ 12.1 (บันทึกข้อความ) ช่อง "ที่" คือ
+// "รหัสตัวพยัญชนะและเลขประจำของเจ้าของเรื่อง ทับ เลขทะเบียนหนังสือส่ง" เช่น ศธ 04056.12/45
+// ไม่ใช่ 0045/2569 ซึ่งเป็นรูปแบบของทะเบียนภายใน
+describe('รหัสหนังสือของโรงเรียน (เลขหนังสือส่งตามระเบียบ)', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  let settings; let numbering;
+  before(async () => {
+    settings = await import('../src/services/settings.js');
+    numbering = await import('../src/numbering.js');
+  });
+  const setPrefix = (v) => settings.setSetting({ key: 'outgoing_number_prefix', value: v, actorUser: admin() });
+  after(() => setPrefix(''));
+
+  let n = 0;
+  const makeOutgoing = () => makeDoc({ direction: 'outgoing', title: `หนังสือส่งทดสอบรหัส ${++n}` });
+
+  test('ยังไม่ตั้งรหัส ต้องออกเลขแบบเดิมทุกอย่าง', () => {
+    setPrefix('');
+    const doc = makeOutgoing();
+    const row = getDocRow(doc.id);
+    assert.match(row.doc_number_display, /^\d{4}\/\d{4}$/, `ต้องเป็นรูปแบบเดิม 0045/2569 — ได้ ${row.doc_number_display}`);
+  });
+
+  test('ตั้งรหัสแล้ว หนังสือส่งต้องได้เลขตามระเบียบ', () => {
+    setPrefix('ศธ 04056.12');
+    const doc = makeOutgoing();
+    const row = getDocRow(doc.id);
+    assert.match(row.doc_number_display, /^ศธ 04056\.12\/\d+$/,
+      `ต้องเป็น "ศธ 04056.12/<เลขทะเบียนส่ง>" — ได้ ${row.doc_number_display}`);
+    // ห้ามมีปีอยู่ในตัวเลขที่ — ตามระเบียบปีอยู่บรรทัด "วันที่" ไม่ใช่ในช่อง "ที่"
+    assert.ok(!row.doc_number_display.includes(String(row.year_be)),
+      'เลขที่ต้องไม่มีปีอยู่ในตัว เพราะปีอยู่บรรทัดวันที่ตามระเบียบ');
+    // เลขหลังทับต้องเป็นเลขทะเบียนส่งจริง ไม่เติมศูนย์นำหน้า (บนหนังสือเขียน /45 ไม่ใช่ /0045)
+    assert.equal(row.doc_number_display, `ศธ 04056.12/${row.running_number}`);
+  });
+
+  test('เลขทะเบียนส่งยังเรียงต่อกันตามเดิม ไม่ว่าจะตั้งรหัสหรือไม่', () => {
+    setPrefix('');
+    const a = getDocRow(makeOutgoing().id);
+    setPrefix('ศธ 04056.12');
+    const b = getDocRow(makeOutgoing().id);
+    setPrefix('');
+    const c = getDocRow(makeOutgoing().id);
+    assert.equal(b.running_number, a.running_number + 1, 'ตัวนับต้องเดินต่อ ไม่ใช่เริ่มใหม่');
+    assert.equal(c.running_number, b.running_number + 1);
+  });
+
+  // ทะเบียนรับเป็นสมุดภายในของโรงเรียน ไม่ใช่เลขที่ปรากฏบนหนังสือที่ส่งออกไปข้างนอก
+  // จึงต้องไม่ติดรหัสส่วนราชการไปด้วย
+  test('หนังสือรับต้องไม่ติดรหัสไปด้วย แม้จะตั้งรหัสไว้แล้ว', () => {
+    setPrefix('ศธ 04056.12');
+    const doc = makeDoc({ direction: 'incoming', title: `หนังสือรับทดสอบรหัส ${++n}` });
+    const row = getDocRow(doc.id);
+    assert.match(row.doc_number_display, /^\d{4}\/\d{4}$/,
+      `เลขทะเบียนรับต้องเป็นรูปแบบเดิม — ได้ ${row.doc_number_display}`);
+    assert.ok(!row.doc_number_display.includes('ศธ'), 'ทะเบียนรับต้องไม่มีรหัสส่วนราชการ');
+  });
+
+  test('เลขที่ธุรการพิมพ์เองยังชนะรหัสเสมอ', () => {
+    setPrefix('ศธ 04056.12');
+    const doc = makeDoc({ direction: 'outgoing', title: `พิมพ์เลขเอง ${++n}`, customDocNumber: 'พิเศษ 1/2569' });
+    assert.equal(getDocRow(doc.id).doc_number_display, 'พิเศษ 1/2569');
+  });
+
+  test('หน้าตั้งค่ามีช่องกรอกรหัส และโชว์ตัวอย่างเลขถัดไป', async () => {
+    setPrefix('ศธ 04056.12');
+    const res = await dispatchGet(admin(), '/admin/settings', {});
+    assert.equal(res.status, 200);
+    assert.match(res.body, /id="outgoing_number_prefix"/, 'ต้องมีช่องกรอกรหัส');
+    assert.match(res.body, /ศธ 04056\.12\/\d+/, 'ต้องโชว์ตัวอย่างเลขถัดไปที่จะออก');
+    // ต้องบอกด้วยว่ารหัสนี้เอามาจากไหน ไม่งั้นผู้ดูแลจะกรอกมั่ว
+    assert.match(res.body, /เขตพื้นที่การศึกษา/, 'ต้องบอกว่ารหัสได้มาจากเขตพื้นที่');
+  });
+
+  test('ผู้ดูแลบันทึกรหัสผ่านหน้าเว็บได้ และมีผลกับเลขที่ออกทันที', async () => {
+    setPrefix('');
+    const res = await dispatchPost(admin(), '/admin/settings', {
+      school_name: 'โรงเรียนวัดเสาหิน', school_short_name: '', school_initials: '',
+      outgoing_number_prefix: 'ศธ 04099.07',
+    });
+    assert.equal(res.status, 200, res.body);
+    assert.equal(settings.outgoingNumberPrefix(), 'ศธ 04099.07');
+    assert.match(getDocRow(makeOutgoing().id).doc_number_display, /^ศธ 04099\.07\/\d+$/);
+  });
+
+  test('ตัวอย่างเลขถัดไปต้องไม่กินเลขจริง', () => {
+    setPrefix('ศธ 04056.12');
+    const before = db.prepare("SELECT running_number FROM document_number_counters WHERE direction = 'outgoing' AND year_be = ?")
+      .get(beYear())?.running_number || 0;
+    numbering.previewNextNumber('outgoing');
+    numbering.previewNextNumber('outgoing');
+    const after = db.prepare("SELECT running_number FROM document_number_counters WHERE direction = 'outgoing' AND year_be = ?")
+      .get(beYear())?.running_number || 0;
+    assert.equal(after, before, 'การดูตัวอย่างต้องไม่ขยับตัวนับ');
+  });
+
+  test('รหัสที่ยาวเกินกำหนดต้องถูกปฏิเสธ', async () => {
+    const res = await dispatchPost(admin(), '/admin/settings', {
+      school_name: 'โรงเรียนวัดเสาหิน', outgoing_number_prefix: 'ศ'.repeat(200),
+    });
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status})`);
+  });
+});
+
 describe('ขอเลขหนังสือส่ง', () => {
   const teacher = () => loadUserForTest(seed.userIds.teacher001);
   const registrar = () => loadUserForTest(seed.userIds.reg001);

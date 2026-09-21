@@ -8,6 +8,7 @@ import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
 import { asText, asTextOrNull, normalizeEmployeeCode, MAX_EMPLOYEE_CODE } from '../services/validate.js';
 import { getSetting, setSetting, MAX_SETTING_LENGTH } from '../services/settings.js';
+import { previewNextNumber } from '../numbering.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
@@ -71,6 +72,26 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
             value="${esc(getSetting('school_initials'))}" placeholder="ไม่กรอก = ${esc(schoolInitials())}" style="max-width:8rem" />
           <div class="help-text">ตัวอักษรในวงกลมมุมบนซ้ายและหน้าเข้าสู่ระบบ — 1-2 ตัวกำลังดี</div>
         </div>
+        <div class="field">
+          <label for="outgoing_number_prefix">รหัสหนังสือของโรงเรียน <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <input type="text" id="outgoing_number_prefix" maxlength="${MAX_SETTING_LENGTH.outgoing_number_prefix}"
+            value="${esc(getSetting('outgoing_number_prefix'))}" placeholder="เช่น ศธ 04056.12" style="max-width:16rem"
+            oninput="updateNumberPreview()" />
+          <div class="help-text">
+            ตามระเบียบงานสารบรรณ ช่อง <strong>“ที่”</strong> ของหนังสือที่ส่งออกไปข้างนอก คือ
+            <strong>รหัสส่วนราชการ ทับ เลขทะเบียนหนังสือส่ง</strong> — กรอกรหัสที่นี่ครั้งเดียว
+            แล้วระบบจะออกเลขให้ในรูปแบบนี้ทุกฉบับ
+            <div style="margin-top:.35rem">
+              รหัสของโรงเรียนได้มาจาก<strong>สำนักงานเขตพื้นที่การศึกษาต้นสังกัด</strong>
+              ปกติเป็นรูปแบบ <code>ศธ 04xxx.yy</code> (04xxx = เขตพื้นที่, yy = โรงเรียนในเขตนั้น)
+              — <strong>ถ้ายังไม่แน่ใจ ให้เว้นว่างไว้ก่อน</strong> ระบบจะออกเลขแบบเดิม (0045/2569)
+              ซึ่งใช้ได้ตามปกติ ดีกว่ากรอกรหัสผิดแล้วเลขผิดไปอยู่บนหนังสือที่ส่งออกไปจริง
+            </div>
+          </div>
+          <div class="callout-tip" style="margin-top:.5rem">
+            เลขหนังสือส่งฉบับถัดไปจะเป็น: <strong id="numPreview">${esc(previewNextNumber('outgoing'))}</strong>
+          </div>
+        </div>
         <button class="btn btn-primary" type="submit">บันทึก</button>
       </form>
     </div>
@@ -81,10 +102,22 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
         <p style="margin:.2rem 0">กล่องความเห็น ผอ.: <strong>ผู้อำนวยการ${esc(schoolName())}</strong></p>
         <p style="margin:.2rem 0">ใบลา: <strong>เขียนที่ ${esc(schoolName())}</strong></p>
         <p style="margin:.2rem 0">แถบเมนู: <strong>${esc(schoolShortName())}</strong> · โลโก้: <strong>${esc(schoolInitials())}</strong></p>
+        <p style="margin:.2rem 0">เลขหนังสือส่ง (ช่อง “ที่”): <strong>${esc(previewNextNumber('outgoing'))}</strong>
+          · เลขทะเบียนรับ: <strong>${esc(previewNextNumber('incoming'))}</strong></p>
       </div>
       <div class="help-text">เอกสารที่ประทับตราไปแล้วจะไม่เปลี่ยนตาม เพราะชื่อถูกฝังลงไฟล์ PDF ไปแล้วตอนลงนาม</div>
     </div>
     <script>
+      // โชว์ให้เห็นทันทีว่าเลขจะออกมาหน้าตาแบบไหน ก่อนกดบันทึก — เลขที่ออกไปแล้วแก้ย้อนหลังไม่ได้
+      // ตามระเบียบ การเห็นตัวอย่างก่อนจึงสำคัญกว่าการมาพบว่ากรอกผิดตอนหนังสือส่งออกไปแล้ว
+      var NEXT_RUNNING = ${JSON.stringify(previewNextNumber('outgoing', ''))};
+      function updateNumberPreview(){
+        var prefix = document.getElementById('outgoing_number_prefix').value.trim();
+        var n = NEXT_RUNNING.replace(/^0+/, '').split('/')[0];
+        document.getElementById('numPreview').textContent = prefix ? prefix + '/' + n : NEXT_RUNNING;
+      }
+      window.updateNumberPreview = updateNumberPreview;
+
       document.getElementById('schoolForm').addEventListener('submit', function(e){
         e.preventDefault();
         var btn = this.querySelector('button[type=submit]');
@@ -92,6 +125,7 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           school_name: document.getElementById('school_name').value,
           school_short_name: document.getElementById('school_short_name').value,
           school_initials: document.getElementById('school_initials').value,
+          outgoing_number_prefix: document.getElementById('outgoing_number_prefix').value,
         };
         window.setBtnLoading(btn, 'กำลังบันทึก...');
         fetch('/admin/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
@@ -107,7 +141,7 @@ router.post('/admin/settings', requireApi(async (ctx) => {
   if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
   // ชื่อเต็มเว้นว่างไม่ได้ ไม่งั้นเอกสารราชการจะขึ้นหัวเป็นค่าตั้งต้น "โรงเรียน (ยังไม่ได้ตั้งชื่อ)"
   if (!asText(ctx.body.school_name)) return json(ctx, 400, { error: 'กรุณากรอกชื่อโรงเรียน' });
-  for (const key of ['school_name', 'school_short_name', 'school_initials']) {
+  for (const key of ['school_name', 'school_short_name', 'school_initials', 'outgoing_number_prefix']) {
     setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
   }
   json(ctx, 200, { ok: true });

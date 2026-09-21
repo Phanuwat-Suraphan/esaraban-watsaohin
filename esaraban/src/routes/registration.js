@@ -9,8 +9,9 @@ import {
   submitRegistration, listPendingRegistrations, recentReviewedRegistrations,
   approveRegistration, approveManyRegistrations, MAX_BULK_APPROVE,
   rejectRegistration, selfRegistrationEnabled, SELF_REQUESTABLE_ROLES,
-  purgeOldReviewedRegistrations,
+  purgeOldReviewedRegistrations, updateRegistrationEmployeeCode,
 } from '../services/registration.js';
+import { MAX_EMPLOYEE_CODE } from '../services/validate.js';
 
 const ADMIN_ONLY = requireRole('admin');
 
@@ -233,7 +234,17 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
         ถ้าเป็นคนเดียวกัน ให้<strong>ปฏิเสธคำขอนี้</strong>แล้วใช้ปุ่ม "ตั้งรหัสใหม่" ที่หน้าจัดการผู้ใช้แทน
       </div>` : ''}
       <table class="table-plain">
-        <tr><td class="text-muted" style="white-space:nowrap">รหัสพนักงาน</td><td><strong>${esc(r.employee_code)}</strong></td></tr>
+        <!-- แก้ ID ได้ตรงนี้เลย — ครูกรอกผิดตอนสมัครเป็นเรื่องที่เกิดบ่อย และเดิมทางเดียวคือปฏิเสธคำขอ
+             แล้วให้ครูกรอกใหม่ทั้งชุด (ต้องตั้งรหัสผ่านและ PIN ใหม่ด้วย ทั้งที่ไม่ได้ผิดอะไร) ซึ่งครู
+             จำนวนหนึ่งก็ไม่ได้กลับมากรอกใหม่จริงๆ กลายเป็นคนที่หายไปจากระบบเงียบๆ -->
+        <tr><td class="text-muted" style="white-space:nowrap">รหัสพนักงาน (ID)</td><td>
+          <div class="flex gap-2 items-center" style="flex-wrap:wrap">
+            <input type="text" id="code-${esc(r.id)}" value="${esc(r.employee_code)}" maxlength="${MAX_EMPLOYEE_CODE}"
+                   autocapitalize="off" autocorrect="off" spellcheck="false" style="max-width:220px" />
+            <button class="btn btn-outline btn-sm" type="button" onclick="saveCode('${esc(r.id)}', this)">บันทึก ID ใหม่</button>
+          </div>
+          <div class="help-text">ถ้าครูกรอก ID ผิด แก้ตรงนี้ก่อนกดอนุมัติได้เลย — รหัสผ่านและ PIN ที่ครูตั้งไว้ยังใช้ได้เหมือนเดิม</div>
+        </td></tr>
         <tr><td class="text-muted">ฝ่ายที่แจ้ง</td><td>${esc(r.department_name || '-')}</td></tr>
         <tr><td class="text-muted">ตำแหน่ง</td><td>${esc(r.position || '-')}</td></tr>
         <tr><td class="text-muted">บทบาทที่ขอ</td><td>${esc(ROLE_LABEL[r.requested_role] || r.requested_role || '-')}</td></tr>
@@ -330,6 +341,29 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
         el.select(); el.setSelectionRange(0, 99999);
         navigator.clipboard ? navigator.clipboard.writeText(el.value).then(function(){ toast('คัดลอกแล้ว', 'success'); })
           : toast('กด Ctrl+C เพื่อคัดลอก', 'info');
+      }
+      function saveCode(id, btn) {
+        var el = document.getElementById('code-' + id);
+        var code = el.value.trim();
+        if (!code) { toast('กรุณากรอกรหัสประจำตัว', 'warning'); el.focus(); return; }
+        window.setBtnLoading(btn, 'กำลังบันทึก...');
+        fetch('/admin/registrations/' + id + '/employee-code', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ employeeCode: code }),
+        }).then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
+          .then(function(res){
+            window.restoreBtn(btn);
+            if (!res.ok) { toast(res.d.error || 'บันทึกไม่สำเร็จ', 'danger'); return; }
+            el.value = res.d.employeeCode;
+            if (!res.d.changed) { toast('เป็น ID เดิมอยู่แล้ว ไม่มีอะไรเปลี่ยน', 'info'); return; }
+            // ต้องบอกให้ไปแจ้งเจ้าตัว — ครูจะเข้าระบบด้วย ID ใหม่นี้ และเช็คสถานะคำขอด้วย ID ใหม่ด้วย
+            // ถ้าไม่มีใครบอก ครูจะกรอก ID เดิมแล้วได้ข้อความว่าไม่พบบัญชี ซึ่งพาไปผิดทางทั้งหมด
+            toast('บันทึก ID ใหม่เป็น ' + res.d.employeeCode + ' แล้ว — อย่าลืมแจ้งเจ้าตัวด้วย', 'success');
+            if (res.d.clashesWithUser) {
+              toast('⚠️ ID นี้มีบัญชีในระบบอยู่แล้ว — ตรวจก่อนว่าเป็นคนเดียวกันหรือไม่', 'warning');
+            }
+            setTimeout(function(){ location.reload(); }, 1500);
+          })
+          .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
       }
       function approveReq(id, btn) {
         var roleId = document.getElementById('role-' + id).value;
@@ -579,4 +613,13 @@ router.post('/admin/registrations/approve-bulk', ADMIN_ONLY(requireApi((ctx) => 
 
 router.post('/admin/registrations/:id/reject', ADMIN_ONLY(requireApi((ctx) => {
   json(ctx, 200, rejectRegistration({ requestId: ctx.params.id, reason: ctx.body?.reason, actorUser: ctx.user }));
+})));
+
+// แก้รหัสประจำตัวของคำขอที่ยังรอตรวจ — ครูกรอก ID ผิดตอนสมัครเป็นเรื่องที่เกิดจริงและบ่อย
+// แยกเป็นปุ่มของตัวเอง ไม่รวมไปกับปุ่มอนุมัติ เพราะการอนุมัติหมู่ (approve-bulk) ไม่ได้ส่งค่านี้มาด้วย
+// ถ้าให้ค่าจากช่องกรอกมามีผลเฉพาะตอนกดอนุมัติเดี่ยว ผู้ดูแลจะแก้ ID แล้วกดอนุมัติหมู่ ได้ ID เดิมไปเงียบๆ
+router.post('/admin/registrations/:id/employee-code', ADMIN_ONLY(requireApi((ctx) => {
+  json(ctx, 200, updateRegistrationEmployeeCode({
+    requestId: ctx.params.id, employeeCode: ctx.body?.employeeCode, actorUser: ctx.user,
+  }));
 })));

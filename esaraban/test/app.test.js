@@ -4971,6 +4971,234 @@ describe('ค้นหาจากแถบบนสุด และหน้า
 
 // แก้ไขข้อมูลผู้ใช้ — เดิมทำได้แค่เพิ่มกับลบ ครูย้ายฝ่าย/เปลี่ยนตำแหน่ง/ชื่อพิมพ์ผิดตอนนำเข้าจาก Excel
 // แก้ไม่ได้เลย ต้องลบทิ้งแล้วสร้างใหม่ ซึ่งทำให้ประวัติเอกสารและลายเซ็นเดิมผูกกับบัญชีที่ถูกระงับไปแล้ว
+// ครูกรอก ID (รหัสประจำตัวที่ใช้เข้าสู่ระบบ) ผิดตอนสมัคร เป็นเรื่องที่เกิดจริงและบ่อย
+//
+// เดิมแก้ไม่ได้เลยทั้งระบบ: หน้าแก้ไขผู้ใช้เขียนไว้ตรงๆ ว่า "เปลี่ยนรหัสประจำตัวไม่ได้" ด้วยเหตุผลว่า
+// เป็นตัวอ้างอิงของประวัติเอกสาร ซึ่งไม่จริง — ทุกตารางอ้างถึงผู้ใช้ด้วย users.id (uuid) ผลที่ตามมาคือ
+// ครูที่กรอก ID ผิดต้องถูกลบบัญชีทิ้งแล้วสร้างใหม่ ซึ่งทำให้งานที่ค้างอยู่กับบัญชีนั้นหลุดหายไปด้วย
+describe('ผู้ดูแลแก้รหัสประจำตัว (ID) ของผู้ใช้ได้', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const roleId = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
+  let seq = 0;
+  function makeUser(code) {
+    const id = `idedit-${++seq}`;
+    db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    db.prepare(`
+      INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, pin_hash, status, created_at, updated_at)
+      VALUES (?, ?, 'ครูทดสอบ', 'แก้ไอดี', ?, ?, ?, 'active', ?, ?)
+    `).run(id, code, deptId, hashSecret('Welcome@2569'), hashSecret('482913'), nowIso(), nowIso());
+    db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)').run(id, roleId('teacher'));
+    return id;
+  }
+  const base = (over = {}) => ({ firstName: 'ครูทดสอบ', lastName: 'แก้ไอดี', roleId: roleId('teacher'), status: 'active', ...over });
+  const codeOf = (id) => db.prepare('SELECT employee_code FROM users WHERE id = ?').get(id).employee_code;
+
+  test('เปลี่ยน ID แล้วเข้าสู่ระบบด้วย ID ใหม่ได้ ส่วน ID เดิมใช้ไม่ได้อีก และรหัสผ่านเดิมยังใช้ได้', async () => {
+    const id = makeUser('kru-พิมพ์ผิด01');
+    const res = await dispatchPost(admin(), `/admin/users/${id}/edit`, base({ employeeCode: 'teacher9001' }));
+    assert.equal(res.status, 302, res.body.slice(0, 300));
+    assert.equal(codeOf(id), 'teacher9001');
+
+    // รหัสผ่านและ PIN ไม่ได้ถูกแตะ — เปลี่ยนแค่ชื่อที่ใช้พิมพ์ตอนเข้าระบบ
+    assert.equal(login('teacher9001', 'Welcome@2569', '127.0.0.1').ok, true, 'ต้องเข้าระบบด้วย ID ใหม่ได้ด้วยรหัสผ่านเดิม');
+    assert.equal(login('kru-พิมพ์ผิด01', 'Welcome@2569', '127.0.0.1').ok, false, 'ID เดิมต้องใช้ไม่ได้อีก');
+  });
+
+  // เหตุผลเดิมที่ล็อกไว้คือ "เป็นตัวอ้างอิงของประวัติเอกสารและลายเซ็น" — ต้องพิสูจน์ว่าไม่จริง
+  // ไม่งั้นการเปิดให้แก้ก็คือการทำประวัติหนังสือราชการพังโดยไม่มีใครรู้
+  test('ประวัติเอกสารและงานที่ค้างอยู่ต้องยังผูกกับคนเดิมครบหลังเปลี่ยน ID', async () => {
+    const id = makeUser('beforecode01');
+    const doc = makeDoc({ title: 'หนังสือของคนที่กำลังจะเปลี่ยน ID', createdBy: id });
+    const before = db.prepare('SELECT COUNT(*) c FROM documents WHERE created_by = ?').get(id).c;
+    assert.ok(before > 0, 'ต้องมีหนังสือผูกอยู่จริง ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+
+    assert.equal((await dispatchPost(admin(), `/admin/users/${id}/edit`, base({ employeeCode: 'aftercode01' }))).status, 302);
+    // ต้องยืนยันว่า ID เปลี่ยนจริงก่อน ไม่งั้นเทสต์นี้จะผ่านได้ฟรีๆ แค่เพราะระบบไม่ยอมให้แก้ ID เลย
+    assert.equal(codeOf(id), 'aftercode01', 'ID ต้องเปลี่ยนจริง');
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM documents WHERE created_by = ?').get(id).c, before,
+      'หนังสือที่เคยลงทะเบียนไว้ต้องยังผูกกับคนเดิมครบ');
+    assert.equal(db.prepare('SELECT created_by FROM documents WHERE id = ?').get(doc.id).created_by, id);
+  });
+
+  test('ID ที่ซ้ำกับคนอื่น ต้องถูกปฏิเสธพร้อมบอกว่าซ้ำ ไม่ใช่ข้อความเรื่องอีเมล', async () => {
+    const id = makeUser('dupsrc01');
+    makeUser('duptarget01');
+    const res = await dispatchPost(admin(), `/admin/users/${id}/edit`, base({ employeeCode: 'duptarget01' }));
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status})`);
+    // ดูเฉพาะกล่องข้อความผิดพลาด ไม่ใช่ทั้งหน้า — หน้านี้ถูกแสดงใหม่ทั้งฟอร์มซึ่งมีช่อง "อีเมล" อยู่ด้วยปกติ
+    const alertBox = /<div class="alert alert-danger">([^<]*)</.exec(res.body)?.[1] || '';
+    assert.match(alertBox, /มีผู้ใช้อื่นใช้อยู่แล้ว/, `ต้องบอกว่า ID ซ้ำ — ได้: ${alertBox}`);
+    assert.ok(!/อีเมล/.test(alertBox), 'ต้องไม่ไปตกที่ฐานข้อมูลแล้วได้ข้อความเรื่องอีเมลซึ่งผิดเรื่องสนิท');
+    assert.equal(codeOf(id), 'dupsrc01', 'ID เดิมต้องไม่ถูกแก้');
+  });
+
+  // employee_code เป็น UNIQUE ทั้งตาราง แถวที่ลบแบบ soft delete ยังจองค่าไว้ ถ้าไม่ดักตรงนี้จะไปตก
+  // ที่ unique index แล้วได้ข้อความว่า "อีเมลนี้ถูกใช้แล้ว" ซึ่งพาผู้ดูแลไปหาสาเหตุผิดจุดทั้งหมด
+  test('ID ที่ซ้ำกับบัญชีที่ลบไปแล้ว ต้องบอกให้ชัดว่าเป็นบัญชีที่ลบไปแล้ว', async () => {
+    const id = makeUser('livecode01');
+    const gone = makeUser('deletedcode01');
+    db.prepare('UPDATE users SET deleted_at = ? WHERE id = ?').run(nowIso(), gone);
+    const res = await dispatchPost(admin(), `/admin/users/${id}/edit`, base({ employeeCode: 'deletedcode01' }));
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status})`);
+    assert.match(res.body, /ลบไปแล้ว/, 'ต้องบอกว่าเป็นรหัสของบัญชีที่ลบไปแล้ว');
+    assert.equal(codeOf(id), 'livecode01');
+  });
+
+  test('ID ที่มีช่องว่างอยู่ข้างใน ต้องถูกปฏิเสธ', async () => {
+    const id = makeUser('nospace01');
+    const res = await dispatchPost(admin(), `/admin/users/${id}/edit`, base({ employeeCode: 'kru 001' }));
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status})`);
+    assert.match(res.body, /ช่องว่าง/, 'ต้องบอกว่าห้ามมีช่องว่าง');
+    assert.equal(codeOf(id), 'nospace01');
+  });
+
+  // ฟอร์มที่เรียกเส้นทางนี้จากที่อื่น (หรือหน้าเว็บเวอร์ชันเก่าที่ค้างในเบราว์เซอร์ของผู้ดูแล) ไม่มีช่องนี้
+  // ถ้าตีความว่า "ไม่ส่งมา = ตั้งเป็นค่าว่าง" ผู้ดูแลจะแก้แค่ชื่อแล้วถูกปฏิเสธโดยไม่เกี่ยวกับสิ่งที่ตั้งใจแก้เลย
+  test('ไม่ได้ส่งช่อง ID มาเลย ต้องแปลว่าไม่แก้ ไม่ใช่ตั้งเป็นค่าว่าง', async () => {
+    const id = makeUser('keepcode01');
+    const res = await dispatchPost(admin(), `/admin/users/${id}/edit`, base({ firstName: 'เปลี่ยนแค่ชื่อ' }));
+    assert.equal(res.status, 302, res.body.slice(0, 300));
+    assert.equal(codeOf(id), 'keepcode01', 'ID ต้องคงเดิม');
+    assert.equal(db.prepare('SELECT first_name FROM users WHERE id = ?').get(id).first_name, 'เปลี่ยนแค่ชื่อ');
+  });
+
+  // ประวัติการใช้งานที่ผ่านมาบันทึก ID ของตอนนั้นไว้ ถ้าไม่เก็บคู่เดิม-ใหม่ จะไล่ไม่ได้เลยว่า
+  // "beforeaudit01" ในบันทึกเก่ากับ ID ปัจจุบันคือคนเดียวกัน
+  test('ประวัติการใช้งานต้องเก็บทั้ง ID เดิมและ ID ใหม่', async () => {
+    const id = makeUser('beforeaudit01');
+    assert.equal((await dispatchPost(admin(), `/admin/users/${id}/edit`, base({ employeeCode: 'afteraudit01' }))).status, 302);
+    const row = db.prepare(`SELECT detail FROM audit_logs WHERE record_id = ? AND action = 'user_updated' ORDER BY created_at DESC LIMIT 1`).get(id);
+    assert.ok(row, 'ต้องมีบันทึกการแก้ไข');
+    const detail = JSON.parse(row.detail);
+    assert.equal(detail.employeeCode, 'afteraudit01');
+    assert.equal(detail.previousEmployeeCode, 'beforeaudit01');
+  });
+
+  test('หน้าแก้ไขต้องมีช่องให้กรอก ID และไม่บอกว่าแก้ไม่ได้อีกต่อไป', async () => {
+    const id = makeUser('formcode01');
+    const res = await dispatchGet(admin(), `/admin/users/${id}/edit`, {});
+    assert.equal(res.status, 200);
+    assert.match(res.body, /name="employeeCode"/, 'ต้องมีช่องกรอก ID');
+    assert.ok(!/เปลี่ยนรหัสประจำตัวไม่ได้/.test(res.body), 'ต้องไม่เหลือข้อความว่าแก้ไม่ได้');
+    // ผู้ดูแลต้องเอา ID ใหม่ไปบอกเจ้าตัว ไม่งั้นครูจะเข้าระบบด้วย ID เดิมแล้วงงว่าทำไมเข้าไม่ได้
+    assert.match(res.body, /แจ้งให้ทราบ/, 'ต้องเตือนให้แจ้งเจ้าตัว');
+  });
+});
+
+// แก้ ID ตั้งแต่ตอนที่ยังเป็นคำขอ ดีกว่าปล่อยให้อนุมัติไปแล้วค่อยตามแก้ — เดิมทางเดียวคือปฏิเสธคำขอ
+// แล้วให้ครูกรอกใหม่ทั้งชุด (ต้องตั้งรหัสผ่านและ PIN ใหม่ด้วย ทั้งที่ไม่ได้ผิดอะไร) ซึ่งครูจำนวนหนึ่ง
+// ก็ไม่ได้กลับมากรอกใหม่จริงๆ กลายเป็นคนที่หายไปจากระบบเงียบๆ
+describe('ผู้ดูแลแก้ ID ของคำขอลงทะเบียนก่อนอนุมัติได้', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const roleId = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
+  let seq = 0;
+  const submit = (code) => reg.submitRegistration({
+    employeeCode: code, firstName: 'ครูขอ', lastName: `สมัคร${++seq}`, departmentId: deptId,
+    password: 'MyOwnPassword2569', pin: '482913', requestedRole: 'teacher',
+  }, { ip: '127.0.0.1' });
+  const reqRow = (code) => db.prepare("SELECT * FROM registration_requests WHERE employee_code = ? AND status = 'pending'").get(code);
+
+  test('แก้ ID แล้วอนุมัติ ต้องได้บัญชีที่ ID ใหม่ และครูเข้าระบบด้วยรหัสผ่านที่ตั้งไว้เดิมได้', async () => {
+    submit('พิมพ์ผิดตอนสมัคร01');
+    const req = reqRow('พิมพ์ผิดตอนสมัคร01');
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'kruthana01' });
+    assert.equal(res.status, 200, res.body);
+    assert.equal(res.json.employeeCode, 'kruthana01');
+    assert.equal(res.json.changed, true);
+
+    const approved = await dispatchPost(admin(), `/admin/registrations/${req.id}/approve`,
+      { roleId: roleId('teacher'), departmentId: deptId });
+    assert.ok(approved.status < 400, approved.body);
+    const user = db.prepare('SELECT * FROM users WHERE employee_code = ?').get('kruthana01');
+    assert.ok(user, 'ต้องได้บัญชีที่ ID ใหม่');
+    // รหัสผ่านและ PIN ที่ครูตั้งไว้ตอนสมัครต้องถูกยกมาให้ครบ ไม่ใช่ต้องตั้งใหม่
+    assert.equal(login('kruthana01', 'MyOwnPassword2569', '127.0.0.1').ok, true);
+  });
+
+  // ครูเช็คสถานะคำขอด้วย "ID + รหัสผ่านที่ตั้งไว้" ถ้าแก้ ID แล้วเส้นทางนี้ไม่ตามไปด้วย ครูจะกรอก
+  // ID ใหม่ที่ผู้ดูแลแจ้งมาแล้วได้ข้อความว่าไม่พบบัญชี ซึ่งพาไปผิดทางทั้งหมด
+  test('ครูต้องเช็คสถานะคำขอด้วย ID ใหม่ได้ และ ID เดิมต้องใช้ไม่ได้แล้ว', async () => {
+    submit('ไอดีเก่า02');
+    const req = reqRow('ไอดีเก่า02');
+    assert.ok(reg.registrationStatusFor({ employeeCode: 'ไอดีเก่า02', password: 'MyOwnPassword2569' }),
+      'ก่อนแก้ต้องเช็คด้วย ID เดิมได้');
+
+    await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'idmai02' });
+    assert.ok(reg.registrationStatusFor({ employeeCode: 'idmai02', password: 'MyOwnPassword2569' }),
+      'หลังแก้ต้องเช็คด้วย ID ใหม่ได้');
+    assert.equal(reg.registrationStatusFor({ employeeCode: 'ไอดีเก่า02', password: 'MyOwnPassword2569' }), null,
+      'ID เดิมต้องใช้ไม่ได้แล้ว');
+  });
+
+  test('ID ที่ชนกับคำขออื่นที่ยังรอตรวจ ต้องถูกปฏิเสธ', async () => {
+    submit('reqdup-a03');
+    submit('reqdup-b03');
+    const req = reqRow('reqdup-a03');
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'reqdup-b03' });
+    assert.equal(res.status, 409, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+    assert.equal(reqRow('reqdup-a03').employee_code, 'reqdup-a03', 'ค่าเดิมต้องไม่ถูกแก้');
+  });
+
+  // ไม่บล็อก เพราะอาจเป็นคนเดียวกันที่ลืมว่าตัวเองมีบัญชีแล้ว ผู้ดูแลต้องเห็นธงแล้วตัดสินใจเอง
+  // (approveRegistration กันการสร้างบัญชีซ้ำไว้อีกชั้น) — แต่ต้องเตือนทันที ไม่ใช่ตอนกดอนุมัติแล้วไม่ผ่าน
+  test('ID ที่ชนกับบัญชีที่มีอยู่แล้ว ต้องบันทึกได้แต่ต้องยกธงเตือน', async () => {
+    submit('willclash04');
+    const req = reqRow('willclash04');
+    const existing = db.prepare('SELECT employee_code FROM users WHERE deleted_at IS NULL LIMIT 1').get().employee_code;
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: existing });
+    assert.equal(res.status, 200, res.body);
+    assert.equal(res.json.clashesWithUser, true, 'ต้องบอกผู้ดูแลว่า ID นี้มีบัญชีอยู่แล้ว');
+  });
+
+  test('ID ที่มีช่องว่าง หรือเว้นว่างไว้ ต้องถูกปฏิเสธ', async () => {
+    submit('badinput05');
+    const req = reqRow('badinput05');
+    for (const [label, code] of [['มีช่องว่าง', 'kru 005'], ['เว้นว่าง', '   ']]) {
+      const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: code });
+      assert.equal(res.status, 400, `ต้องปฏิเสธ: ${label} (ได้ ${res.status})`);
+    }
+    assert.equal(reqRow('badinput05').employee_code, 'badinput05');
+  });
+
+  test('คำขอที่ตรวจไปแล้วต้องแก้ไม่ได้', async () => {
+    submit('reviewed06');
+    const req = reqRow('reviewed06');
+    await dispatchPost(admin(), `/admin/registrations/${req.id}/reject`, { reason: 'ทดสอบ' });
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'toolate06' });
+    assert.equal(res.status, 404, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+  });
+
+  test('คนที่ไม่ใช่ผู้ดูแลระบบแก้ ID ของคำขอไม่ได้', async () => {
+    submit('notadmin07');
+    const req = reqRow('notadmin07');
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    const res = await dispatchPost(teacher, `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'hijack07' });
+    assert.equal(res.status, 403, `ต้องปฏิเสธ (ได้ ${res.status})`);
+    assert.equal(reqRow('notadmin07').employee_code, 'notadmin07');
+  });
+
+  test('ประวัติการใช้งานต้องเก็บทั้ง ID เดิมและ ID ใหม่', async () => {
+    submit('auditold08');
+    const req = reqRow('auditold08');
+    await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'auditnew08' });
+    const row = db.prepare(`SELECT detail FROM audit_logs WHERE record_id = ? AND action = 'registration_code_edited' ORDER BY created_at DESC LIMIT 1`).get(req.id);
+    assert.ok(row, 'ต้องมีบันทึกการแก้ ID');
+    const detail = JSON.parse(row.detail);
+    assert.equal(detail.employeeCode, 'auditnew08');
+    assert.equal(detail.previousEmployeeCode, 'auditold08');
+  });
+
+  test('หน้าคำขอต้องมีช่องให้แก้ ID ของแต่ละคำขอ', async () => {
+    submit('formreq09');
+    const req = reqRow('formreq09');
+    const res = await dispatchGet(admin(), '/admin/registrations', {});
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes(`id="code-${req.id}"`), 'ต้องมีช่องกรอก ID ของคำขอนี้');
+    assert.ok(res.body.includes(`saveCode('${req.id}'`), 'ต้องมีปุ่มบันทึก ID ใหม่');
+  });
+});
+
 describe('แก้ไขข้อมูลผู้ใช้', () => {
   const admin = () => loadUserForTest(seed.userIds.admin);
   const roleId = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;

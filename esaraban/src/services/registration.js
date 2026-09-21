@@ -11,7 +11,7 @@
 //   2. บทบาทที่ขอมาเป็นแค่คำขอ ผู้ดูแลเป็นคนเลือกของจริงตอนกดอนุมัติ ไม่งั้นใครก็ขอเป็นแอดมินได้
 //   3. หน้าลงทะเบียนเปิดสาธารณะ จึงต้องไม่คายข้อมูลว่าใครมีบัญชีอยู่แล้วบ้าง
 import { db, uuid, nowIso, hashSecret, verifySecret, audit, isWeakPin } from '../db.js';
-import { httpError, assertMaxLength } from './validate.js';
+import { httpError, assertMaxLength, normalizeEmployeeCode } from './validate.js';
 import { notifyUser } from './notify.js';
 
 // บทบาทที่ครูขอเองได้ — จงใจไม่มี admin/director/vice_director เพราะเป็นตำแหน่งที่โรงเรียนแต่งตั้ง
@@ -185,6 +185,39 @@ export function recentReviewedRegistrations(limit = 20) {
     LEFT JOIN users u ON u.id = r.reviewed_by
     WHERE r.status != 'pending' ORDER BY r.reviewed_at DESC LIMIT ?
   `).all(limit);
+}
+
+/**
+ * ผู้ดูแลแก้รหัสประจำตัวของคำขอที่ยังรอตรวจ — ครูกรอก ID ผิดตอนสมัครเป็นเรื่องที่เกิดจริงและบ่อย
+ *
+ * เดิมแก้ไม่ได้เลย ทางเดียวคือปฏิเสธคำขอแล้วให้ครูกรอกใหม่ทั้งชุด ซึ่งแปลว่าครูต้องตั้งรหัสผ่านและ PIN
+ * ใหม่ด้วย ทั้งที่สองอย่างนั้นไม่ได้ผิดอะไร และครูจำนวนหนึ่งก็ไม่ได้กลับมากรอกใหม่จริงๆ กลายเป็นคน
+ * ที่หายไปจากระบบเงียบๆ — แก้ตรงนี้ให้จบก่อนอนุมัติจึงถูกกว่าทุกทาง
+ *
+ * ต้องเป็นคำขอที่ยังรอตรวจเท่านั้น คำขอที่อนุมัติไปแล้วกลายเป็นบัญชีจริงไปแล้ว ต้องไปแก้ที่หน้าผู้ใช้
+ * (ซึ่งทำได้เหมือนกัน) การแก้แถวคำขอตอนนั้นไม่เปลี่ยนอะไรในบัญชีจริงเลย แต่จะทำให้ประวัติอ่านแล้วสับสน
+ */
+export function updateRegistrationEmployeeCode({ requestId, employeeCode, actorUser }) {
+  const req = db.prepare("SELECT * FROM registration_requests WHERE id = ? AND status = 'pending'").get(requestId);
+  if (!req) throw httpError(404, 'ไม่พบคำขอนี้ หรือมีคนตรวจไปแล้ว');
+  const code = normalizeEmployeeCode(employeeCode);
+  if (code === req.employee_code) return { ok: true, employeeCode: code, changed: false };
+
+  // ชนกับคำขออื่นที่ยังรอตรวจ — ถ้าปล่อยผ่าน จะมีคำขอสองใบที่ ID เดียวกัน ใบที่สองอนุมัติไม่ได้ตลอดไป
+  if (db.prepare("SELECT 1 x FROM registration_requests WHERE employee_code = ? AND status = 'pending' AND id != ?").get(code, requestId)) {
+    throw httpError(409, `มีคำขออื่นที่ยังรอตรวจใช้รหัส ${code} อยู่แล้ว`);
+  }
+  // ชนกับบัญชีที่มีอยู่ — ไม่บล็อก เพราะอาจเป็นคนเดียวกันที่ลืมว่าตัวเองมีบัญชีแล้ว ผู้ดูแลต้องเห็นธง
+  // ⚠️ ในการ์ดแล้วตัดสินใจเอง (approveRegistration กันการสร้างบัญชีซ้ำไว้อีกชั้นอยู่แล้ว) — แต่ถ้า
+  // เปลี่ยนไปชนพอดีต้องเตือนทันที ไม่ใช่ปล่อยให้ไปเจอตอนกดอนุมัติ
+  const clash = db.prepare('SELECT 1 x FROM users WHERE employee_code = ? AND deleted_at IS NULL').get(code);
+
+  db.prepare('UPDATE registration_requests SET employee_code = ? WHERE id = ?').run(code, requestId);
+  audit({
+    userId: actorUser.id, action: 'registration_code_edited', tableName: 'registration_requests', recordId: requestId,
+    detail: { employeeCode: code, previousEmployeeCode: req.employee_code },
+  });
+  return { ok: true, employeeCode: code, changed: true, clashesWithUser: Boolean(clash) };
 }
 
 /**

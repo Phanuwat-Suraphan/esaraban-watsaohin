@@ -6,7 +6,7 @@ import { seedFixedHolidays, listHolidays, holidayYears, addHoliday, removeHolida
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
-import { asText, asTextOrNull } from '../services/validate.js';
+import { asText, asTextOrNull, normalizeEmployeeCode, MAX_EMPLOYEE_CODE } from '../services/validate.js';
 import { getSetting, setSetting, MAX_SETTING_LENGTH } from '../services/settings.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
@@ -122,8 +122,17 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
   const depts = db.prepare('SELECT * FROM departments ORDER BY name').all();
   const roles = db.prepare('SELECT * FROM roles ORDER BY level DESC').all();
 
+  // การเปลี่ยน ID ที่ใช้เข้าสู่ระบบต้องมีอะไรยืนยันให้เห็นกับตา — ผู้ดูแลต้องเอา ID ใหม่ไปบอกเจ้าตัว
+  // ถ้าบันทึกแล้วเด้งกลับมาหน้ารายชื่อเฉยๆ จะไม่แน่ใจว่าเปลี่ยนสำเร็จหรือไม่ และ ID ใหม่คืออะไรกันแน่
+  const changedFrom = asText(ctx.query.from);
+  const changedTo = asText(ctx.query.to);
   const content = `
     <h2>⚙️ จัดการผู้ใช้งาน</h2>
+    ${changedFrom && changedTo ? `<div class="alert alert-success">
+      ✅ เปลี่ยนรหัสประจำตัวจาก <strong>${esc(changedFrom)}</strong> เป็น <strong>${esc(changedTo)}</strong> แล้ว —
+      <strong>ต้องแจ้งเจ้าตัวว่าครั้งต่อไปให้เข้าระบบด้วย ${esc(changedTo)}</strong>
+      (รหัสผ่านและ PIN เดิมใช้ได้ตามปกติ ประวัติและงานที่ค้างอยู่ยังอยู่ครบ)
+    </div>` : ''}
     ${starterModeActive() ? `<div class="alert alert-warning">
       👋 <strong>ระบบยังอยู่ในโหมดเริ่มต้น</strong> — รหัสตั้งต้นของทุกบัญชีแสดงอยู่บนหน้าเข้าสู่ระบบ
       ใครเปิดลิงก์นี้เจอก็เข้าระบบได้ (โหมดนี้จะปิดตัวเองเมื่อลงทะเบียนหนังสือฉบับแรก)
@@ -391,8 +400,7 @@ function userEditPage(ctx, target, { error, depts, roles, currentRoleId }) {
       <div>
         <h2 class="mt-0">✏️ แก้ไขข้อมูลผู้ใช้</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
-          รหัสประจำตัว <strong>${esc(target.employee_code)}</strong> — เปลี่ยนรหัสประจำตัวไม่ได้
-          เพราะเป็นตัวอ้างอิงของประวัติเอกสารและลายเซ็นทั้งหมดที่ผ่านมา
+          รหัสประจำตัวปัจจุบัน <strong>${esc(target.employee_code)}</strong>
         </p>
       </div>
       <a class="btn btn-outline" href="/admin/users">← กลับรายชื่อผู้ใช้</a>
@@ -400,6 +408,21 @@ function userEditPage(ctx, target, { error, depts, roles, currentRoleId }) {
     <div class="card">
       ${error ? `<div class="alert alert-danger">${esc(error)}</div>` : ''}
       <form method="post" action="/admin/users/${target.id}/edit">
+        <!-- แก้รหัสประจำตัวได้ — เดิมล็อกไว้ด้วยเหตุผลว่าเป็นตัวอ้างอิงของประวัติเอกสาร ซึ่งไม่จริง:
+             ทุกตารางอ้างถึงผู้ใช้ด้วย users.id (uuid) ไม่ใช่รหัสประจำตัว การเปลี่ยนค่านี้จึงกระทบแค่
+             "ชื่อที่ใช้พิมพ์ตอนเข้าระบบ" เท่านั้น ประวัติ ลายเซ็น และหนังสือทุกฉบับยังผูกอยู่กับคนเดิมครบ
+             ส่วนที่ล็อกไว้แล้วเจ็บจริงคือครูที่กรอก ID ผิดตอนสมัคร แล้วผู้ดูแลอนุมัติไปแล้ว — เดิมแก้ไม่ได้
+             เลยทั้งระบบ ต้องลบบัญชีทิ้งแล้วสร้างใหม่ ซึ่งทำให้งานที่ค้างอยู่กับบัญชีนั้นหลุดหายไปด้วย -->
+        <div class="field">
+          <label>รหัสประจำตัว (ID ที่ใช้เข้าสู่ระบบ) *</label>
+          <input type="text" name="employeeCode" value="${esc(target.employee_code)}"
+                 maxlength="${MAX_EMPLOYEE_CODE}" required autocapitalize="off" autocorrect="off" spellcheck="false" />
+          <div class="help-text">
+            แก้ได้เมื่อกรอกผิดตอนสมัคร — ประวัติเอกสาร ลายเซ็น และงานที่ค้างอยู่ทั้งหมดยังอยู่ครบเหมือนเดิม
+            <strong>แต่เจ้าตัวต้องใช้ ID ใหม่นี้เข้าระบบครั้งต่อไป</strong> อย่าลืมแจ้งให้ทราบด้วย
+            (รหัสผ่านและ PIN ไม่เปลี่ยน)
+          </div>
+        </div>
         <div class="form-grid cols-3">
           <div class="field"><label>คำนำหน้า</label>
             <input type="text" name="prefix" value="${esc(target.prefix || '')}" placeholder="นาย/นาง/นางสาว" /></div>
@@ -467,6 +490,37 @@ router.post('/admin/users/:id/edit', requireRole('admin')(requirePage((ctx) => {
   const firstName = asText(b.firstName);
   const lastName = asText(b.lastName);
   if (!firstName || !lastName) return fail('กรุณากรอกชื่อและนามสกุล');
+
+  // ตรวจกติกาของรหัสประจำตัว "เฉพาะตอนที่ค่าเปลี่ยนจริง" — บัญชีที่นำเข้าจาก Excel เมื่อก่อนอาจมี
+  // ช่องว่างหรืออักขระแปลกติดมาตั้งแต่ก่อนมีด่านนี้ ถ้าตรวจทุกครั้ง ผู้ดูแลที่เข้ามาแก้แค่ชื่อของคนนั้น
+  // จะถูกปฏิเสธโดยไม่เกี่ยวกับสิ่งที่ตั้งใจจะแก้เลย
+  //
+  // "ไม่ได้ส่งช่องนี้มาเลย" ต้องแปลว่า "ไม่แก้" ไม่ใช่ "ตั้งเป็นค่าว่าง" — ฟอร์มที่เรียกเส้นทางนี้จาก
+  // ที่อื่น (หรือหน้าเว็บเวอร์ชันเก่าที่ค้างอยู่ในเบราว์เซอร์ของผู้ดูแล) จะไม่มีช่องนี้ ถ้าตีความเป็นการ
+  // แก้ค่า ผู้ดูแลจะแก้แค่ชื่อแล้วถูกปฏิเสธโดยไม่มีเหตุผลที่เกี่ยวกับสิ่งที่ตั้งใจจะแก้เลย
+  let employeeCode = target.employee_code;
+  const codeSubmitted = b.employeeCode !== undefined && b.employeeCode !== null;
+  if (codeSubmitted && asText(b.employeeCode) !== target.employee_code) {
+    try {
+      employeeCode = normalizeEmployeeCode(b.employeeCode);
+    } catch (err) {
+      return fail(err.message);
+    }
+    // ชนกับบัญชีที่ถูกลบไปแล้วด้วย เพราะ employee_code เป็น UNIQUE ทั้งตาราง (แถวที่ลบแล้วยังจองค่าไว้)
+    // ถ้าไม่บอกให้ชัดตรงนี้ จะไปตกที่ฐานข้อมูลแล้วได้ข้อความว่า "อีเมลนี้ถูกใช้แล้ว" ซึ่งผิดเรื่องสนิท
+    const clash = db.prepare('SELECT id, deleted_at FROM users WHERE employee_code = ? AND id != ?').get(employeeCode, target.id);
+    if (clash) {
+      return fail(clash.deleted_at
+        ? `รหัสประจำตัว ${employeeCode} เคยถูกใช้โดยบัญชีที่ลบไปแล้ว จึงนำมาใช้ซ้ำไม่ได้ — ประวัติของบัญชีนั้นยังอ้างถึงรหัสนี้อยู่`
+        : `รหัสประจำตัว ${employeeCode} มีผู้ใช้อื่นใช้อยู่แล้ว`);
+    }
+    // คำขอลงทะเบียนที่ยังรอตรวจและใช้รหัสเดียวกัน จะกลายเป็นคำขอที่อนุมัติไม่ได้ทันทีที่เปลี่ยนค่านี้
+    // (approveRegistration กันรหัสชนไว้) — เตือนตั้งแต่ตอนนี้ดีกว่าให้ไปงงตอนกดอนุมัติแล้วไม่ผ่าน
+    const pendingReq = db.prepare("SELECT 1 x FROM registration_requests WHERE employee_code = ? AND status = 'pending'").get(employeeCode);
+    if (pendingReq) {
+      return fail(`รหัสประจำตัว ${employeeCode} มีคำขอลงทะเบียนที่ยังรอตรวจใช้อยู่ — ให้จัดการคำขอนั้นก่อน (หน้าคำขอลงทะเบียน)`);
+    }
+  }
   for (const [value, max, label] of [[b.prefix, 50, 'คำนำหน้า'], [firstName, 100, 'ชื่อ'], [lastName, 100, 'นามสกุล'],
     [b.email, 200, 'อีเมล'], [b.position, 200, 'ตำแหน่ง']]) {
     if (typeof value === 'string' && value.length > max) return fail(`${label}ยาวเกินไป (จำกัดไม่เกิน ${max} ตัวอักษร)`);
@@ -493,9 +547,9 @@ router.post('/admin/users/:id/edit', requireRole('admin')(requirePage((ctx) => {
 
   try {
     db.prepare(`
-      UPDATE users SET prefix = ?, first_name = ?, last_name = ?, email = ?, position = ?,
+      UPDATE users SET employee_code = ?, prefix = ?, first_name = ?, last_name = ?, email = ?, position = ?,
         department_id = ?, status = ?, updated_at = ? WHERE id = ?
-    `).run((b.prefix || '').trim() || null, firstName, lastName, (b.email || '').trim() || null,
+    `).run(employeeCode, (b.prefix || '').trim() || null, firstName, lastName, (b.email || '').trim() || null,
       (b.position || '').trim() || null, departmentId, status, nowIso(), target.id);
   } catch (e) {
     return fail('อีเมลนี้ถูกใช้งานโดยผู้ใช้อื่นแล้ว');
@@ -506,16 +560,23 @@ router.post('/admin/users/:id/edit', requireRole('admin')(requirePage((ctx) => {
   // บัญชีที่ถูกระงับต้องหลุดออกจากระบบทันที ไม่ใช่ใช้ต่อได้จนกว่าเซสชันจะหมดอายุเอง
   if (status !== 'active') db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
 
+  const codeChanged = employeeCode !== target.employee_code;
   audit({
     userId: ctx.user.id, action: 'user_updated', tableName: 'users', recordId: target.id,
-    detail: { employeeCode: target.employee_code, role: role.name, status }, ip: ctx.ip,
+    // เก็บทั้งค่าเดิมและค่าใหม่เมื่อ ID เปลี่ยน — ประวัติการใช้งานที่ผ่านมาบันทึก ID ของตอนนั้นไว้
+    // ถ้าไม่มีคู่นี้ จะไล่ไม่ได้เลยว่า "teacher001" ในบันทึกเก่ากับ "kru001" ตอนนี้คือคนเดียวกัน
+    detail: { employeeCode, ...(codeChanged ? { previousEmployeeCode: target.employee_code } : {}), role: role.name, status },
+    ip: ctx.ip,
   });
-  redirect(ctx, '/admin/users?updated=1');
+  redirect(ctx, codeChanged
+    ? `/admin/users?updated=1&from=${encodeURIComponent(target.employee_code)}&to=${encodeURIComponent(employeeCode)}`
+    : '/admin/users?updated=1');
 })));
 
 // ค่าที่ผู้ใช้เพิ่งกรอกมา ใช้เติมกลับลงฟอร์มเมื่อบันทึกไม่ผ่าน จะได้ไม่ต้องพิมพ์ใหม่ทั้งหมด
 function pendingEdit(b, target) {
   return {
+    employee_code: b.employeeCode ?? target.employee_code,
     prefix: b.prefix ?? target.prefix,
     first_name: b.firstName ?? target.first_name,
     last_name: b.lastName ?? target.last_name,

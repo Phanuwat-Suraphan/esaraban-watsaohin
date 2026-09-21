@@ -9,7 +9,7 @@ import {
   submitRegistration, listPendingRegistrations, recentReviewedRegistrations,
   approveRegistration, approveManyRegistrations, MAX_BULK_APPROVE,
   rejectRegistration, selfRegistrationEnabled, SELF_REQUESTABLE_ROLES,
-  purgeOldReviewedRegistrations, updateRegistrationEmployeeCode,
+  purgeOldReviewedRegistrations, updateRegistrationRequest,
 } from '../services/registration.js';
 import { MAX_EMPLOYEE_CODE } from '../services/validate.js';
 
@@ -233,17 +233,28 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
         ⚠️ รหัสพนักงาน <strong>${esc(r.employee_code)}</strong> มีบัญชีอยู่ในระบบแล้ว —
         ถ้าเป็นคนเดียวกัน ให้<strong>ปฏิเสธคำขอนี้</strong>แล้วใช้ปุ่ม "ตั้งรหัสใหม่" ที่หน้าจัดการผู้ใช้แทน
       </div>` : ''}
+      <!-- อีเมลเป็น UNIQUE เหมือนรหัสพนักงาน และเป็นช่องที่ไม่บังคับกรอก จึงชนกันง่ายกว่ามาก
+           (ครูหลายคนกรอกอีเมลกลางของโรงเรียนอันเดียวกัน) เดิมไม่มีอะไรเตือนเลย กดอนุมัติแล้วได้
+           ข้อความดิบของฐานข้อมูลว่า "UNIQUE constraint failed: users.email" ซึ่งไม่บอกว่าเป็นของใคร -->
+      ${r.email_clashes_with ? `<div class="alert alert-warning" style="font-size:.85rem">
+        ⚠️ อีเมล <strong>${esc(r.email)}</strong> มีบัญชี <strong>${esc(r.email_clashes_with)}</strong> ใช้อยู่แล้ว —
+        กดอนุมัติตอนนี้จะไม่ผ่าน เพราะระบบกำหนดให้อีเมลไม่ซ้ำกัน
+        ให้<strong>แก้อีเมลด้านล่าง หรือลบออกให้ว่าง</strong> (ไม่กรอกอีเมลก็อนุมัติได้ตามปกติ) แล้วกดบันทึกก่อน
+      </div>` : ''}
       <table class="table-plain">
         <!-- แก้ ID ได้ตรงนี้เลย — ครูกรอกผิดตอนสมัครเป็นเรื่องที่เกิดบ่อย และเดิมทางเดียวคือปฏิเสธคำขอ
              แล้วให้ครูกรอกใหม่ทั้งชุด (ต้องตั้งรหัสผ่านและ PIN ใหม่ด้วย ทั้งที่ไม่ได้ผิดอะไร) ซึ่งครู
              จำนวนหนึ่งก็ไม่ได้กลับมากรอกใหม่จริงๆ กลายเป็นคนที่หายไปจากระบบเงียบๆ -->
         <tr><td class="text-muted" style="white-space:nowrap">รหัสพนักงาน (ID)</td><td>
-          <div class="flex gap-2 items-center" style="flex-wrap:wrap">
-            <input type="text" id="code-${esc(r.id)}" value="${esc(r.employee_code)}" maxlength="${MAX_EMPLOYEE_CODE}"
-                   autocapitalize="off" autocorrect="off" spellcheck="false" style="max-width:220px" />
-            <button class="btn btn-outline btn-sm" type="button" onclick="saveCode('${esc(r.id)}', this)">บันทึก ID ใหม่</button>
-          </div>
-          <div class="help-text">ถ้าครูกรอก ID ผิด แก้ตรงนี้ก่อนกดอนุมัติได้เลย — รหัสผ่านและ PIN ที่ครูตั้งไว้ยังใช้ได้เหมือนเดิม</div>
+          <input type="text" id="code-${esc(r.id)}" value="${esc(r.employee_code)}" maxlength="${MAX_EMPLOYEE_CODE}"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" style="max-width:220px" />
+        </td></tr>
+        <tr><td class="text-muted" style="white-space:nowrap">อีเมล</td><td>
+          <input type="email" id="email-${esc(r.id)}" value="${esc(r.email || '')}" placeholder="เว้นว่างได้" style="max-width:280px" />
+        </td></tr>
+        <tr><td></td><td>
+          <button class="btn btn-outline btn-sm" type="button" onclick="saveReq('${esc(r.id)}', this)">💾 บันทึก ID / อีเมล</button>
+          <div class="help-text">ถ้าครูกรอกผิด แก้ตรงนี้ก่อนกดอนุมัติได้เลย — รหัสผ่านและ PIN ที่ครูตั้งไว้ยังใช้ได้เหมือนเดิม</div>
         </td></tr>
         <tr><td class="text-muted">ฝ่ายที่แจ้ง</td><td>${esc(r.department_name || '-')}</td></tr>
         <tr><td class="text-muted">ตำแหน่ง</td><td>${esc(r.position || '-')}</td></tr>
@@ -342,19 +353,22 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
         navigator.clipboard ? navigator.clipboard.writeText(el.value).then(function(){ toast('คัดลอกแล้ว', 'success'); })
           : toast('กด Ctrl+C เพื่อคัดลอก', 'info');
       }
-      function saveCode(id, btn) {
-        var el = document.getElementById('code-' + id);
-        var code = el.value.trim();
-        if (!code) { toast('กรุณากรอกรหัสประจำตัว', 'warning'); el.focus(); return; }
+      function saveReq(id, btn) {
+        var codeEl = document.getElementById('code-' + id);
+        var emailEl = document.getElementById('email-' + id);
+        var code = codeEl.value.trim();
+        if (!code) { toast('กรุณากรอกรหัสประจำตัว', 'warning'); codeEl.focus(); return; }
         window.setBtnLoading(btn, 'กำลังบันทึก...');
-        fetch('/admin/registrations/' + id + '/employee-code', {
-          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ employeeCode: code }),
+        fetch('/admin/registrations/' + id + '/edit', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ employeeCode: code, email: emailEl.value.trim() }),
         }).then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); })
           .then(function(res){
             window.restoreBtn(btn);
             if (!res.ok) { toast(res.d.error || 'บันทึกไม่สำเร็จ', 'danger'); return; }
-            el.value = res.d.employeeCode;
-            if (!res.d.changed) { toast('เป็น ID เดิมอยู่แล้ว ไม่มีอะไรเปลี่ยน', 'info'); return; }
+            codeEl.value = res.d.employeeCode;
+            emailEl.value = res.d.email || '';
+            if (!res.d.changed) { toast('เป็นค่าเดิมอยู่แล้ว ไม่มีอะไรเปลี่ยน', 'info'); return; }
             // ต้องบอกให้ไปแจ้งเจ้าตัว — ครูจะเข้าระบบด้วย ID ใหม่นี้ และเช็คสถานะคำขอด้วย ID ใหม่ด้วย
             // ถ้าไม่มีใครบอก ครูจะกรอก ID เดิมแล้วได้ข้อความว่าไม่พบบัญชี ซึ่งพาไปผิดทางทั้งหมด
             toast('บันทึก ID ใหม่เป็น ' + res.d.employeeCode + ' แล้ว — อย่าลืมแจ้งเจ้าตัวด้วย', 'success');
@@ -615,11 +629,11 @@ router.post('/admin/registrations/:id/reject', ADMIN_ONLY(requireApi((ctx) => {
   json(ctx, 200, rejectRegistration({ requestId: ctx.params.id, reason: ctx.body?.reason, actorUser: ctx.user }));
 })));
 
-// แก้รหัสประจำตัวของคำขอที่ยังรอตรวจ — ครูกรอก ID ผิดตอนสมัครเป็นเรื่องที่เกิดจริงและบ่อย
+// แก้ข้อมูลของคำขอที่ยังรอตรวจก่อนอนุมัติ — ครูกรอก ID หรืออีเมลผิดตอนสมัครเป็นเรื่องที่เกิดจริงและบ่อย
 // แยกเป็นปุ่มของตัวเอง ไม่รวมไปกับปุ่มอนุมัติ เพราะการอนุมัติหมู่ (approve-bulk) ไม่ได้ส่งค่านี้มาด้วย
-// ถ้าให้ค่าจากช่องกรอกมามีผลเฉพาะตอนกดอนุมัติเดี่ยว ผู้ดูแลจะแก้ ID แล้วกดอนุมัติหมู่ ได้ ID เดิมไปเงียบๆ
-router.post('/admin/registrations/:id/employee-code', ADMIN_ONLY(requireApi((ctx) => {
-  json(ctx, 200, updateRegistrationEmployeeCode({
-    requestId: ctx.params.id, employeeCode: ctx.body?.employeeCode, actorUser: ctx.user,
+// ถ้าให้ค่าจากช่องกรอกมามีผลเฉพาะตอนกดอนุมัติเดี่ยว ผู้ดูแลจะแก้แล้วกดอนุมัติหมู่ ได้ค่าเดิมไปเงียบๆ
+router.post('/admin/registrations/:id/edit', ADMIN_ONLY(requireApi((ctx) => {
+  json(ctx, 200, updateRegistrationRequest({
+    requestId: ctx.params.id, employeeCode: ctx.body?.employeeCode, email: ctx.body?.email, actorUser: ctx.user,
   }));
 })));

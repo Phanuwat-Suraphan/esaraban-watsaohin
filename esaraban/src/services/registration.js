@@ -166,7 +166,9 @@ export function purgeOldReviewedRegistrations() {
 export function listPendingRegistrations(limit = 100) {
   return db.prepare(`
     SELECT r.*, d.name AS department_name,
-      (SELECT u.id FROM users u WHERE u.employee_code = r.employee_code AND u.deleted_at IS NULL) AS clashes_with
+      (SELECT u.id FROM users u WHERE u.employee_code = r.employee_code AND u.deleted_at IS NULL) AS clashes_with,
+      -- อีเมลซ้ำทำให้กดอนุมัติไม่ผ่าน (users.email เป็น UNIQUE) ต้องเห็นตั้งแต่ก่อนกด ไม่ใช่ไปเจอตอนกดแล้วพัง
+      (SELECT u.employee_code FROM users u WHERE r.email IS NOT NULL AND r.email != '' AND u.email = r.email) AS email_clashes_with
     FROM registration_requests r
     LEFT JOIN departments d ON d.id = r.department_id
     WHERE r.status = 'pending' ORDER BY r.created_at LIMIT ?
@@ -197,27 +199,51 @@ export function recentReviewedRegistrations(limit = 20) {
  * ต้องเป็นคำขอที่ยังรอตรวจเท่านั้น คำขอที่อนุมัติไปแล้วกลายเป็นบัญชีจริงไปแล้ว ต้องไปแก้ที่หน้าผู้ใช้
  * (ซึ่งทำได้เหมือนกัน) การแก้แถวคำขอตอนนั้นไม่เปลี่ยนอะไรในบัญชีจริงเลย แต่จะทำให้ประวัติอ่านแล้วสับสน
  */
-export function updateRegistrationEmployeeCode({ requestId, employeeCode, actorUser }) {
+export function updateRegistrationRequest({ requestId, employeeCode, email, actorUser }) {
   const req = db.prepare("SELECT * FROM registration_requests WHERE id = ? AND status = 'pending'").get(requestId);
   if (!req) throw httpError(404, 'ไม่พบคำขอนี้ หรือมีคนตรวจไปแล้ว');
-  const code = normalizeEmployeeCode(employeeCode);
-  if (code === req.employee_code) return { ok: true, employeeCode: code, changed: false };
 
-  // ชนกับคำขออื่นที่ยังรอตรวจ — ถ้าปล่อยผ่าน จะมีคำขอสองใบที่ ID เดียวกัน ใบที่สองอนุมัติไม่ได้ตลอดไป
-  if (db.prepare("SELECT 1 x FROM registration_requests WHERE employee_code = ? AND status = 'pending' AND id != ?").get(code, requestId)) {
-    throw httpError(409, `มีคำขออื่นที่ยังรอตรวจใช้รหัส ${code} อยู่แล้ว`);
+  // ไม่ได้ส่งฟิลด์ไหนมา = ไม่แก้ฟิลด์นั้น (ต่างจากส่งค่าว่างมา ซึ่งสำหรับอีเมลแปลว่า "ล้างอีเมลทิ้ง")
+  const code = employeeCode === undefined ? req.employee_code : normalizeEmployeeCode(employeeCode);
+  let mail = req.email;
+  if (email !== undefined) {
+    mail = cleanText(email, MAX_NAME, 'อีเมล') || null;
+    // ต้องเก็บเป็น NULL ไม่ใช่ค่าว่าง — users.email เป็น UNIQUE และค่าว่างคือ "ค่าหนึ่ง" ที่ชนกันเองได้
+    // ส่วน NULL ใน SQLite ไม่ชนกับอะไรเลย ครูที่ไม่กรอกอีเมลจึงอนุมัติพร้อมกันกี่คนก็ได้
+    if (mail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) throw httpError(400, 'รูปแบบอีเมลไม่ถูกต้อง');
   }
+
+  const codeChanged = code !== req.employee_code;
+  const emailChanged = mail !== req.email;
+  if (!codeChanged && !emailChanged) return { ok: true, employeeCode: code, email: mail || '', changed: false };
+
+  if (codeChanged) {
+    // ชนกับคำขออื่นที่ยังรอตรวจ — ถ้าปล่อยผ่าน จะมีคำขอสองใบที่ ID เดียวกัน ใบที่สองอนุมัติไม่ได้ตลอดไป
+    if (db.prepare("SELECT 1 x FROM registration_requests WHERE employee_code = ? AND status = 'pending' AND id != ?").get(code, requestId)) {
+      throw httpError(409, `มีคำขออื่นที่ยังรอตรวจใช้รหัส ${code} อยู่แล้ว`);
+    }
+  }
+  if (emailChanged && mail && db.prepare('SELECT 1 x FROM users WHERE email = ?').get(mail)) {
+    throw httpError(409, `อีเมล ${mail} มีบัญชีในระบบใช้อยู่แล้ว — อีเมลต้องไม่ซ้ำกัน ถ้าครูรายนี้ไม่มีอีเมลของตัวเอง ให้เว้นว่างไว้ได้`);
+  }
+
   // ชนกับบัญชีที่มีอยู่ — ไม่บล็อก เพราะอาจเป็นคนเดียวกันที่ลืมว่าตัวเองมีบัญชีแล้ว ผู้ดูแลต้องเห็นธง
   // ⚠️ ในการ์ดแล้วตัดสินใจเอง (approveRegistration กันการสร้างบัญชีซ้ำไว้อีกชั้นอยู่แล้ว) — แต่ถ้า
   // เปลี่ยนไปชนพอดีต้องเตือนทันที ไม่ใช่ปล่อยให้ไปเจอตอนกดอนุมัติ
   const clash = db.prepare('SELECT 1 x FROM users WHERE employee_code = ? AND deleted_at IS NULL').get(code);
 
-  db.prepare('UPDATE registration_requests SET employee_code = ? WHERE id = ?').run(code, requestId);
+  db.prepare('UPDATE registration_requests SET employee_code = ?, email = ? WHERE id = ?').run(code, mail, requestId);
   audit({
-    userId: actorUser.id, action: 'registration_code_edited', tableName: 'registration_requests', recordId: requestId,
-    detail: { employeeCode: code, previousEmployeeCode: req.employee_code },
+    userId: actorUser.id, action: 'registration_request_edited', tableName: 'registration_requests', recordId: requestId,
+    detail: {
+      employeeCode: code,
+      ...(codeChanged ? { previousEmployeeCode: req.employee_code } : {}),
+      // อีเมลเป็นข้อมูลส่วนบุคคล แต่เก็บลงประวัติเหมือน ID เพราะเป็นค่าที่ผู้ดูแลแก้ให้คนอื่น
+      // ถ้าไม่เก็บ จะตอบไม่ได้เลยว่าใครเปลี่ยนอีเมลของใครเป็นอะไรเมื่อไหร่
+      ...(emailChanged ? { email: mail || '', previousEmail: req.email || '' } : {}),
+    },
   });
-  return { ok: true, employeeCode: code, changed: true, clashesWithUser: Boolean(clash) };
+  return { ok: true, employeeCode: code, email: mail || '', changed: true, clashesWithUser: Boolean(clash) };
 }
 
 /**
@@ -243,6 +269,14 @@ export function approveRegistration({ requestId, roleId, departmentId, actorUser
     // ถูกกดอนุมัติพร้อมกันจะผ่านด่านทั้งคู่ แล้วไปล้มที่ unique index โดยไม่มีข้อความที่อ่านรู้เรื่อง
     if (db.prepare('SELECT 1 x FROM users WHERE employee_code = ? AND deleted_at IS NULL').get(req.employee_code)) {
       throw httpError(409, `รหัสพนักงาน ${req.employee_code} มีบัญชีอยู่แล้ว — ถ้าเป็นคนเดียวกันให้ปฏิเสธคำขอนี้แล้วรีเซ็ตรหัสให้บัญชีเดิมแทน`);
+    }
+    // อีเมลก็เป็น UNIQUE เหมือนรหัสพนักงาน และเป็นช่องที่ "ไม่บังคับกรอก" จึงชนกันได้ง่ายกว่ามาก:
+    // ครูหลายคนกรอกอีเมลกลางของโรงเรียนอันเดียวกัน หรือกรอกอีเมลของคนอื่นผิด เดิมไม่มีด่านตรงนี้
+    // การกดอนุมัติจึงไปล้มที่ unique index แล้วผู้ดูแลได้ข้อความดิบของฐานข้อมูลว่า
+    // "UNIQUE constraint failed: users.email" ซึ่งไม่บอกเลยว่าเป็นของใคร หรือต้องทำอะไรต่อ
+    // (เจอจริงบนเครื่องใช้งานจริงของโรงเรียน) — แถวที่ลบแบบ soft delete ก็ยังจองอีเมลไว้เช่นกัน
+    if (req.email && db.prepare('SELECT deleted_at FROM users WHERE email = ?').get(req.email)) {
+      throw httpError(409, `อีเมล ${req.email} มีบัญชีในระบบใช้อยู่แล้ว — ระบบกำหนดให้อีเมลไม่ซ้ำกัน กรุณาแก้อีเมลของคำขอนี้ หรือเว้นว่างไว้ (ไม่กรอกอีเมลก็อนุมัติได้ตามปกติ) แล้วกดอนุมัติอีกครั้ง`);
     }
     db.prepare(`
       INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position, department_id,

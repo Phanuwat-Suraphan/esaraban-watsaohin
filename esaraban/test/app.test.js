@@ -5089,12 +5089,18 @@ describe('ผู้ดูแลแก้รหัสประจำตัว (ID
 // แก้ ID ตั้งแต่ตอนที่ยังเป็นคำขอ ดีกว่าปล่อยให้อนุมัติไปแล้วค่อยตามแก้ — เดิมทางเดียวคือปฏิเสธคำขอ
 // แล้วให้ครูกรอกใหม่ทั้งชุด (ต้องตั้งรหัสผ่านและ PIN ใหม่ด้วย ทั้งที่ไม่ได้ผิดอะไร) ซึ่งครูจำนวนหนึ่ง
 // ก็ไม่ได้กลับมากรอกใหม่จริงๆ กลายเป็นคนที่หายไปจากระบบเงียบๆ
-describe('ผู้ดูแลแก้ ID ของคำขอลงทะเบียนก่อนอนุมัติได้', () => {
+describe('ผู้ดูแลแก้ ID / อีเมล ของคำขอลงทะเบียนก่อนอนุมัติได้', () => {
   const admin = () => loadUserForTest(seed.userIds.admin);
   const roleId = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
   let seq = 0;
-  const submit = (code) => reg.submitRegistration({
-    employeeCode: code, firstName: 'ครูขอ', lastName: `สมัคร${++seq}`, departmentId: deptId,
+  // นำเข้าตรงนี้เอง ไม่อ้างตัวแปรที่ประกาศไว้ท้ายไฟล์ — node:test เริ่มรันเทสต์ได้ก่อนที่ top-level
+  // await ของท้ายไฟล์จะทำงานเสร็จ (เห็นชัดเวลารันแบบกรองชื่อเทสต์) แล้วจะล้มด้วย
+  // "Cannot access 'reg' before initialization" ซึ่งไม่เกี่ยวกับสิ่งที่เทสต์ตรวจเลย
+  // import ซ้ำของโมดูลเดิมได้ตัวเดิมจากแคช ไม่ได้โหลดใหม่
+  let reg;
+  before(async () => { reg = await import('../src/services/registration.js'); });
+  const submit = (code, email) => reg.submitRegistration({
+    employeeCode: code, firstName: 'ครูขอ', lastName: `สมัคร${++seq}`, departmentId: deptId, email,
     password: 'MyOwnPassword2569', pin: '482913', requestedRole: 'teacher',
   }, { ip: '127.0.0.1' });
   const reqRow = (code) => db.prepare("SELECT * FROM registration_requests WHERE employee_code = ? AND status = 'pending'").get(code);
@@ -5102,7 +5108,7 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
   test('แก้ ID แล้วอนุมัติ ต้องได้บัญชีที่ ID ใหม่ และครูเข้าระบบด้วยรหัสผ่านที่ตั้งไว้เดิมได้', async () => {
     submit('พิมพ์ผิดตอนสมัคร01');
     const req = reqRow('พิมพ์ผิดตอนสมัคร01');
-    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'kruthana01' });
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`, { employeeCode: 'kruthana01' });
     assert.equal(res.status, 200, res.body);
     assert.equal(res.json.employeeCode, 'kruthana01');
     assert.equal(res.json.changed, true);
@@ -5124,7 +5130,7 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
     assert.ok(reg.registrationStatusFor({ employeeCode: 'ไอดีเก่า02', password: 'MyOwnPassword2569' }),
       'ก่อนแก้ต้องเช็คด้วย ID เดิมได้');
 
-    await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'idmai02' });
+    await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`, { employeeCode: 'idmai02' });
     assert.ok(reg.registrationStatusFor({ employeeCode: 'idmai02', password: 'MyOwnPassword2569' }),
       'หลังแก้ต้องเช็คด้วย ID ใหม่ได้');
     assert.equal(reg.registrationStatusFor({ employeeCode: 'ไอดีเก่า02', password: 'MyOwnPassword2569' }), null,
@@ -5135,7 +5141,7 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
     submit('reqdup-a03');
     submit('reqdup-b03');
     const req = reqRow('reqdup-a03');
-    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'reqdup-b03' });
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`, { employeeCode: 'reqdup-b03' });
     assert.equal(res.status, 409, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
     assert.equal(reqRow('reqdup-a03').employee_code, 'reqdup-a03', 'ค่าเดิมต้องไม่ถูกแก้');
   });
@@ -5146,7 +5152,7 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
     submit('willclash04');
     const req = reqRow('willclash04');
     const existing = db.prepare('SELECT employee_code FROM users WHERE deleted_at IS NULL LIMIT 1').get().employee_code;
-    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: existing });
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`, { employeeCode: existing });
     assert.equal(res.status, 200, res.body);
     assert.equal(res.json.clashesWithUser, true, 'ต้องบอกผู้ดูแลว่า ID นี้มีบัญชีอยู่แล้ว');
   });
@@ -5155,7 +5161,7 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
     submit('badinput05');
     const req = reqRow('badinput05');
     for (const [label, code] of [['มีช่องว่าง', 'kru 005'], ['เว้นว่าง', '   ']]) {
-      const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: code });
+      const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`, { employeeCode: code });
       assert.equal(res.status, 400, `ต้องปฏิเสธ: ${label} (ได้ ${res.status})`);
     }
     assert.equal(reqRow('badinput05').employee_code, 'badinput05');
@@ -5165,7 +5171,7 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
     submit('reviewed06');
     const req = reqRow('reviewed06');
     await dispatchPost(admin(), `/admin/registrations/${req.id}/reject`, { reason: 'ทดสอบ' });
-    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'toolate06' });
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`, { employeeCode: 'toolate06' });
     assert.equal(res.status, 404, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
   });
 
@@ -5173,7 +5179,7 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
     submit('notadmin07');
     const req = reqRow('notadmin07');
     const teacher = loadUserForTest(seed.userIds.teacher001);
-    const res = await dispatchPost(teacher, `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'hijack07' });
+    const res = await dispatchPost(teacher, `/admin/registrations/${req.id}/edit`, { employeeCode: 'hijack07' });
     assert.equal(res.status, 403, `ต้องปฏิเสธ (ได้ ${res.status})`);
     assert.equal(reqRow('notadmin07').employee_code, 'notadmin07');
   });
@@ -5181,12 +5187,102 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
   test('ประวัติการใช้งานต้องเก็บทั้ง ID เดิมและ ID ใหม่', async () => {
     submit('auditold08');
     const req = reqRow('auditold08');
-    await dispatchPost(admin(), `/admin/registrations/${req.id}/employee-code`, { employeeCode: 'auditnew08' });
-    const row = db.prepare(`SELECT detail FROM audit_logs WHERE record_id = ? AND action = 'registration_code_edited' ORDER BY created_at DESC LIMIT 1`).get(req.id);
+    await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`, { employeeCode: 'auditnew08' });
+    const row = db.prepare(`SELECT detail FROM audit_logs WHERE record_id = ? AND action = 'registration_request_edited' ORDER BY created_at DESC LIMIT 1`).get(req.id);
     assert.ok(row, 'ต้องมีบันทึกการแก้ ID');
     const detail = JSON.parse(row.detail);
     assert.equal(detail.employeeCode, 'auditnew08');
     assert.equal(detail.previousEmployeeCode, 'auditold08');
+  });
+
+  // อีเมลซ้ำคือสิ่งที่เกิดขึ้นจริงบนเครื่องใช้งานจริงของโรงเรียน: ครูหลายคนกรอกอีเมลกลางของโรงเรียน
+  // อันเดียวกัน แล้วผู้ดูแลกดอนุมัติได้คนแรกคนเดียว คนต่อไปได้ข้อความดิบของฐานข้อมูลว่า
+  // "UNIQUE constraint failed: users.email" เด้งขึ้นมา ซึ่งไม่บอกเลยว่าเป็นของใครหรือต้องทำอะไรต่อ
+  test('อีเมลซ้ำกับบัญชีที่มีอยู่ ต้องบอกเป็นภาษาคนและบอกทางออก ไม่ใช่ข้อความดิบของฐานข้อมูล', async () => {
+    submit('mailuser-a10', 'saraban@school.ac.th');
+    submit('mailuser-b10', 'saraban@school.ac.th');
+    const a = reqRow('mailuser-a10');
+    const b = reqRow('mailuser-b10');
+    const first = await dispatchPost(admin(), `/admin/registrations/${a.id}/approve`, { roleId: roleId('teacher'), departmentId: deptId });
+    assert.ok(first.status < 400, `คนแรกต้องอนุมัติผ่าน: ${first.body}`);
+
+    const second = await dispatchPost(admin(), `/admin/registrations/${b.id}/approve`, { roleId: roleId('teacher'), departmentId: deptId });
+    assert.equal(second.status, 409, `คนที่สองต้องถูกปฏิเสธอย่างสุภาพ ไม่ใช่ 500 (ได้ ${second.status}: ${second.body})`);
+    assert.ok(!/UNIQUE constraint/.test(second.body), 'ต้องไม่โผล่ข้อความดิบของฐานข้อมูลให้ผู้ดูแลเห็น');
+    assert.match(second.json.error || '', /อีเมล/, 'ต้องบอกว่าเป็นเรื่องอีเมล');
+    assert.match(second.json.error || '', /เว้นว่าง/, 'ต้องบอกทางออกว่าเว้นว่างไว้ก็อนุมัติได้');
+    // คำขอต้องยังรอตรวจอยู่ ไม่ใช่ถูกทำเป็นอนุมัติไปแล้วครึ่งๆ กลางๆ
+    assert.equal(reqRow('mailuser-b10').status, 'pending', 'คำขอต้องยังอยู่ให้แก้ต่อได้');
+  });
+
+  test('แก้อีเมลให้ไม่ซ้ำ แล้วอนุมัติผ่านได้', async () => {
+    submit('mailfix-a11', 'shared11@school.ac.th');
+    submit('mailfix-b11', 'shared11@school.ac.th');
+    const a = reqRow('mailfix-a11');
+    const b = reqRow('mailfix-b11');
+    await dispatchPost(admin(), `/admin/registrations/${a.id}/approve`, { roleId: roleId('teacher'), departmentId: deptId });
+
+    const edit = await dispatchPost(admin(), `/admin/registrations/${b.id}/edit`,
+      { employeeCode: 'mailfix-b11', email: 'own11@school.ac.th' });
+    assert.equal(edit.status, 200, edit.body);
+    assert.equal(edit.json.email, 'own11@school.ac.th');
+
+    const res = await dispatchPost(admin(), `/admin/registrations/${b.id}/approve`, { roleId: roleId('teacher'), departmentId: deptId });
+    assert.ok(res.status < 400, `ต้องอนุมัติผ่านแล้ว: ${res.body}`);
+    assert.equal(db.prepare('SELECT email FROM users WHERE employee_code = ?').get('mailfix-b11').email, 'own11@school.ac.th');
+  });
+
+  // ทางออกที่เร็วที่สุดสำหรับผู้ดูแล: อีเมลไม่ใช่ข้อมูลที่ระบบนี้ต้องใช้ ลบทิ้งแล้วอนุมัติได้เลย
+  // ต้องเก็บเป็น NULL ไม่ใช่ค่าว่าง ไม่งั้นครูคนที่สองที่ถูกล้างอีเมลเหมือนกันจะชนกันเองที่ค่าว่าง
+  test('ล้างอีเมลทิ้งแล้วอนุมัติได้ และครูที่ไม่มีอีเมลหลายคนต้องอนุมัติได้ทุกคน', async () => {
+    submit('mailclear-a12', 'dup12@school.ac.th');
+    submit('mailclear-b12', 'dup12@school.ac.th');
+    submit('mailclear-c12', 'dup12@school.ac.th');
+    const [a, b, c] = ['mailclear-a12', 'mailclear-b12', 'mailclear-c12'].map(reqRow);
+    await dispatchPost(admin(), `/admin/registrations/${a.id}/approve`, { roleId: roleId('teacher'), departmentId: deptId });
+
+    for (const r of [b, c]) {
+      const edit = await dispatchPost(admin(), `/admin/registrations/${r.id}/edit`, { employeeCode: r.employee_code, email: '' });
+      assert.equal(edit.status, 200, edit.body);
+      assert.equal(edit.json.email, '', 'ต้องล้างอีเมลได้');
+      const res = await dispatchPost(admin(), `/admin/registrations/${r.id}/approve`, { roleId: roleId('teacher'), departmentId: deptId });
+      assert.ok(res.status < 400, `${r.employee_code} ต้องอนุมัติผ่าน: ${res.body}`);
+    }
+    for (const code of ['mailclear-b12', 'mailclear-c12']) {
+      assert.equal(db.prepare('SELECT email FROM users WHERE employee_code = ?').get(code).email, null,
+        `${code} ต้องเก็บอีเมลเป็น NULL ไม่ใช่ค่าว่าง ไม่งั้นคนที่ไม่มีอีเมลจะชนกันเอง`);
+    }
+  });
+
+  test('แก้อีเมลไปชนกับบัญชีที่มีอยู่ ต้องถูกปฏิเสธตั้งแต่ตอนบันทึก ไม่ใช่ตอนกดอนุมัติ', async () => {
+    submit('mailclash13');
+    const taken = db.prepare('SELECT email FROM users WHERE email IS NOT NULL LIMIT 1').get();
+    assert.ok(taken, 'ต้องมีบัญชีที่มีอีเมลอยู่จริง ไม่งั้นเทสต์นี้ไม่ได้ตรวจอะไร');
+    const req = reqRow('mailclash13');
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`,
+      { employeeCode: 'mailclash13', email: taken.email });
+    assert.equal(res.status, 409, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+    assert.equal(reqRow('mailclash13').email, null, 'ค่าเดิมต้องไม่ถูกแก้');
+  });
+
+  test('รูปแบบอีเมลที่ใช้ไม่ได้ ต้องถูกปฏิเสธ', async () => {
+    submit('mailformat14');
+    const req = reqRow('mailformat14');
+    const res = await dispatchPost(admin(), `/admin/registrations/${req.id}/edit`,
+      { employeeCode: 'mailformat14', email: 'ไม่ใช่อีเมล' });
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
+  });
+
+  test('หน้าคำขอต้องเตือนเรื่องอีเมลซ้ำตั้งแต่ก่อนกดอนุมัติ', async () => {
+    submit('mailwarn-a15', 'warn15@school.ac.th');
+    const a = reqRow('mailwarn-a15');
+    await dispatchPost(admin(), `/admin/registrations/${a.id}/approve`, { roleId: roleId('teacher'), departmentId: deptId });
+    submit('mailwarn-b15', 'warn15@school.ac.th');
+
+    const page = await dispatchGet(admin(), '/admin/registrations', {});
+    assert.equal(page.status, 200);
+    assert.match(page.body, /มีบัญชี <strong>mailwarn-a15<\/strong> ใช้อยู่แล้ว/,
+      'ต้องบอกว่าอีเมลนี้ชนกับบัญชีไหน ตั้งแต่ก่อนผู้ดูแลกดอนุมัติ');
   });
 
   test('หน้าคำขอต้องมีช่องให้แก้ ID ของแต่ละคำขอ', async () => {
@@ -5195,7 +5291,8 @@ describe('ผู้ดูแลแก้ ID ของคำขอลงทะเ
     const res = await dispatchGet(admin(), '/admin/registrations', {});
     assert.equal(res.status, 200);
     assert.ok(res.body.includes(`id="code-${req.id}"`), 'ต้องมีช่องกรอก ID ของคำขอนี้');
-    assert.ok(res.body.includes(`saveCode('${req.id}'`), 'ต้องมีปุ่มบันทึก ID ใหม่');
+    assert.ok(res.body.includes(`saveReq('${req.id}'`), 'ต้องมีปุ่มบันทึกค่าที่แก้');
+    assert.ok(res.body.includes(`id="email-${req.id}"`), 'ต้องมีช่องกรอกอีเมลของคำขอนี้');
   });
 });
 

@@ -62,7 +62,18 @@ export function submitRegistration(input, { ip } = {}) {
     throw httpError(400, 'กรุณากรอกรหัสพนักงาน ชื่อ นามสกุล และฝ่ายให้ครบ');
   }
   if (password.length < 8) throw httpError(400, 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร');
+  // ต้องตรวจฝั่งเซิร์ฟเวอร์ด้วย ไม่ใช่เชื่อหน้าเว็บอย่างเดียว — ถ้าหน้าเว็บตรวจไว้อย่างเดียว คำขอที่ส่ง
+  // ตรงมาที่ API (หรือเบราว์เซอร์ที่ JavaScript ไม่ทำงาน) จะข้ามด่านนี้ไปได้ แล้วครูจะตั้งรหัสที่พิมพ์ผิด
+  // โดยไม่มีใครรู้ ซึ่งแก้ไม่ได้อีกเลยเพราะไม่มีใครในระบบรู้ค่าที่ตั้งไว้
+  const passwordConfirm = typeof input?.passwordConfirm === 'string' ? input.passwordConfirm : '';
+  const pinConfirm = typeof input?.pinConfirm === 'string' ? input.pinConfirm.trim() : '';
+  if (passwordConfirm && passwordConfirm !== password) {
+    throw httpError(400, 'รหัสผ่านสองช่องไม่ตรงกัน — กรุณากรอกใหม่ทั้งสองช่อง');
+  }
   if (!/^\d{6}$/.test(pin)) throw httpError(400, 'PIN ต้องเป็นตัวเลข 6 หลัก');
+  if (pinConfirm && pinConfirm !== pin) {
+    throw httpError(400, 'PIN สองช่องไม่ตรงกัน — กรุณากรอกใหม่ทั้งสองช่อง');
+  }
   // เกณฑ์เดียวกับตอนตั้ง PIN ที่อื่นในระบบ — PIN ใช้แทนการลงลายมือชื่อ จึงห้ามอ่อนตั้งแต่วันแรก
   if (isWeakPin(pin)) throw httpError(400, 'PIN นี้เดาง่ายเกินไป — ห้ามใช้เลขซ้ำทั้งหมด (111111) หรือเลขเรียงติดกัน (123456)');
   if (!db.prepare('SELECT 1 x FROM departments WHERE id = ?').get(departmentId)) {

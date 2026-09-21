@@ -76,12 +76,28 @@ function registerPage({ error, done, values = {} } = {}) {
         <div class="help-text">เป็นเพียงคำขอ — ผู้ดูแลระบบเป็นผู้กำหนดบทบาทจริงตอนอนุมัติ</div>
       </div>
       <div class="field"><label>อีเมล</label><input type="email" name="email" value="${v('email')}" /></div>
-      <div class="field"><label for="regPassword">รหัสผ่าน (อย่างน้อย 8 ตัวอักษร) *</label>
-        <input type="password" id="regPassword" name="password" minlength="8" required autocomplete="new-password"
-          ${error ? 'autofocus' : ''} /></div>
-      <div class="field"><label for="regPin">PIN 6 หลัก *</label>
-        <input type="password" id="regPin" name="pin" inputmode="numeric" maxlength="6" required autocomplete="new-password" />
-        <div class="help-text">ใช้แทนการลงลายมือชื่อเวลากด "ทราบ"/ลงนาม จึงต้องเป็นความลับเฉพาะตัว ห้ามใช้ 111111 หรือ 123456</div></div>
+      <!-- ต้องกรอกซ้ำทั้งรหัสผ่านและ PIN
+           นี่คือจุดเสี่ยงที่สุดของทั้งกระบวนการ: ทั้งสองช่องเป็นช่องปิด กรอกครั้งเดียว และ "ไม่มีใครในระบบ
+           รู้ค่าที่ครูตั้งไว้เลยแม้แต่ผู้ดูแล" (ตั้งใจ) ถ้าพิมพ์ผิดตัวเดียวโดยไม่รู้ตัว ครูจะเข้าระบบไม่ได้เลย
+           ตลอดไป และไม่มีใครช่วยได้นอกจากรีเซ็ตแล้วเริ่มใหม่ทั้งหมด — การกรอกซ้ำคือด่านเดียวที่กันได้ -->
+      <div class="form-grid cols-2">
+        <div class="field"><label for="regPassword">รหัสผ่าน (อย่างน้อย 8 ตัวอักษร) *</label>
+          <input type="password" id="regPassword" name="password" minlength="8" required autocomplete="new-password"
+            ${error ? 'autofocus' : ''} /></div>
+        <div class="field"><label for="regPassword2">กรอกรหัสผ่านอีกครั้ง *</label>
+          <input type="password" id="regPassword2" name="passwordConfirm" minlength="8" required autocomplete="new-password" />
+          <div class="help-text" id="pwMatch"></div></div>
+      </div>
+      <div class="form-grid cols-2">
+        <div class="field"><label for="regPin">PIN 6 หลัก *</label>
+          <input type="password" id="regPin" name="pin" inputmode="numeric" maxlength="6" required autocomplete="new-password" />
+          <div class="help-text" id="pinHint"></div></div>
+        <div class="field"><label for="regPin2">กรอก PIN อีกครั้ง *</label>
+          <input type="password" id="regPin2" name="pinConfirm" inputmode="numeric" maxlength="6" required autocomplete="new-password" />
+          <div class="help-text" id="pinMatch"></div></div>
+      </div>
+      <div class="help-text">PIN ใช้แทนการลงลายมือชื่อเวลากด "รับทราบ"/ลงนาม จึงต้องเป็นความลับเฉพาะตัว
+        ห้ามใช้เลขซ้ำทั้งหมด (111111) หรือเลขเรียงติดกัน (123456)</div>
       <div class="field"><label>ข้อความถึงผู้ดูแล</label>
         <textarea name="note" rows="2" placeholder="เช่น ครูประจำชั้น ป.4 เพิ่งย้ายมาเทอมนี้">${v('note')}</textarea>
         <div class="help-text">ช่วยให้ผู้ดูแลยืนยันตัวตนคุณได้เร็วขึ้น</div></div>
@@ -90,6 +106,76 @@ function registerPage({ error, done, values = {} } = {}) {
     <div class="text-muted" style="text-align:center;margin-top:1rem;font-size:.85rem">
       มีบัญชีอยู่แล้ว? <a href="/login">เข้าสู่ระบบ</a>
     </div>
+    <script>
+      // ตรวจให้เสร็จตั้งแต่ในหน้า ก่อนกดส่ง — ถ้าปล่อยให้เซิร์ฟเวอร์ตีกลับ ช่องรหัสผ่านกับ PIN จะถูก
+      // ล้างทั้งคู่ (ตั้งใจ ไม่ส่งรหัสกลับมาแสดงบนหน้าเว็บ) ครูต้องพิมพ์ใหม่ทั้งสี่ช่อง ซึ่งเป็นที่มาของ
+      // อาการ "กดส่งแล้วส่งไม่ได้" ที่โรงเรียนแจ้งมาตั้งแต่แรก
+      (function () {
+        var pw = document.getElementById('regPassword');
+        var pw2 = document.getElementById('regPassword2');
+        var pin = document.getElementById('regPin');
+        var pin2 = document.getElementById('regPin2');
+
+        function weakPin(v) {
+          // ต้องเป็น \\d ไม่ใช่ \d — โค้ดนี้อยู่ใน template string ของฝั่งเซิร์ฟเวอร์ ตัว \d จะถูกกลืน
+          // เหลือแค่ d ทำให้ regex กลายเป็น /^d{6}$/ ซึ่งไม่ตรงกับอะไรเลย และ "ผ่าน" ทุก PIN เงียบๆ
+          if (!/^\\d{6}$/.test(v)) return 'PIN ต้องเป็นตัวเลข 6 หลัก';
+          if (/^(\\d)\\1{5}$/.test(v)) return 'PIN นี้เดาง่ายเกินไป — เลขซ้ำกันทั้งหมด';
+          var d = v.split('').map(Number);
+          var step = d[1] - d[0];
+          if (step === 1 || step === -1) {
+            var run = true;
+            for (var i = 1; i < d.length; i++) if (d[i] - d[i - 1] !== step) { run = false; break; }
+            if (run) return 'PIN นี้เดาง่ายเกินไป — เลขเรียงติดกัน';
+          }
+          return '';
+        }
+        function show(el, msg, ok) {
+          el.textContent = msg;
+          el.style.color = msg ? (ok ? 'var(--success)' : 'var(--danger)') : '';
+        }
+        function checkPw() {
+          var m = document.getElementById('pwMatch');
+          if (!pw.value || !pw2.value) { show(m, ''); pw2.setCustomValidity(''); return; }
+          var same = pw.value === pw2.value;
+          show(m, same ? '✅ ตรงกัน' : '⚠️ ยังไม่ตรงกัน', same);
+          pw2.setCustomValidity(same ? '' : 'รหัสผ่านสองช่องยังไม่ตรงกัน');
+        }
+        function checkPin() {
+          var hint = document.getElementById('pinHint');
+          var m = document.getElementById('pinMatch');
+          var w = pin.value ? weakPin(pin.value) : '';
+          show(hint, pin.value ? (w || '✅ ใช้ได้') : '', !w);
+          pin.setCustomValidity(w);
+          if (!pin.value || !pin2.value) { show(m, ''); pin2.setCustomValidity(''); return; }
+          var same = pin.value === pin2.value;
+          show(m, same ? '✅ ตรงกัน' : '⚠️ ยังไม่ตรงกัน', same);
+          pin2.setCustomValidity(same ? '' : 'PIN สองช่องยังไม่ตรงกัน');
+        }
+        // ต้องดัก 'change' ด้วย ไม่ใช่แค่ 'input'
+        //
+        // public/app.js มีตัวล้าง customValidity ที่ดักทั้ง input และ change แบบ capture ทั้งหน้า
+        // (มีไว้กันช่องที่ "ผิดค้างตลอดไป" จนฟอร์มส่งไม่ออกอีกเลย) — พอผู้ใช้พิมพ์ PIN ช่องที่สองแล้ว
+        // ย้ายไปช่องถัดไป จะเกิด change บนช่อง PIN ตอน blur ตัวล้างจึงลบสถานะ "ยังไม่ตรงกัน" ทิ้ง
+        // แล้วฟอร์มส่งออกไปได้ทั้งที่ยังไม่ตรงกัน (ยืนยันแล้วว่าเกิดขึ้นจริงบนเบราว์เซอร์)
+        // ตัวเราอยู่ที่ตัว element (bubble) จึงทำงานหลังตัวล้างเสมอ = ตั้งค่ากลับคืนได้ทุกครั้ง
+        ['input', 'change'].forEach(function (evt) {
+          [pw, pw2].forEach(function (el) { el.addEventListener(evt, checkPw); });
+          [pin, pin2].forEach(function (el) { el.addEventListener(evt, checkPin); });
+        });
+
+        // ด่านสุดท้ายตอนกดส่ง — ไม่พึ่งลำดับการเกิดอีเวนต์อย่างเดียว ถ้ายังไม่ตรงกันต้องไม่ปล่อยผ่าน
+        // เพราะถ้าหลุดไปถึงเซิร์ฟเวอร์ ช่องรหัสทั้งสี่จะถูกล้าง ครูต้องพิมพ์ใหม่ทั้งหมด
+        document.querySelector('form[action="/register"]').addEventListener('submit', function (e) {
+          checkPw();
+          checkPin();
+          if (!pw2.checkValidity() || !pin.checkValidity() || !pin2.checkValidity()) {
+            e.preventDefault();
+            (!pin.checkValidity() ? pin : !pin2.checkValidity() ? pin2 : pw2).reportValidity();
+          }
+        });
+      })();
+    </script>
   </div></div></div>`;
 }
 

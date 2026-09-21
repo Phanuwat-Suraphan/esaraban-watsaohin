@@ -8627,6 +8627,46 @@ describe('ลงทะเบียนเอง + ผู้ดูแลอนุ�
     assert.equal(again.ok, true, 'ต้องตอบเหมือนเดิมเสมอ ไม่โยน error ที่บอกใบ้ว่ารหัสนี้มีคนใช้แล้ว');
   });
 
+  // จุดเสี่ยงที่สุดของทั้งกระบวนการ: รหัสผ่านกับ PIN เป็นช่องปิด กรอกครั้งเดียว และไม่มีใครในระบบ
+  // รู้ค่าที่ครูตั้งไว้เลยแม้แต่ผู้ดูแล (ตั้งใจ) พิมพ์ผิดตัวเดียว = เข้าระบบไม่ได้ตลอดไปและไม่มีใครช่วยได้
+  describe('ตอนสมัครต้องกรอกรหัสผ่านและ PIN ซ้ำ', () => {
+    test('กรอกซ้ำไม่ตรงกัน ต้องถูกปฏิเสธพร้อมบอกว่าช่องไหน', () => {
+      assert.throws(() => reg.submitRegistration(validReq({ passwordConfirm: 'คนละรหัสกันเลย2569' }), {}),
+        /รหัสผ่านสองช่องไม่ตรงกัน/);
+      assert.throws(() => reg.submitRegistration(validReq({ pinConfirm: '472619' }), {}),
+        /PIN สองช่องไม่ตรงกัน/);
+    });
+
+    test('กรอกซ้ำตรงกัน ต้องผ่านตามปกติ', () => {
+      const input = validReq();
+      const r = reg.submitRegistration({ ...input, passwordConfirm: input.password, pinConfirm: input.pin }, {});
+      assert.equal(r.ok, true);
+      assert.equal(r.duplicate, false);
+    });
+
+    test('หน้าเว็บต้องมีช่องกรอกซ้ำจริง และตรวจให้เสร็จตั้งแต่ในหน้า', async () => {
+      const res = await dispatchGet(null, '/register', {});
+      assert.equal(res.status, 200);
+      assert.match(res.body, /name="passwordConfirm"/, 'ต้องมีช่องกรอกรหัสผ่านซ้ำ');
+      assert.match(res.body, /name="pinConfirm"/, 'ต้องมีช่องกรอก PIN ซ้ำ');
+      // ถ้าปล่อยให้เซิร์ฟเวอร์ตีกลับ ช่องรหัสทั้งสี่จะถูกล้าง ครูต้องพิมพ์ใหม่หมด
+      assert.match(res.body, /setCustomValidity/, 'ต้องตรวจให้เสร็จตั้งแต่ในหน้าก่อนกดส่ง');
+      // \d ใน template string ของฝั่งเซิร์ฟเวอร์จะถูกกลืนเหลือ d ทำให้ regex ผ่าน PIN ทุกแบบเงียบๆ
+      assert.match(res.body, /\/\^\\d\{6\}\$\//,
+        'regex ตรวจ PIN ที่ส่งไปหน้าเว็บต้องเป็น \\d จริง ไม่ใช่ d เปล่าๆ ที่ไม่ตรงกับอะไรเลย');
+    });
+
+    // ถ้าตรวจแค่ฝั่งหน้าเว็บ คำขอที่ยิงตรงมาที่ API จะข้ามด่านนี้ไปได้
+    test('ยิงตรงมาที่ API โดยข้ามหน้าเว็บ ก็ต้องถูกตรวจเหมือนกัน', async () => {
+      const input = validReq();
+      const res = await dispatchPost(null, '/register',
+        { ...input, passwordConfirm: 'ไม่ตรงกันแน่นอน2569', pinConfirm: input.pin });
+      assert.equal(res.status, 400, 'ต้องถูกปฏิเสธที่ฝั่งเซิร์ฟเวอร์ด้วย');
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM registration_requests WHERE employee_code = ?')
+        .get(input.employeeCode).c, 0, 'ต้องไม่มีคำขอถูกบันทึก');
+    });
+  });
+
   test('PIN ที่เดาง่ายและรหัสผ่านสั้นเกินไป ต้องถูกปฏิเสธตั้งแต่ตอนสมัคร', () => {
     assert.throws(() => reg.submitRegistration(validReq({ pin: '123456' }), {}), /เดาง่ายเกินไป/);
     assert.throws(() => reg.submitRegistration(validReq({ pin: '111111' }), {}), /เดาง่ายเกินไป/);

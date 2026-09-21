@@ -3939,7 +3939,7 @@ describe('ทุกปุ่มที่บันทึกข้อมูลต�
       '/leave', `/leave/${pick('SELECT id FROM leave_requests LIMIT 1')}/approve`,
       `/leave/${pick('SELECT id FROM leave_requests LIMIT 1')}/reject`,
       '/notifications/read-all',
-      '/profile/avatar', '/profile/info', '/profile/password', '/profile/pin', '/profile/signature',
+      '/profile/avatar', '/profile/avatar-image', '/profile/info', '/profile/password', '/profile/pin', '/profile/signature',
       '/retention/batches',
     ];
 
@@ -4952,6 +4952,58 @@ describe('ค้นหาจากแถบบนสุด และหน้า
     }
     assert.equal((await dispatchPost(user, '/profile/info', { firstName: 'ครูใหญ่', lastName: 'สอนดี', email: 'teacher@school.local' })).status, 200,
       'ข้อมูลปกติต้องยังบันทึกได้');
+  });
+
+  // ครูอัปรูปโปรไฟล์ของตัวเองได้ — เบราว์เซอร์ย่อเป็นจัตุรัส 256px ให้ก่อนส่ง แต่ฝั่งเซิร์ฟเวอร์
+  // ห้ามเชื่อ เพราะใครก็ยิงเส้นทางนี้ตรงๆ ได้
+  test('อัปรูปโปรไฟล์ได้ และรูปขึ้นแทนตัวอักษรย่อทุกหน้า', async () => {
+    const user = teacher();
+    const jpeg = `data:image/jpeg;base64,${Buffer.concat([Buffer.from('ffd8ff', 'hex'), Buffer.alloc(60)]).toString('base64')}`;
+    assert.equal((await dispatchPost(user, '/profile/avatar-image', { dataUrl: jpeg })).status, 200);
+    assert.equal(db.prepare('SELECT avatar_image FROM users WHERE id = ?').get(user.id).avatar_image, jpeg,
+      'ต้องเก็บรูปไว้กับบัญชีของเจ้าตัว');
+
+    const page = await dispatchGet(loadUserForTest(user.id), '/', {});
+    assert.match(page.body, /class="avatar avatar-photo"/, 'วงกลมอวตารต้องเปลี่ยนเป็นโหมดรูป');
+    assert.ok(page.body.includes(jpeg), 'รูปต้องขึ้นที่แถบบนของทุกหน้า');
+  });
+
+  test('ลบรูปโปรไฟล์แล้วกลับไปใช้อิโมจิ/ตัวอักษรย่อตามเดิม', async () => {
+    const user = teacher();
+    const jpeg = `data:image/jpeg;base64,${Buffer.concat([Buffer.from('ffd8ff', 'hex'), Buffer.alloc(60)]).toString('base64')}`;
+    await dispatchPost(user, '/profile/avatar-image', { dataUrl: jpeg });
+    assert.equal((await dispatchPost(loadUserForTest(user.id), '/profile/avatar-image', { dataUrl: null })).status, 200);
+    assert.equal(db.prepare('SELECT avatar_image FROM users WHERE id = ?').get(user.id).avatar_image, null);
+    const page = await dispatchGet(loadUserForTest(user.id), '/', {});
+    assert.ok(!/avatar-photo/.test(page.body), 'ต้องกลับไปเป็นวงกลมตัวอักษร/อิโมจิ');
+  });
+
+  // รูปโปรไฟล์ถูกฝังในทุกหน้าของระบบ ไฟล์ที่ไม่ใช่รูปจริงจึงต้องไม่หลุดเข้าไปเหมือนกับลายเซ็น
+  test('รูปโปรไฟล์รับเฉพาะ PNG/JPG จริงเท่านั้น', async () => {
+    const user = teacher();
+    for (const [label, dataUrl] of [
+      ['SVG ที่มีสคริปต์', `data:image/svg+xml;base64,${Buffer.from('<svg onload="alert(1)"/>').toString('base64')}`],
+      ['อ้างว่าเป็น JPG แต่ข้างในเป็นข้อความ', `data:image/jpeg;base64,${Buffer.from('ไม่ใช่รูป').toString('base64')}`],
+      ['รูปใหญ่เกินเพดาน', `data:image/jpeg;base64,${Buffer.concat([Buffer.from('ffd8ff', 'hex'), Buffer.alloc(600000)]).toString('base64')}`],
+      ['ไม่ใช่ข้อความเลย', 12345],
+    ]) {
+      const res = await dispatchPost(user, '/profile/avatar-image', { dataUrl });
+      assert.ok(res.status >= 400 && res.status < 500, `ควรปฏิเสธอย่างสุภาพ: ${label} (ได้ ${res.status})`);
+    }
+  });
+
+  // เส้นทางนี้เขียนลงบัญชีของ ctx.user เสมอ ไม่มีพารามิเตอร์ให้ระบุคนอื่น — ล็อกพฤติกรรมนี้ไว้
+  // เพราะถ้าวันหนึ่งมีคนเติม userId เข้ามา จะกลายเป็นช่องให้เปลี่ยนรูปของคนอื่นได้ทันที
+  test('อัปรูปได้เฉพาะของตัวเอง ระบุบัญชีคนอื่นไม่ได้', async () => {
+    const user = teacher();
+    const victim = loadUserForTest(seed.userIds.director01);
+    const before = db.prepare('SELECT avatar_image FROM users WHERE id = ?').get(victim.id).avatar_image;
+    const jpeg = `data:image/jpeg;base64,${Buffer.concat([Buffer.from('ffd8ff', 'hex'), Buffer.alloc(30)]).toString('base64')}`;
+    await dispatchPost(user, '/profile/avatar-image', { dataUrl: jpeg, userId: victim.id, id: victim.id });
+    assert.equal(db.prepare('SELECT avatar_image FROM users WHERE id = ?').get(victim.id).avatar_image, before,
+      'รูปของคนอื่นต้องไม่ถูกแตะ');
+    assert.equal(db.prepare('SELECT avatar_image FROM users WHERE id = ?').get(user.id).avatar_image, jpeg,
+      'ต้องเปลี่ยนของตัวเองเท่านั้น');
   });
 
   // ลายเซ็นถูกฝังลงในไฟล์ PDF ที่ประทับตราและแสดงบนหน้าเว็บ ไฟล์ที่ไม่ใช่รูปจริงจึงต้องไม่หลุดเข้าไป

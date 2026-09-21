@@ -188,14 +188,26 @@ function navItem(href, icon, label, currentPath, count = 0) {
   return `<a class="nav-link${active ? ' active' : ''}" href="${href}"><span class="icon">${icon}</span><span>${esc(label)}</span>${badge}</a>`;
 }
 
-// อวตาร: ถ้าผู้ใช้เลือกอิโมจิไว้ (UX Bible Part 21 §8) ใช้อิโมจินั้น ไม่งั้น fallback เป็นตัวอักษรย่อชื่อ
+/**
+ * สิ่งที่อยู่ในวงกลมอวตาร เรียงตามลำดับความเป็น "ตัวเขาจริงๆ"
+ *   1. รูปถ่ายที่เจ้าตัวอัปโหลดเอง  2. อิโมจิที่เลือกไว้  3. ตัวอักษรย่อชื่อ
+ * คืน HTML ไม่ใช่ข้อความล้วน เพราะกรณีรูปต้องเป็น <img> — ทุกทางผ่าน esc() มาแล้ว
+ */
+export function avatarInner(user) {
+  if (user?.avatar_image) {
+    return `<img src="${esc(user.avatar_image)}" alt="" />`;
+  }
+  return esc(avatarContent(user));
+}
+
+// ข้อความในวงกลมอวตาร (ไม่รวมกรณีรูปถ่าย) — ยังใช้ที่อื่นที่ต้องการข้อความล้วน เช่น alt/title
 export function avatarContent(user) {
   if (user?.avatar_emoji) return esc(user.avatar_emoji);
   return esc((user?.first_name?.[0] || '') + (user?.last_name?.[0] || ''));
 }
 
 export function layout({ user, title, path: currentPath, content, flash }) {
-  const initials = avatarContent(user);
+  const avatar = avatarInner(user);
   return `<!doctype html>
 <html lang="th">
 <head>
@@ -218,7 +230,7 @@ export function layout({ user, title, path: currentPath, content, flash }) {
 </script>
 </head>
 <body>
-${user ? renderAppShell({ user, currentPath, content, flash, initials }) : content}
+${user ? renderAppShell({ user, currentPath, content, flash, avatar }) : content}
 <div id="pinModal" class="modal-backdrop">
   <div class="modal">
     <h3 id="pinModalTitle">ยืนยันตัวตนด้วย PIN</h3>
@@ -237,7 +249,7 @@ ${user ? renderAppShell({ user, currentPath, content, flash, initials }) : conte
 </html>`;
 }
 
-function renderAppShell({ user, currentPath, content, flash, initials }) {
+function renderAppShell({ user, currentPath, content, flash, avatar }) {
   return `
 <div class="app-shell">
   <div id="sidebarBackdrop" class="sidebar-backdrop" onclick="toggleSidebar(false)"></div>
@@ -299,7 +311,7 @@ function renderAppShell({ user, currentPath, content, flash, initials }) {
           🔔
           ${user.unreadCount ? `<span class="notif-dot">${user.unreadCount > 9 ? '9+' : user.unreadCount}</span>` : ''}
         </a>
-        <a href="/profile" class="avatar" title="${esc(user.first_name)} ${esc(user.last_name)}">${esc(initials)}</a>
+        <a href="/profile" class="avatar${user.avatar_image ? ' avatar-photo' : ''}" title="${esc(user.first_name)} ${esc(user.last_name)}">${avatar}</a>
       </div>
     </header>
     <main class="content">

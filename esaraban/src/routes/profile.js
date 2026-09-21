@@ -1,5 +1,5 @@
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate, avatarContent, parseUserAgent } from '../render.js';
+import { layout, esc, fmtDate, avatarInner, parseUserAgent } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, nowIso, hashSecret, verifySecret, audit, isWeakPin, TEST_MODE_ON, TEST_MODE_PASSWORD_LOCK_MESSAGE } from '../db.js';
 import { revokeOtherSessions } from '../auth.js';
@@ -8,6 +8,11 @@ import { asText } from '../services/validate.js';
 import { lineLinkStatus, LINK_KEYWORD } from '../services/lineNotify.js';
 
 // อวตารอิโมจิให้เลือก (UX Bible Part 21 §8) — คัดเฉพาะที่เหมาะกับบุคลากรโรงเรียน
+// ขนาดรูปโปรไฟล์หลังย่อ — 256 พอสำหรับวงกลม 34px บนจอความละเอียดสูง (จอ 3x ใช้ 102px)
+// และเผื่อไว้ถ้าอนาคตมีที่ไหนแสดงใหญ่กว่านี้ ไฟล์ JPEG คุณภาพ 0.85 ที่ขนาดนี้อยู่ราว 15-30KB
+const AVATAR_PX = 256;
+const MAX_AVATAR_BYTES = 512 * 1024;
+
 const AVATAR_EMOJIS = ['👩‍🏫', '👨‍🏫', '🧑‍🏫', '👩‍💼', '👨‍💼', '🧑‍💼', '🎓', '📚', '🦉', '🐱', '🐶', '🦊', '🐰', '🐢', '🐼', '🌿', '⭐', '😊'];
 
 /**
@@ -74,18 +79,33 @@ router.get('/profile', requirePage((ctx) => {
     <div class="grid-2">
       <div class="card">
         <div class="flex items-center gap-2" style="margin-bottom:1rem">
-          <div class="avatar" id="profileAvatarPreview" style="width:56px;height:56px;font-size:1.1rem">${avatarContent(ctx.user)}</div>
+          <div class="avatar${ctx.user.avatar_image ? ' avatar-photo' : ''}" id="profileAvatarPreview" style="width:56px;height:56px;font-size:1.1rem">${avatarInner(ctx.user)}</div>
           <div>
             <div style="font-weight:700;font-size:1.05rem">${esc(ctx.user.prefix || '')}${esc(ctx.user.first_name)} ${esc(ctx.user.last_name)}</div>
             <div class="text-muted">${esc(ctx.user.position || '')}</div>
           </div>
         </div>
         <div class="field">
-          <label>เลือกอวตาร</label>
+          <label for="avatarFile">รูปโปรไฟล์ของฉัน</label>
+          <!-- ย่อรูปให้เหลือ ${AVATAR_PX}x${AVATAR_PX} ตั้งแต่ในเบราว์เซอร์ก่อนส่งขึ้นไป — รูปจากกล้องมือถือ
+               ใบละ 3-8MB ถ้าส่งขึ้นไปดิบๆ จะถูกปฏิเสธทุกใบ และครูจะสรุปว่า "อัปรูปไม่ได้" -->
+          <input type="file" id="avatarFile" accept="image/png,image/jpeg,image/webp" />
+          <div class="help-text">
+            เลือกรูปจากเครื่องหรือถ่ายใหม่ได้เลย ระบบจะย่อและตัดเป็นวงกลมให้อัตโนมัติ —
+            รูปนี้เห็นได้เฉพาะในระบบของโรงเรียน ไม่ได้ส่งออกไปไหน
+          </div>
+          <div class="chip-row" style="margin-top:.5rem">
+            <button class="btn btn-primary btn-sm" type="button" onclick="uploadAvatar(this)">บันทึกรูปโปรไฟล์</button>
+            ${ctx.user.avatar_image ? '<button class="btn btn-outline btn-sm" type="button" onclick="removeAvatarImage()">ลบรูปโปรไฟล์</button>' : ''}
+          </div>
+        </div>
+        <div class="field">
+          <label>หรือเลือกอวตารแทนรูปถ่าย</label>
           <div class="chip-row">
             ${AVATAR_EMOJIS.map((e) => `<button type="button" class="avatar-pick${ctx.user.avatar_emoji === e ? ' active' : ''}" onclick="pickAvatar('${e}')" title="ใช้อวตารนี้">${e}</button>`).join('')}
             ${ctx.user.avatar_emoji ? `<button type="button" class="avatar-pick" onclick="pickAvatar(null)" title="กลับไปใช้ตัวอักษรย่อชื่อ">↺</button>` : ''}
           </div>
+          ${ctx.user.avatar_image ? '<div class="help-text">ตอนนี้ใช้รูปถ่ายอยู่ — อวตารจะกลับมาแสดงเมื่อลบรูปโปรไฟล์ออก</div>' : ''}
         </div>
         <table class="table-plain">
           <tr><td class="text-muted">รหัสพนักงาน</td><td>${esc(ctx.user.employee_code)}</td></tr>
@@ -155,7 +175,13 @@ router.get('/profile', requirePage((ctx) => {
             <button class="btn btn-primary btn-sm" type="submit">บันทึกลายเซ็น</button>
           </form>
         </div>
-        ${ctx.user.signature_image ? `<button class="btn btn-outline btn-sm" style="margin-top:.6rem" type="button" onclick="deleteSignature()">ลบลายเซ็นที่บันทึกไว้</button>` : ''}
+        ${ctx.user.signature_image ? `<div class="chip-row" style="margin-top:.6rem">
+          <!-- ลายเซ็นที่บันทึกไว้ "ก่อน" ระบบจะตัดขอบให้อัตโนมัติ ยังมีพื้นที่ว่างติดอยู่ในรูป ทำให้เวลา
+               แสดงกึ่งกลาง ตัวลายเซ็นเบี้ยวไปอยู่ข้างชื่อ — ปุ่มนี้จัดให้พอดีโดยไม่ต้องเซ็นใหม่
+               ขึ้นเฉพาะเมื่อมีขอบให้ตัดจริง (สคริปต์เป็นคนตรวจและซ่อนปุ่มนี้เองถ้าไม่มีอะไรต้องแก้) -->
+          <button class="btn btn-outline btn-sm" type="button" id="trimSigBtn" hidden onclick="trimSavedSignature(this)">✂️ จัดลายเซ็นให้อยู่กึ่งกลางพอดี</button>
+          <button class="btn btn-outline btn-sm" type="button" onclick="deleteSignature()">ลบลายเซ็นที่บันทึกไว้</button>
+        </div>` : ''}
         <script>
           window.switchSigTab = function(tab){
             document.getElementById('sigDrawPanel').style.display = tab === 'draw' ? '' : 'none';
@@ -197,7 +223,11 @@ router.get('/profile', requirePage((ctx) => {
             window.clearSigCanvas = function(){ c2d.clearRect(0, 0, canvas.width, canvas.height); hasDrawn = false; };
             window.saveSigCanvas = function(){
               if (!hasDrawn) { toast('กรุณาวาดลายเซ็นก่อนบันทึก', 'warning'); return; }
-              var dataUrl = canvas.toDataURL('image/png');
+              // ตัดขอบว่างออกก่อนบันทึก — canvas.toDataURL() ส่งออกทั้งกระดานวาดเสมอ ถ้าเซ็นค่อนไปทางซ้าย
+              // รูปจะมีพื้นที่ว่างติดมาทางขวา แล้วลายเซ็นจะเบี้ยวไปอยู่ซ้ายของชื่อทุกที่ที่แสดงผลกึ่งกลาง
+              // รวมถึงตราประทับบนไฟล์ PDF ฉบับจริง (ผู้อำนวยการแจ้งมาจากหนังสือที่ลงนามเสร็จแล้ว)
+              var dataUrl = (window.trimSignatureMargins && window.trimSignatureMargins(canvas))
+                || canvas.toDataURL('image/png');
               fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl: dataUrl})})
                 .then(r => r.json().then(d => ({ok:r.ok,d})))
                 .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('บันทึกลายเซ็นสำเร็จ','success'); setTimeout(()=>location.reload(), 600); })
@@ -244,15 +274,74 @@ router.get('/profile', requirePage((ctx) => {
             var file = document.getElementById('signatureFile').files[0];
             if (!file) { toast('กรุณาเลือกไฟล์รูปลายเซ็น', 'warning'); return; }
             if (file.size > 1024 * 1024) { toast('ไฟล์ต้องมีขนาดไม่เกิน 1MB', 'warning'); return; }
-            var dataUrl = await window.fileToDataUrl(file);
+            // ไฟล์สแกน/ถ่ายรูปลายเซ็นมีขอบกระดาษขาวรอบด้านเสมอ ตัดออกด้วยเหตุผลเดียวกับลายเซ็นที่วาดเอง
+            var dataUrl = await window.trimSignatureFile(file);
             fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); toast('บันทึกลายเซ็นสำเร็จ','success'); setTimeout(()=>location.reload(), 600); })
               .catch(e => toast(e.message, 'danger'));
           });
+          // ตรวจลายเซ็นที่บันทึกไว้แล้วว่ามีขอบว่างให้ตัดไหม ถ้ามีค่อยโชว์ปุ่มจัดให้พอดี
+          //
+          // ต้องรอ load ก่อน — window.trimSignatureMargins อยู่ใน /app.js ซึ่งโหลดท้าย body
+          // ถ้าเรียกตอนสคริปต์นี้ถูก parse ฟังก์ชันยังไม่มี แล้วจะ return ออกไปเงียบๆ ปุ่มไม่เคยขึ้นเลย
+          // (เจอตอนเดินผ่านเบราว์เซอร์จริง)
+          window.addEventListener('load', function(){
+            var btn = document.getElementById('trimSigBtn');
+            var img = document.querySelector('#signaturePreviewWrap img');
+            if (!btn || !img || !window.trimSignatureMargins) return;
+            var run = function(){
+              try {
+                var trimmed = window.trimSignatureMargins(img);
+                if (trimmed && trimmed !== img.src) { btn.dataset.trimmed = trimmed; btn.hidden = false; }
+              } catch (e) { /* ตัดไม่ได้ก็ไม่ต้องโชว์ปุ่ม */ }
+            };
+            if (img.complete && img.naturalWidth) run(); else img.addEventListener('load', run);
+          });
+          window.trimSavedSignature = function(btn){
+            var dataUrl = btn.dataset.trimmed;
+            if (!dataUrl) { toast('ลายเซ็นนี้พอดีกรอบอยู่แล้ว', 'info'); return; }
+            window.setBtnLoading(btn, 'กำลังจัด...');
+            fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl: dataUrl})})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => {
+                if(!ok) throw new Error(d.error);
+                toast('จัดลายเซ็นให้พอดีแล้ว — หนังสือที่ลงนามหลังจากนี้จะอยู่กึ่งกลางชื่อ','success');
+                setTimeout(()=>location.reload(), 900);
+              })
+              .catch(e => { window.restoreBtn(btn); toast(e.message, 'danger'); });
+          };
           window.deleteSignature = function(){
             if (!confirm('ยืนยันลบลายเซ็นที่บันทึกไว้?')) return;
             fetch('/profile/signature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl: null})})
+              .then(r => r.json().then(d => ({ok:r.ok,d})))
+              .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
+              .catch(e => toast(e.message, 'danger'));
+          };
+          // ย่อ+ตัดรูปเป็นสี่เหลี่ยมจัตุรัสตั้งแต่ในเบราว์เซอร์ แล้วค่อยส่งขึ้นไป
+          // ตัดจากกึ่งกลางรูป เพราะรูปคนมักอยู่กลางเฟรม และวงกลมอวตารตัดขอบอยู่แล้ว
+          window.uploadAvatar = async function(btn){
+            var file = document.getElementById('avatarFile').files[0];
+            if (!file) { toast('กรุณาเลือกรูปก่อน', 'warning'); return; }
+            if (file.type.indexOf('image/') !== 0) { toast('ไฟล์นี้ไม่ใช่รูปภาพ', 'warning'); return; }
+            window.setBtnLoading(btn, 'กำลังย่อรูป...');
+            try {
+              var dataUrl = await window.squareThumbnail(file, ${AVATAR_PX});
+              var r = await fetch('/profile/avatar-image', {
+                method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ dataUrl: dataUrl }),
+              });
+              var d = await r.json();
+              if (!r.ok) throw new Error(d.error || 'บันทึกไม่สำเร็จ');
+              toast('บันทึกรูปโปรไฟล์แล้ว', 'success');
+              setTimeout(function(){ location.reload(); }, 700);
+            } catch (e) {
+              window.restoreBtn(btn);
+              toast(e.message || 'อ่านไฟล์รูปไม่สำเร็จ', 'danger');
+            }
+          };
+          window.removeAvatarImage = function(){
+            if (!confirm('ลบรูปโปรไฟล์ออก?')) return;
+            fetch('/profile/avatar-image', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dataUrl: null})})
               .then(r => r.json().then(d => ({ok:r.ok,d})))
               .then(({ok,d}) => { if(!ok) throw new Error(d.error); location.reload(); })
               .catch(e => toast(e.message, 'danger'));
@@ -422,6 +511,39 @@ router.post('/profile/signature', requireApi(async (ctx) => {
 
   db.prepare('UPDATE users SET signature_image = ?, updated_at = ? WHERE id = ?').run(dataUrl, nowIso(), ctx.user.id);
   audit({ userId: ctx.user.id, action: 'signature_uploaded', tableName: 'users', recordId: ctx.user.id });
+  json(ctx, 200, { ok: true });
+}));
+
+/**
+ * รูปโปรไฟล์ที่เจ้าตัวอัปโหลดเอง
+ *
+ * เบราว์เซอร์ย่อรูปเป็นสี่เหลี่ยมจัตุรัสมาแล้ว แต่ห้ามเชื่อ — ฝั่งเซิร์ฟเวอร์ยังต้องตรวจทั้งรูปแบบ
+ * data URL ลายเซ็นไฟล์จริง และขนาด เหมือนที่ทำกับลายเซ็น เพราะใครก็ยิงเส้นทางนี้ตรงๆ ได้
+ */
+router.post('/profile/avatar-image', requireApi(async (ctx) => {
+  const { dataUrl } = ctx.body;
+  if (dataUrl === null || dataUrl === undefined || dataUrl === '') {
+    db.prepare('UPDATE users SET avatar_image = NULL, updated_at = ? WHERE id = ?').run(nowIso(), ctx.user.id);
+    audit({ userId: ctx.user.id, action: 'avatar_image_removed', tableName: 'users', recordId: ctx.user.id });
+    return json(ctx, 200, { ok: true });
+  }
+  if (typeof dataUrl !== 'string') return json(ctx, 400, { error: 'รูปแบบข้อมูลรูปไม่ถูกต้อง' });
+
+  const match = /^data:(image\/png|image\/jpeg);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) return json(ctx, 400, { error: 'รูปแบบไฟล์ไม่ถูกต้อง (รองรับเฉพาะ PNG/JPG)' });
+  const [, mimeType, base64Data] = match;
+  const buf = Buffer.from(base64Data, 'base64');
+  if (buf.length > MAX_AVATAR_BYTES) return json(ctx, 413, { error: 'รูปมีขนาดใหญ่เกินไป กรุณาเลือกรูปที่เล็กลง' });
+
+  // ตรวจลายเซ็นไฟล์จริง ไม่ใช่เชื่อชนิดที่แจ้งมาใน data URL
+  const isPng = buf.subarray(0, 8).toString('hex') === '89504e470d0a1a0a';
+  const isJpeg = buf.subarray(0, 3).toString('hex') === 'ffd8ff';
+  if ((mimeType === 'image/png' && !isPng) || (mimeType === 'image/jpeg' && !isJpeg)) {
+    return json(ctx, 400, { error: 'ไฟล์ไม่ใช่รูปภาพที่ถูกต้อง (ตรวจลายเซ็นไฟล์ไม่ผ่าน)' });
+  }
+
+  db.prepare('UPDATE users SET avatar_image = ?, updated_at = ? WHERE id = ?').run(dataUrl, nowIso(), ctx.user.id);
+  audit({ userId: ctx.user.id, action: 'avatar_image_uploaded', tableName: 'users', recordId: ctx.user.id });
   json(ctx, 200, { ok: true });
 }));
 

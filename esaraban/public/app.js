@@ -268,6 +268,120 @@
     });
   };
 
+  /**
+   * ย่อรูปเป็นสี่เหลี่ยมจัตุรัสขนาด size x size แล้วคืนเป็น data URL (JPEG)
+   *
+   * ต้องย่อตั้งแต่ในเบราว์เซอร์ เพราะรูปจากกล้องมือถือใบละ 3-8MB ถ้าส่งขึ้นไปดิบๆ จะถูกปฏิเสธทุกใบ
+   * แล้วครูจะสรุปว่า "อัปรูปไม่ได้" โดยไม่รู้ว่าต้องย่อรูปเองก่อน (ซึ่งบนมือถือก็ทำไม่ได้ง่ายๆ อยู่ดี)
+   *
+   * ตัดจากกึ่งกลางรูป เพราะรูปคนมักอยู่กลางเฟรม และวงกลมอวตารตัดขอบทิ้งอยู่แล้ว
+   * ใช้ createImageBitmap ถ้ามี (เร็วกว่าและไม่ต้องรอ onload) ไม่งั้นถอยไปใช้ <img> ธรรมดา
+   */
+  window.squareThumbnail = async function (file, size) {
+    const side = size || 256;
+    const bitmap = await loadBitmap(file);
+    const src = Math.min(bitmap.width, bitmap.height);
+    const sx = (bitmap.width - src) / 2;
+    const sy = (bitmap.height - src) / 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = side;
+    canvas.height = side;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, sx, sy, src, src, 0, 0, side, side);
+    if (bitmap.close) bitmap.close();
+    // JPEG เสมอ ไม่ว่าต้นทางจะเป็นชนิดไหน — PNG ของรูปถ่ายใหญ่กว่า JPEG หลายเท่าโดยไม่ได้คุณภาพกลับมา
+    return canvas.toDataURL('image/jpeg', 0.85);
+  };
+
+  /**
+   * ตัดขอบว่างรอบลายเซ็นออก ให้เหลือเฉพาะส่วนที่มีหมึกจริง
+   *
+   * ปัญหาที่แก้: canvas.toDataURL() ส่งออก "ทั้งกระดานวาด" เสมอ ถ้าผู้ลงนามเซ็นค่อนไปทางซ้าย
+   * รูปที่ได้จะมีพื้นที่ว่างติดมาทางขวาเป็นแถบใหญ่ พอเอาไปแสดงตรงกลางที่ไหนก็ตาม ตัวลายเซ็นจะเบี้ยว
+   * ไปอยู่ซ้ายของชื่อ ทั้งในไทม์ไลน์ หน้าพิมพ์ และ "ตราประทับบนไฟล์ PDF ฉบับจริง" ซึ่งเป็นที่ที่
+   * สำคัญที่สุด (ผู้อำนวยการแจ้งมาจากหนังสือที่ลงนามเสร็จแล้ว)
+   *
+   * นับว่าเป็นหมึกเมื่อจุดนั้นทึบพอและไม่ใช่สีขาว — ครอบคลุมทั้งลายเซ็นที่วาดบนพื้นโปร่งใส
+   * และรูปถ่าย/สแกนลายเซ็นบนกระดาษขาว ถ้าหาขอบไม่เจอ (รูปว่าง หรือพื้นเข้มทั้งใบ) คืนรูปเดิมไป
+   * ตามเดิม ดีกว่าเดาแล้วตัดผิด
+   */
+  const TRIM_PAD = 6;
+  window.trimSignatureMargins = function (source) {
+    const w = source.width || source.naturalWidth;
+    const h = source.height || source.naturalHeight;
+    if (!w || !h) return null;
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(source, 0, 0, w, h);
+
+    let data;
+    try {
+      data = ctx.getImageData(0, 0, w, h).data;
+    } catch (err) {
+      return null; // รูปจากคนละต้นทาง (tainted canvas) — ไม่ตัด ดีกว่าพัง
+    }
+    let top = h; let left = w; let right = -1; let bottom = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const alpha = data[i + 3];
+        if (alpha < 24) continue;
+        // ขาว (หรือเกือบขาว) บนพื้นทึบ = กระดาษ ไม่ใช่หมึก
+        if (data[i] > 244 && data[i + 1] > 244 && data[i + 2] > 244) continue;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+        if (x < left) left = x;
+        if (x > right) right = x;
+      }
+    }
+    if (right < 0 || bottom < 0) return null;
+
+    const x0 = Math.max(0, left - TRIM_PAD);
+    const y0 = Math.max(0, top - TRIM_PAD);
+    const x1 = Math.min(w, right + 1 + TRIM_PAD);
+    const y1 = Math.min(h, bottom + 1 + TRIM_PAD);
+    if (x1 - x0 >= w && y1 - y0 >= h) return null; // ไม่มีอะไรให้ตัด
+
+    const out = document.createElement('canvas');
+    out.width = x1 - x0;
+    out.height = y1 - y0;
+    out.getContext('2d').drawImage(c, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+    // PNG เสมอ เพื่อรักษาพื้นโปร่งใสของลายเซ็นที่วาดเอง (JPEG จะกลายเป็นพื้นดำ)
+    return out.toDataURL('image/png');
+  };
+
+  /** ตัดขอบว่างของไฟล์ลายเซ็นที่ผู้ใช้เลือกมา — คืน data URL เดิมถ้าตัดไม่ได้ */
+  window.trimSignatureFile = async function (file) {
+    const original = await window.fileToDataUrl(file);
+    try {
+      const bitmap = await loadBitmap(file);
+      const trimmed = window.trimSignatureMargins(bitmap);
+      if (bitmap.close) bitmap.close();
+      return trimmed || original;
+    } catch (err) {
+      return original;
+    }
+  };
+
+  function loadBitmap(file) {
+    if (typeof createImageBitmap === 'function') {
+      return createImageBitmap(file).catch(() => loadViaImg(file));
+    }
+    return loadViaImg(file);
+  }
+
+  function loadViaImg(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('เปิดไฟล์รูปนี้ไม่ได้')); };
+      img.src = url;
+    });
+  }
+
   // ---------- PIN confirm modal ----------
   let pinResolver = null;
   window.askPin = function (title) {

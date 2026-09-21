@@ -199,6 +199,11 @@ export function migrate() {
     locked_until TEXT, -- login rate limiting (Security Bible §7): lock 15 min after 5 bad attempts
     signature_image TEXT, -- ลายเซ็นสแกนของผู้ใช้แต่ละคน (data URL, base64) — ของใครของมัน
     avatar_emoji TEXT, -- อวตารอิโมจิที่ผู้ใช้เลือกเอง (UX Bible Part 21 §8) — NULL แปลว่ายังไม่เลือก ใช้ตัวอักษรย่อชื่อแทน
+    -- รูปโปรไฟล์จริงของเจ้าตัว (data URL) — ถ้ามี จะใช้แทนอิโมจิและตัวอักษรย่อ
+    -- เก็บเป็น data URL ในฐานข้อมูลเหมือน signature_image เพราะรูปถูกย่อเหลือ 256x256 ตั้งแต่ในเบราว์เซอร์
+    -- (ไม่กี่สิบ KB) การแยกไปเก็บเป็นไฟล์จะทำให้ต้องมีเส้นทางเสิร์ฟไฟล์ + ตรวจสิทธิ์เพิ่มอีกชุด
+    -- โดยไม่ได้อะไรกลับมา และการสำรองฐานข้อมูลจะไม่ครบรูปอีกต่อไป
+    avatar_image TEXT,
     -- บัญชีที่ยังใช้รหัสผ่านที่ "คนอื่นตั้งให้" (บัญชีตั้งต้นของระบบ / บัญชีที่นำเข้าจาก Excel) ต้องเปลี่ยน
     -- รหัสผ่านและ PIN ด้วยตัวเองก่อนใช้งานอย่างอื่น — ตราบใดที่ยังไม่เปลี่ยน คนที่ส่งรหัสให้ก็ยังเข้าบัญชี
     -- นั้นได้ ซึ่งทำให้ลายเซ็น/การลงนาม "ทราบ" ที่ออกจากบัญชีนั้นพิสูจน์ตัวตนไม่ได้จริง
@@ -710,6 +715,9 @@ export function migrate() {
   const userCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
   if (!userCols.includes('avatar_emoji')) {
     db.exec('ALTER TABLE users ADD COLUMN avatar_emoji TEXT');
+  }
+  if (!userCols.includes('avatar_image')) {
+    db.exec('ALTER TABLE users ADD COLUMN avatar_image TEXT');
   }
   // ฐานข้อมูลที่ deploy ไปแล้วมีบัญชีตั้งต้นที่รหัสผ่านเคยถูกพิมพ์ไว้บนหน้าเข้าสู่ระบบให้ทุกคนเห็น
   // (Admin@2569, Director@2569, ...) ใครที่เปิดเว็บเจอก็ล็อกอินเป็นผู้อำนวยการได้ทันที — ตั้งธงบังคับ

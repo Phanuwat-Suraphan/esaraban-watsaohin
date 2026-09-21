@@ -75,3 +75,29 @@ export function announcementShareText(ann) {
 export function lineShareUrl(text) {
   return `https://line.me/R/share?text=${encodeURIComponent(String(text || ''))}`;
 }
+
+/**
+ * สรุปหนังสือเข้าของวัน สำหรับส่งเข้ากลุ่มไลน์ทีเดียวจบ
+ *
+ * ทำไมต้องมีทั้งที่แชร์รายฉบับได้อยู่แล้ว: วันที่มีหนังสือเข้า 5-6 ฉบับ การแชร์ทีละฉบับคือการยิงเข้ากลุ่ม
+ * 6 ข้อความติดกัน ซึ่งกลบข้อความอื่นในกลุ่มจนคนเลื่อนผ่าน และธุรการก็ไม่ทำจริงเพราะเสียเวลา
+ * — สรุปรวมข้อความเดียวอ่านจบได้ในตัวอย่างของ LINE โดยไม่ต้องกดเข้ามา
+ *
+ * หนังสือชั้นความลับถูกคัดออกด้วยเกณฑ์เดียวกับการแชร์รายฉบับ (canShareToLine) เพราะข้อความในกลุ่มไลน์
+ * ไม่ผ่านการตรวจสิทธิ์ใดๆ ทั้งสิ้น ใครอยู่ในกลุ่มก็เห็นชื่อเรื่องหมด
+ */
+export function incomingDigestText(docs, dateLabel) {
+  const shareable = (docs || []).filter(canShareToLine);
+  const lines = [`📥 หนังสือเข้าวันที่ ${dateLabel} — ${shareable.length} ฉบับ`];
+  shareable.forEach((d, i) => {
+    lines.push(`${i + 1}. ${d.doc_number_display || ''} ${clip(d.title, 90)}`.trim());
+    if (d.correspondent_name) lines.push(`    จาก ${clip(d.correspondent_name, 60)}`);
+  });
+  const hidden = (docs || []).length - shareable.length;
+  // ต้องบอกว่ามีที่ไม่ได้อยู่ในรายการ ไม่ใช่เงียบ — ไม่งั้นคนอ่านจะนับจำนวนผิดแล้วคิดว่าครบแล้ว
+  if (hidden > 0) lines.push(`(อีก ${hidden} ฉบับเป็นหนังสือชั้นความลับ ดูได้ในระบบเท่านั้น)`);
+  lines.push('');
+  lines.push('เปิดทะเบียนหนังสือเข้าในระบบ (ต้องเข้าสู่ระบบก่อน):');
+  lines.push(absoluteUrl('/documents?direction=incoming'));
+  return lines.join('\n');
+}

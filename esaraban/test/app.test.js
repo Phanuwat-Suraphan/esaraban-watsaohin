@@ -1187,8 +1187,11 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
   // ต้องไปหาเองในเมนู — ตอนนี้เก็บ link_url ไว้ ปุ่ม "เปิด" จึงขึ้นได้ทุกประเภท
   test('การแจ้งเตือนที่ไม่ใช่เอกสารต้องมีปุ่ม "เปิด" และต้องไม่ยอมให้ลิงก์ออกนอกระบบ', async () => {
     const director = userAs('director01');
+    // ต้องใช้ nextLeaveWindow เหมือน fixture ใบลาอื่นๆ ไม่ใช่วันที่ตายตัว — ของเดิมใช้ 1-3 ก.ย. 2569
+    // ซึ่งไปชนกับเทสต์ "ยื่นย้อนหลัง 20 วัน" พอดีในวันที่ 21 ก.ย. 2569 วันเดียวของปี แล้วชุดเทสต์แดง
+    // โดยที่ไม่มีใครแก้อะไรเลย (เจอจริงตอนวันที่เครื่องเดินไปถึง)
     const { id: leaveId } = createLeaveRequest({
-      requesterId: teacherUser.id, leaveType: 'vacation', startDate: '2026-09-01', endDate: '2026-09-03',
+      requesterId: teacherUser.id, leaveType: 'vacation', ...nextLeaveWindow(3),
       reason: 'ลาพักผ่อนประจำปี', approverId: director.id,
     });
     const body = (await openPage('/notifications', director)).body;
@@ -8546,6 +8549,7 @@ describe('รายการตั้งค่าก่อนเปิดใช�
 const reg = await import('../src/services/registration.js');
 const holidays = () => holidaysMod;
 const holidaysMod = await import('../src/services/holidays.js');
+const lineMod = await import('../src/services/line.js');
 describe('ลงทะเบียนเอง + ผู้ดูแลอนุมัติ', () => {
   const rolesByName = (name) => db.prepare('SELECT id FROM roles WHERE name = ?').get(name).id;
   const validReq = (over = {}) => ({
@@ -8720,6 +8724,84 @@ describe('ลงทะเบียนเอง + ผู้ดูแลอนุ�
   test('ผู้ดูแลเท่านั้นที่เปิดหน้าคำขอได้', async () => {
     assert.equal((await dispatchGet(adminUser, '/admin/registrations')).status, 200);
     assert.equal((await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/admin/registrations')).status, 403);
+  });
+});
+
+// ช่องทางที่โรงเรียนใช้แจ้งงานกันจริงคือกลุ่มไลน์ ไม่ใช่เว็บ — ธุรการลงทะเบียนเสร็จแล้วยังต้องไปพิมพ์
+// บอกในกลุ่มอีกที ปุ่มแชร์มีอยู่แล้วแต่ไปอยู่ปนกับปุ่มอื่นอีกหกปุ่ม ซึ่งแปลว่าไม่มีใครกด
+describe('หนังสือเข้า → กลุ่มไลน์', () => {
+  const lineSvc = () => lineMod;
+
+  test('เพิ่งลงทะเบียนเสร็จ ต้องชวนส่งเข้ากลุ่มไลน์ตรงนั้นเลย', async () => {
+    const doc = makeDoc({ title: 'หนังสือเข้าที่เพิ่งลงทะเบียน' });
+    const res = await dispatchGet(registrarUser, `/documents/${doc.id}`, { created: '1' });
+    assert.equal(res.status, 200);
+    assert.match(res.body, /ส่งเข้ากลุ่มไลน์/, 'ต้องมีปุ่มส่งเข้าไลน์ในกล่องแจ้งผลสำเร็จ');
+    assert.match(res.body, /line\.me\/R\/share\?text=/, 'ต้องเป็นลิงก์แชร์ของ LINE จริง');
+    assert.match(res.body, /ไว้ทีหลัง/, 'ต้องมีทางออกให้คนที่ยังไม่อยากส่ง');
+  });
+
+  // หนังสือลับห้ามเอาชื่อเรื่องออกนอกระบบ — ข้อความในกลุ่มไลน์ไม่ผ่านการตรวจสิทธิ์ใดๆ ทั้งสิ้น
+  test('หนังสือชั้นความลับต้องไม่มีปุ่มชวนส่งเข้าไลน์', async () => {
+    const doc = makeDoc({ title: 'หนังสือลับที่เพิ่งลงทะเบียน', secretLevel: 'secret' });
+    const res = await dispatchGet(registrarUser, `/documents/${doc.id}`, { created: '1' });
+    assert.equal(res.status, 200);
+    assert.ok(!/ส่งเข้ากลุ่มไลน์/.test(res.body), 'หนังสือลับต้องไม่ถูกชวนให้ส่งเข้ากลุ่ม');
+    assert.match(res.body, /บันทึกและออกเลขเอกสารเรียบร้อยแล้ว/, 'แต่ต้องยังบอกว่าบันทึกสำเร็จ');
+  });
+
+  describe('สรุปหนังสือเข้าของวัน', () => {
+    const digest = (docs, label = '18 กันยายน 2569') => lineSvc().incomingDigestText(docs, label);
+    const d = (over = {}) => ({
+      id: uuid(), doc_number_display: '0001/2569', title: 'หนังสือเข้าทดสอบ',
+      correspondent_name: 'สพป. เขต 1', secret_level: 'normal', status: 'registered', ...over,
+    });
+
+    test('รวมเป็นข้อความเดียว มีเลขที่ ชื่อเรื่อง ต้นทาง และลิงก์กลับเข้าระบบ', () => {
+      const t = digest([d(), d({ doc_number_display: '0002/2569', title: 'ฉบับที่สอง' })]);
+      assert.match(t, /2 ฉบับ/, 'ต้องบอกจำนวน');
+      assert.match(t, /0001\/2569/);
+      assert.match(t, /ฉบับที่สอง/);
+      assert.match(t, /สพป\. เขต 1/);
+      assert.match(t, /\/documents\?direction=incoming/, 'ต้องมีลิงก์กลับมาที่ทะเบียนหนังสือเข้า');
+      assert.equal(t.split('\n').filter((l) => /^\d+\. /.test(l)).length, 2, 'ต้องไล่เป็นข้อ');
+    });
+
+    test('หนังสือลับต้องไม่หลุดชื่อเรื่องลงกลุ่ม แต่ต้องบอกว่ามีที่ไม่ได้อยู่ในรายการ', () => {
+      const t = digest([
+        d({ title: 'เรื่องเปิดเผยได้' }),
+        d({ title: 'เรื่องลับมากห้ามหลุด', secret_level: 'top_secret' }),
+        d({ title: 'เรื่องลับอีกฉบับ', secret_level: 'secret' }),
+      ]);
+      assert.ok(!/ลับมากห้ามหลุด/.test(t), 'ชื่อเรื่องหนังสือลับต้องไม่อยู่ในข้อความเด็ดขาด');
+      assert.ok(!/ลับอีกฉบับ/.test(t));
+      assert.match(t, /เรื่องเปิดเผยได้/);
+      assert.match(t, /1 ฉบับ/, 'จำนวนต้องนับเฉพาะที่ส่งได้');
+      assert.match(t, /อีก 2 ฉบับเป็นหนังสือชั้นความลับ/,
+        'ต้องบอกว่ามีที่ไม่ได้อยู่ในรายการ ไม่งั้นคนอ่านจะนับผิดแล้วคิดว่าครบแล้ว');
+    });
+
+    test('หนังสือที่ยกเลิก/ทำลายแล้วต้องไม่อยู่ในสรุป', () => {
+      const t = digest([d({ title: 'ยกเลิกไปแล้ว', status: 'voided' }), d({ title: 'ยังใช้ได้' })]);
+      assert.ok(!/ยกเลิกไปแล้ว/.test(t), 'ส่งลิงก์ไปก็ไม่มีอะไรให้อ่าน มีแต่ทำให้เข้าใจผิดว่ายังต้องทำ');
+      assert.match(t, /ยังใช้ได้/);
+    });
+
+    test('ทะเบียนหนังสือเข้าต้องมีปุ่มส่งสรุปวันนี้ เมื่อมีหนังสือเข้าวันนี้จริง', async () => {
+      makeDoc({ title: 'หนังสือเข้าวันนี้สำหรับสรุป' });
+      const res = await dispatchGet(registrarUser, '/documents', { direction: 'incoming' });
+      assert.equal(res.status, 200);
+      assert.match(res.body, /ส่งสรุปวันนี้เข้าไลน์/, 'ต้องมีปุ่มส่งสรุปของวัน');
+      // ทะเบียนหนังสือออกไม่ควรมีปุ่มนี้ เพราะสรุปนี้เป็นของหนังสือเข้า
+      const out = await dispatchGet(registrarUser, '/documents', { direction: 'outgoing' });
+      assert.ok(!/ส่งสรุปวันนี้เข้าไลน์/.test(out.body), 'ทะเบียนหนังสือออกต้องไม่มีปุ่มนี้');
+    });
+
+    // ครูเห็นเฉพาะหนังสือที่ตัวเองมีสิทธิ์เห็น ปุ่มสรุปก็ต้องยึดเกณฑ์เดียวกัน ไม่ใช่ดึงทั้งฐานข้อมูล
+    test('สรุปต้องยึดสิทธิ์การเห็นของคนที่กดเหมือนหน้ารายการ', async () => {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/documents', { direction: 'incoming' });
+      assert.equal(res.status, 200, 'ครูต้องเปิดหน้าได้ตามปกติ');
+    });
   });
 });
 

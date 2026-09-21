@@ -1,7 +1,7 @@
 import { router, html, json, redirect, contentDispositionHeader, truncateFilename } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, schoolName, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, uuid, nowIso, audit, todayInBangkok, RETENTION_LABEL } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok, bangkokDateSql, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS,
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, groupStepsByOrder, currentStep, currentStepFor,
@@ -18,7 +18,7 @@ import {
   ACK_BOX_ROWS, MAX_STAMP_TEXT,
 } from '../services/pdfStamp.js';
 import { assertMaxLength, requireDate } from '../services/validate.js';
-import { canShareToLine, documentShareText, lineShareUrl } from '../services/line.js';
+import { canShareToLine, documentShareText, incomingDigestText, lineShareUrl } from '../services/line.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import {
   buildDocumentQuery, countDocuments, listDocuments, describeFilters, listRegisterYears, CLOSED_STATUSES,
@@ -298,6 +298,17 @@ router.get('/documents', requirePage((ctx) => {
       <a class="btn btn-outline btn-sm" href="${exportLink('/documents/register')}" target="_blank" rel="noopener">🖨️ พิมพ์ทะเบียน / PDF</a>
     </div>`;
 
+  // หนังสือเข้าที่ลงทะเบียนวันนี้ — ใช้ทำปุ่ม "ส่งสรุปวันนี้เข้าไลน์" ข้อความเดียวจบ แทนการแชร์ทีละฉบับ
+  // ซึ่งวันที่มีหนังสือเข้าหกฉบับจะกลายเป็นยิงเข้ากลุ่มหกข้อความติดกัน จนคนในกลุ่มเลื่อนผ่าน
+  // กรองสิทธิ์ด้วยเงื่อนไขเดียวกับรายการที่คนนี้เห็นอยู่แล้ว ไม่ใช่ดึงทั้งฐานข้อมูล
+  const todayIncoming = direction === 'incoming' ? db.prepare(`
+    SELECT * FROM documents d
+    WHERE d.deleted_at IS NULL AND d.direction = 'incoming'
+      AND ${bangkokDateSql('d.created_at')} = :today
+      AND (${visibleDocumentsSqlFilter(ctx.user).sql})
+    ORDER BY d.created_at
+  `).all({ ...visibleDocumentsSqlFilter(ctx.user).params, today: todayInBangkok() }) : [];
+
   const content = `
     <div class="card-header">
       <div>
@@ -313,6 +324,9 @@ router.get('/documents', requirePage((ctx) => {
         <a class="btn btn-outline" href="/documents?direction=outgoing">📤 ทะเบียนหนังสือออก</a>
       </div>` : `
       <div class="flex gap-2 flex-wrap">
+        ${direction === 'incoming' && todayIncoming.length ? `<a class="btn btn-outline" target="_blank" rel="noopener"
+          href="${esc(lineShareUrl(incomingDigestText(todayIncoming, fmtThaiDateLong(todayInBangkok()))))}"
+          title="ส่งสรุปหนังสือเข้าของวันนี้เข้ากลุ่มไลน์เป็นข้อความเดียว">💬 ส่งสรุปวันนี้เข้าไลน์ (${todayIncoming.length})</a>` : ''}
         <a class="btn btn-outline" href="/documents/bulk?direction=${direction}">📎 ลงหลายฉบับรวดเดียว</a>
         <a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>
       </div>`}
@@ -1662,7 +1676,18 @@ router.get('/documents/:id', requirePage((ctx) => {
     : '';
 
   const content = `
-    ${ctx.query.created ? '<div class="alert alert-success">✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</div>' : ''}
+    ${ctx.query.created ? (canShareToLine(doc) ? `<div class="alert alert-success">
+      <p style="margin:0 0 .5rem"><strong>✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</strong></p>
+      <!-- ช่องทางที่โรงเรียนใช้แจ้งงานกันจริงคือกลุ่มไลน์ ไม่ใช่เว็บ — ปุ่มแชร์มีอยู่แล้วแต่ไปอยู่ปนกับ
+           ปุ่มอื่นอีกหกปุ่มด้านล่าง ซึ่งแปลว่าไม่มีใครกด ตอนที่ควรชวนให้ส่งที่สุดคือ "ทันทีที่เพิ่งลงทะเบียนเสร็จ" -->
+      <p class="help-text" style="margin:0 0 .6rem">
+        ส่งเข้ากลุ่มไลน์ให้ครูรู้ได้เลย — ข้อความมีเลขทะเบียน ชื่อเรื่อง และลิงก์กลับมาที่หนังสือฉบับนี้
+      </p>
+      <div class="chip-row">
+        <a class="btn btn-primary btn-sm" href="${esc(lineShareUrl(documentShareText(doc)))}" target="_blank" rel="noopener">💬 ส่งเข้ากลุ่มไลน์</a>
+        <a class="btn btn-outline btn-sm" href="/documents?direction=${esc(doc.direction)}">ไว้ทีหลัง ไปที่ทะเบียน</a>
+      </div>
+    </div>` : '<div class="alert alert-success">✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</div>') : ''}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div class="card-header">
       <div>

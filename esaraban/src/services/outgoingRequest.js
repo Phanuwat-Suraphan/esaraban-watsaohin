@@ -36,7 +36,7 @@ export const canIssueOutgoingNumber = (user) =>
   Boolean(user) && (user.roleCodes.includes('admin') || user.roleCodes.includes('registrar'));
 
 /** ครูยื่นคำขอเลขหนังสือส่ง — ยังไม่กินเลขทะเบียน */
-export function submitOutgoingRequest({ title, correspondentName, departmentId, priority, secretLevel, note, requester }) {
+export function submitOutgoingRequest({ title, correspondentName, departmentId, priority, secretLevel, note, isCircular, requester }) {
   title = asText(title);
   correspondentName = asText(correspondentName);
   note = asTextOrNull(note);
@@ -63,9 +63,10 @@ export function submitOutgoingRequest({ title, correspondentName, departmentId, 
   const id = uuid();
   db.prepare(`
     INSERT INTO outgoing_number_requests
-      (id, requester_id, title, correspondent_name, department_id, priority, secret_level, note, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-  `).run(id, requester.id, title, correspondentName, deptId, priority || 'normal', secretLevel || 'normal', note, nowIso());
+      (id, requester_id, title, correspondent_name, department_id, priority, secret_level, note, is_circular, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+  `).run(id, requester.id, title, correspondentName, deptId, priority || 'normal', secretLevel || 'normal', note,
+    isCircular ? 1 : 0, nowIso());
 
   const who = `${requester.prefix || ''}${requester.first_name} ${requester.last_name}`.trim();
   // บอกธุรการทันที ไม่ใช่รอให้บังเอิญเปิดหน้านั้นเจอเอง — ครูที่ขอเลขมักกำลังรอส่งหนังสือให้ทัน
@@ -129,7 +130,7 @@ export function recentReviewedOutgoingRequests(limit = 20) {
  * คำขอเดิมค้างอยู่แล้วกดออกเลขซ้ำ จนหนังสือเรื่องเดียวมีสองเลข ซึ่งแก้ทีหลังไม่ได้แล้วเพราะเลขที่ออกไป
  * แล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ
  */
-export function issueOutgoingNumber({ requestId, customDocNumber, actorUser }) {
+export function issueOutgoingNumber({ requestId, customDocNumber, isCircular, actorUser }) {
   if (!canIssueOutgoingNumber(actorUser)) {
     throw httpError(403, 'ออกเลขหนังสือส่งได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
   }
@@ -153,6 +154,8 @@ export function issueOutgoingNumber({ requestId, customDocNumber, actorUser }) {
       docTypeId: defaultDocTypeId(),
       priority: req.priority,
       secretLevel: req.secret_level,
+      // ครูระบุมาตั้งแต่ตอนขอว่าเป็นหนังสือเวียนหรือไม่ — ธุรการเปลี่ยนตอนออกเลขได้ (ดู issueOutgoingNumber)
+      isCircular: isCircular === undefined ? Boolean(req.is_circular) : Boolean(isCircular),
       customDocNumber: asTextOrNull(customDocNumber),
       createdBy: requester.id,
       allowDuplicate: true, // ธุรการตรวจแล้วว่าจะออกเลขให้ ไม่ต้องให้ด่านกันกดซ้ำมาขวางอีกชั้น

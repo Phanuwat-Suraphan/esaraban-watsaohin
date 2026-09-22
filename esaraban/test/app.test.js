@@ -5459,6 +5459,154 @@ describe('รหัสหนังสือของโรงเรียน (�
   });
 });
 
+// หนังสือเวียน (ว) — มีเล่มทะเบียนของตัวเองตามระเบียบงานสารบรรณ
+//
+// หนังสือเวียนคือหนังสือที่มีถึงผู้รับจำนวนมากโดยมีใจความอย่างเดียวกัน ระเบียบให้เพิ่มรหัสตัวพยัญชนะ "ว"
+// หน้าเลขทะเบียนหนังสือส่ง และใช้ "ทะเบียนหนังสือส่งซึ่งกำหนดเป็นเลขที่หนังสือเวียนโดยเฉพาะ"
+// เริ่มตั้งแต่เลข 1 เรียงไปจนสิ้นปีปฏิทิน — คนละเล่มกับทะเบียนหนังสือส่งทั่วไป
+describe('หนังสือเวียน (ว) ทะเบียนแยกเล่ม', () => {
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const registrar = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  let settings; let numbering; let out;
+  before(async () => {
+    settings = await import('../src/services/settings.js');
+    numbering = await import('../src/numbering.js');
+    out = await import('../src/services/outgoingRequest.js');
+  });
+  const setPrefix = (v) => settings.setSetting({ key: 'outgoing_number_prefix', value: v, actorUser: admin() });
+  after(() => setPrefix(''));
+
+  let n = 0;
+  const make = (isCircular) => makeDoc({
+    direction: 'outgoing', title: `หนังสือเวียนทดสอบ ${++n}`, isCircular,
+  });
+
+  test('หนังสือเวียนได้เลข "ว" ส่วนหนังสือส่งทั่วไปไม่มี', () => {
+    setPrefix('ศธ 04056.12');
+    const plain = getDocRow(make(false).id);
+    const circ = getDocRow(make(true).id);
+    assert.match(plain.doc_number_display, /^ศธ 04056\.12\/\d+$/, `ได้ ${plain.doc_number_display}`);
+    assert.match(circ.doc_number_display, /^ศธ 04056\.12\/ว \d+$/,
+      `หนังสือเวียนต้องมี "ว" หลังทับ — ได้ ${circ.doc_number_display}`);
+    assert.equal(circ.is_circular, 1);
+    assert.equal(plain.is_circular, 0);
+  });
+
+  // นี่คือหัวใจของเรื่อง: สองเล่มนับแยกกัน เลข 1 ของแต่ละเล่มมีพร้อมกันได้ ไม่ถือว่าซ้ำ
+  test('ทะเบียนเวียนนับแยกจากทะเบียนหนังสือส่งทั่วไป', () => {
+    setPrefix('');
+    const a1 = getDocRow(make(false).id);
+    const c1 = getDocRow(make(true).id);
+    const a2 = getDocRow(make(false).id);
+    const c2 = getDocRow(make(true).id);
+    assert.equal(a2.running_number, a1.running_number + 1, 'ทะเบียนส่งทั่วไปต้องเดินต่อของตัวเอง');
+    assert.equal(c2.running_number, c1.running_number + 1, 'ทะเบียนเวียนต้องเดินต่อของตัวเอง');
+    // เล่มเวียนต้องไม่ถูกเลขของเล่มทั่วไปผลักไปข้างหน้า
+    assert.ok(c1.running_number <= a1.running_number,
+      'ทะเบียนเวียนต้องเริ่มนับของตัวเอง ไม่ใช่ต่อท้ายเลขของทะเบียนส่งทั่วไป');
+  });
+
+  test('ยังไม่ตั้งรหัสโรงเรียน ก็ยังบอกได้ว่าเป็นหนังสือเวียน', () => {
+    setPrefix('');
+    const circ = getDocRow(make(true).id);
+    assert.match(circ.doc_number_display, /^ว \d{4}\/\d{4}$/,
+      `ต้องขึ้นต้นด้วย "ว" เพื่อไม่ให้ดูเหมือนซ้ำกับเลขของทะเบียนส่งทั่วไป — ได้ ${circ.doc_number_display}`);
+  });
+
+  test('หนังสือรับเป็นหนังสือเวียนไม่ได้ (เราไม่ได้เป็นผู้ออกเลข)', () => {
+    setPrefix('ศธ 04056.12');
+    const doc = makeDoc({ direction: 'incoming', title: `หนังสือรับไม่เวียน ${++n}`, isCircular: true });
+    const row = getDocRow(doc.id);
+    assert.equal(row.is_circular, 0, 'หนังสือรับต้องไม่ถูกตั้งเป็นหนังสือเวียน');
+    assert.ok(!row.doc_number_display.includes('ว '), `ต้องไม่มี "ว" — ได้ ${row.doc_number_display}`);
+  });
+
+  test('ตัวอย่างเลขของสองเล่มต่างกัน และไม่กินเลขจริง', () => {
+    setPrefix('ศธ 04056.12');
+    const plain = numbering.previewNextNumber('outgoing', undefined, false);
+    const circ = numbering.previewNextNumber('outgoing', undefined, true);
+    assert.notEqual(plain, circ, 'สองเล่มต้องแสดงเลขถัดไปคนละตัว');
+    assert.match(circ, /\/ว \d+$/);
+    const before = getDocRow(make(true).id).running_number;
+    numbering.previewNextNumber('outgoing', undefined, true);
+    assert.equal(getDocRow(make(true).id).running_number, before + 1, 'การดูตัวอย่างต้องไม่ขยับตัวนับ');
+  });
+
+  test('ฟอร์มหนังสือออกมีช่องติ๊กหนังสือเวียน ส่วนหนังสือเข้าไม่มี', async () => {
+    const outPage = await dispatchGet(registrar(), '/documents/new', { direction: 'outgoing' });
+    assert.equal(outPage.status, 200);
+    assert.match(outPage.body, /name="isCircular"/, 'หน้าหนังสือออกต้องมีช่องติ๊ก');
+    assert.match(outPage.body, /หนังสือเวียน/);
+
+    const inPage = await dispatchGet(registrar(), '/documents/new', { direction: 'incoming' });
+    assert.ok(!/name="isCircular"/.test(inPage.body), 'หน้าหนังสือเข้าต้องไม่มีช่องติ๊กนี้');
+  });
+
+  test('ลงทะเบียนผ่านหน้าเว็บโดยติ๊กหนังสือเวียน ต้องได้เลข ว', async () => {
+    setPrefix('ศธ 04056.12');
+    const res = await dispatchPost(registrar(), '/documents', {
+      direction: 'outgoing', title: `หนังสือเวียนจากฟอร์ม ${++n}`,
+      correspondentName: 'คณะครูทุกท่าน', departmentId: deptId, isCircular: 'on',
+    });
+    assert.equal(res.status, 201, res.body);
+    const id = /\/documents\/([0-9a-f-]{36})/.exec(res.body)?.[1];
+    assert.match(getDocRow(id).doc_number_display, /\/ว \d+$/);
+  });
+
+  test('ครูขอเลขแบบหนังสือเวียนได้ และธุรการออกเลข ว ให้', async () => {
+    setPrefix('ศธ 04056.12');
+    const asked = await dispatchPost(teacher(), '/outgoing-requests', {
+      title: `ขอเลขเวียน ${++n}`, correspondentName: 'คณะครูทุกท่าน', departmentId: deptId, isCircular: true,
+    });
+    assert.equal(asked.status, 200, asked.body);
+    const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(asked.json.id);
+    assert.equal(req.is_circular, 1, 'คำขอต้องจำไว้ว่าขอเป็นหนังสือเวียน');
+
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${asked.json.id}/issue`, {});
+    assert.equal(issued.status, 200, issued.body);
+    assert.match(issued.json.docNumberDisplay, /\/ว \d+$/, `ได้ ${issued.json.docNumberDisplay}`);
+    assert.equal(getDocRow(issued.json.documentId).is_circular, 1);
+  });
+
+  // ธุรการเป็นผู้รับผิดชอบทะเบียน ต้องแก้ได้ถ้าครูติ๊กผิด — เลขที่ออกไปแล้วย้ายเล่มทีหลังไม่ได้
+  test('ธุรการเปลี่ยนใจตอนออกเลขได้ ทั้งเปิดและปิดหนังสือเวียน', async () => {
+    setPrefix('ศธ 04056.12');
+    const askedPlain = await dispatchPost(teacher(), '/outgoing-requests', {
+      title: `ครูไม่ได้ติ๊กแต่ควรเวียน ${++n}`, correspondentName: 'คณะครู', departmentId: deptId,
+    });
+    const up = await dispatchPost(registrar(), `/outgoing-requests/${askedPlain.json.id}/issue`, { isCircular: true });
+    assert.match(up.json.docNumberDisplay, /\/ว \d+$/, 'ธุรการเปิดหนังสือเวียนได้');
+
+    const askedCirc = await dispatchPost(teacher(), '/outgoing-requests', {
+      title: `ครูติ๊กเวียนแต่ไม่ใช่ ${++n}`, correspondentName: 'สพป.', departmentId: deptId, isCircular: true,
+    });
+    const down = await dispatchPost(registrar(), `/outgoing-requests/${askedCirc.json.id}/issue`, { isCircular: false });
+    assert.ok(!/\/ว /.test(down.json.docNumberDisplay), `ธุรการปิดหนังสือเวียนได้ — ได้ ${down.json.docNumberDisplay}`);
+  });
+
+  test('หน้าคำขอของธุรการมีช่องติ๊กและตัวอย่างเลขของทั้งสองเล่ม', async () => {
+    setPrefix('ศธ 04056.12');
+    const asked = await dispatchPost(teacher(), '/outgoing-requests', {
+      title: `คำขอโชว์ช่องติ๊ก ${++n}`, correspondentName: 'สพป.', departmentId: deptId, isCircular: true,
+    });
+    const page = await dispatchGet(registrar(), '/outgoing-requests', {});
+    assert.equal(page.status, 200);
+    assert.ok(page.body.includes(`id="circ-${asked.json.id}"`), 'ต้องมีช่องติ๊กของคำขอนี้');
+    assert.match(page.body, /checked/, 'คำขอที่ครูติ๊กมาต้องถูกติ๊กไว้ให้แล้ว');
+    assert.match(page.body, /NEXT_CIRCULAR/, 'ต้องมีตัวอย่างเลขของเล่มเวียนให้สลับดูได้');
+  });
+
+  test('ทะเบียนหนังสือออกต้องติดป้ายบอกว่าฉบับไหนเป็นหนังสือเวียน', async () => {
+    setPrefix('');
+    const circ = getDocRow(make(true).id);
+    const page = await dispatchGet(registrar(), '/documents', { direction: 'outgoing' });
+    assert.equal(page.status, 200);
+    assert.ok(page.body.includes(circ.doc_number_display), 'ต้องเห็นเลขของฉบับนั้น');
+    assert.match(page.body, /ว เวียน/, 'ต้องมีป้ายบอกว่าเป็นหนังสือเวียน');
+  });
+});
+
 describe('ขอเลขหนังสือส่ง', () => {
   const teacher = () => loadUserForTest(seed.userIds.teacher001);
   const registrar = () => loadUserForTest(seed.userIds.reg001);

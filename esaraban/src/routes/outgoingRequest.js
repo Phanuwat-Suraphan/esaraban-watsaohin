@@ -5,6 +5,7 @@
 import { router, html, json, redirect } from '../router.js';
 import { layout, esc, fmtDate, emptyState, statusBadge, priorityBadge, LABELS } from '../render.js';
 import { requireApi, requirePage } from '../middleware.js';
+import { previewNextNumber } from '../numbering.js';
 import { db } from '../db.js';
 import {
   submitOutgoingRequest, listPendingOutgoingRequests, listMyOutgoingRequests,
@@ -53,6 +54,13 @@ function requestFormCard(user) {
             </select></div>
         </div>
         <div class="field">
+          <label class="check-inline" style="display:block">
+            <input type="checkbox" id="orCircular" />
+            <span>เป็น<strong>หนังสือเวียน</strong> — มีถึงผู้รับหลายคนโดยมีใจความอย่างเดียวกัน</span>
+          </label>
+          <div class="help-text">หนังสือเวียนใช้เลข “ว” และมีทะเบียนแยกเล่มตามระเบียบงานสารบรรณ (ธุรการตรวจอีกครั้งตอนออกเลข)</div>
+        </div>
+        <div class="field">
           <label for="orNote">ข้อความถึงธุรการ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <input type="text" id="orNote" maxlength="300" placeholder="เช่น ขอใช้ส่งวันศุกร์นี้" />
         </div>
@@ -75,6 +83,7 @@ function requestFormCard(user) {
             priority: document.getElementById('orPriority').value,
             secretLevel: document.getElementById('orSecret').value,
             note: document.getElementById('orNote').value.trim(),
+            isCircular: document.getElementById('orCircular').checked,
           }),
         }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){
@@ -108,7 +117,8 @@ function myRequestsCard(rows) {
       <div class="table-wrap"><table>
         <thead><tr><th>เรื่อง</th><th>สถานะ</th><th>เลขที่ได้</th><th>เมื่อ</th><th></th></tr></thead>
         <tbody>${rows.map((r) => `<tr>
-          <td>${esc(r.title)}<div class="text-muted" style="font-size:.78rem">เรียน ${esc(r.correspondent_name)}</div>
+          <td>${esc(r.title)}${r.is_circular ? ' <span class="badge badge-info">ว เวียน</span>' : ''}
+            <div class="text-muted" style="font-size:.78rem">เรียน ${esc(r.correspondent_name)}</div>
             ${r.status === 'rejected' && r.reject_reason ? `<div class="text-muted" style="font-size:.78rem">เหตุผล: ${esc(r.reject_reason)}</div>` : ''}</td>
           <td>${statusChip(r)}</td>
           <td>${r.doc_number_display
@@ -153,6 +163,14 @@ router.get('/outgoing-requests', requirePage((ctx) => {
         ${r.note ? `<tr><td class="text-muted">ข้อความถึงธุรการ</td><td>${esc(r.note)}</td></tr>` : ''}
       </table>
       <div class="field" style="margin-top:.6rem">
+        <label class="check-inline" style="display:block">
+          <input type="checkbox" id="circ-${esc(r.id)}"${r.is_circular ? ' checked' : ''} onchange="syncNumHint('${esc(r.id)}')" />
+          <span>ออกเป็น<strong>หนังสือเวียน</strong> (เลข “ว” ทะเบียนแยกเล่ม)</span>
+        </label>
+        <div class="help-text">${r.is_circular ? 'ผู้ขอระบุมาว่าเป็นหนังสือเวียน — ' : ''}เลขถัดไปจะเป็น
+          <strong id="hint-${esc(r.id)}">${esc(previewNextNumber('outgoing', undefined, Boolean(r.is_circular)))}</strong></div>
+      </div>
+      <div class="field" style="margin-top:.6rem">
         <label for="num-${esc(r.id)}">เลขทะเบียนส่งที่ <span class="text-muted" style="font-weight:400">(เว้นว่าง = ให้ระบบออกเลขถัดไปให้)</span></label>
         <input type="text" id="num-${esc(r.id)}" maxlength="60" placeholder="เว้นว่างให้ระบบออกเลขอัตโนมัติ" style="max-width:280px" />
         <div class="help-text">พิมพ์เองได้ถ้าโรงเรียนใช้รูปแบบตามระเบียบ เช่น <code>ศธ 04xxx.yy/45</code> — ระบบจะใช้เลขนี้ทุกที่ (ทะเบียน/ตราประทับ/หน้าพิมพ์)</div>
@@ -190,7 +208,10 @@ router.get('/outgoing-requests', requirePage((ctx) => {
         window.setBtnLoading(btn, 'กำลังออกเลข...');
         fetch('/outgoing-requests/' + id + '/issue', {
           method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ customDocNumber: document.getElementById('num-' + id).value.trim() }),
+          body: JSON.stringify({
+            customDocNumber: document.getElementById('num-' + id).value.trim(),
+            isCircular: document.getElementById('circ-' + id).checked,
+          }),
         }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){
             if (!res.ok) throw new Error(res.d.error || 'ออกเลขไม่สำเร็จ');
@@ -199,6 +220,15 @@ router.get('/outgoing-requests', requirePage((ctx) => {
           })
           .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
       }
+      // เลขถัดไปของสองเล่มทะเบียนต่างกัน — ต้องเห็นก่อนกด เพราะเลขที่ออกไปแล้วย้ายเล่มทีหลังไม่ได้
+      var NEXT_PLAIN = ${JSON.stringify(previewNextNumber('outgoing', undefined, false))};
+      var NEXT_CIRCULAR = ${JSON.stringify(previewNextNumber('outgoing', undefined, true))};
+      function syncNumHint(id) {
+        document.getElementById('hint-' + id).textContent =
+          document.getElementById('circ-' + id).checked ? NEXT_CIRCULAR : NEXT_PLAIN;
+      }
+      window.syncNumHint = syncNumHint;
+
       function rejectNum(id, btn) {
         var reason = prompt('บอกเหตุผลที่ยังออกเลขให้ไม่ได้ (ผู้ขอจะได้รู้ว่าต้องแก้อะไรก่อนยื่นใหม่)');
         if (reason === null) return;
@@ -224,13 +254,15 @@ router.post('/outgoing-requests', requireApi(async (ctx) => {
   json(ctx, 200, submitOutgoingRequest({
     title: ctx.body?.title, correspondentName: ctx.body?.correspondentName,
     departmentId: ctx.body?.departmentId, priority: ctx.body?.priority,
-    secretLevel: ctx.body?.secretLevel, note: ctx.body?.note, requester: ctx.user,
+    secretLevel: ctx.body?.secretLevel, note: ctx.body?.note,
+    isCircular: ctx.body?.isCircular === true, requester: ctx.user,
   }));
 }));
 
 router.post('/outgoing-requests/:id/issue', requireApi(async (ctx) => {
   json(ctx, 200, issueOutgoingNumber({
-    requestId: ctx.params.id, customDocNumber: ctx.body?.customDocNumber, actorUser: ctx.user,
+    requestId: ctx.params.id, customDocNumber: ctx.body?.customDocNumber,
+    isCircular: ctx.body?.isCircular, actorUser: ctx.user,
   }));
 }));
 

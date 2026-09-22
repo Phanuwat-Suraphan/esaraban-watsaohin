@@ -13,6 +13,7 @@ import {
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { canIssueOutgoingNumber } from '../services/outgoingRequest.js';
+import { previewNextNumber } from '../numbering.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
 import {
   stampPdf, stampDirectorDecision, stampAcknowledgeMark, stampRegistrarComment,
@@ -284,7 +285,8 @@ router.get('/documents', requirePage((ctx) => {
     const n = stillOpen(d) ? daysUntil(d.due_date) : null;
     return `
     <tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
-      <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}</td>
+      <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}
+        ${d.is_circular ? '<div><span class="badge badge-info" style="font-size:.7rem">ว เวียน</span></div>' : ''}</td>
       ${direction === 'all' ? `<td style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
       <td class="wrap">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}${d.attachment_count
         ? ` <span class="clip-inline" title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? d.attachment_count : ''}</span>` : ''}
@@ -502,9 +504,23 @@ router.get('/documents/new', requirePage((ctx) => {
         <div class="form-grid cols-2">
           <div class="field">
             <label>ทะเบียน${direction === 'incoming' ? 'รับ' : 'ส่ง'}ที่ (กำหนดเอง)</label>
-            <input type="text" name="customDocNumber" placeholder="เว้นว่างให้ระบบออกเลขให้อัตโนมัติ (เช่น 0001/2569)" />
+            <input type="text" name="customDocNumber" placeholder="เว้นว่างให้ระบบออกเลขให้อัตโนมัติ (เช่น ${esc(previewNextNumber(direction))})" />
             <div class="help-text">พิมพ์เลขเองได้ถ้าไม่ต้องการเลขเรียงอัตโนมัติ — ระบบจะใช้เลขที่พิมพ์นี้ทุกที่ (ทะเบียน/ตราประทับ/พิมพ์เอกสาร) และแก้ทีหลังได้</div>
           </div>
+          ${direction === 'outgoing' ? `
+          <!-- หนังสือเวียนมีเล่มทะเบียนของตัวเองตามระเบียบงานสารบรรณ และเติม "ว" หน้าเลขทะเบียนส่ง
+               เช่น ศธ 04056.12/ว 12 — ต้องเลือกตอนออกเลข เพราะเลขที่ออกไปแล้วเปลี่ยนเล่มทีหลังไม่ได้ -->
+          <div class="field">
+            <label>ประเภททะเบียน</label>
+            <label class="check-inline" style="display:block;margin-top:.4rem">
+              <input type="checkbox" name="isCircular" id="isCircular" />
+              <span>เป็น<strong>หนังสือเวียน</strong> (ใช้เลข “ว” และทะเบียนแยกเล่ม)</span>
+            </label>
+            <div class="help-text">
+              หนังสือที่มีถึงผู้รับจำนวนมากโดยมีใจความอย่างเดียวกัน —
+              เลขถัดไปจะเป็น <strong id="circularHint">${esc(previewNextNumber('outgoing', undefined, true))}</strong>
+            </div>
+          </div>` : ''}
           ${direction === 'incoming' ? `
           <div class="field">
             <label>วันที่รับ</label>
@@ -753,6 +769,8 @@ router.post('/documents', requireApi(async (ctx) => {
     externalDocNumber: b.externalDocNumber?.trim(), externalDocDate: b.externalDocDate || null,
     receivedDate: b.receivedDate || null, dueDate: b.dueDate || null,
     retentionClass: b.retentionClass, customDocNumber: b.customDocNumber?.trim() || null, createdBy: ctx.user.id,
+    // checkbox ที่ติ๊กแล้วส่งมาเป็น "on" ตามมาตรฐาน HTML ส่วนที่ไม่ติ๊กจะไม่ถูกส่งมาเลย
+    isCircular: b.isCircular === true || b.isCircular === 'on',
     // ผู้ใช้ยืนยันแล้วว่าเป็นคนละฉบับ ทั้งที่ชื่อเรื่องซ้ำกับที่เพิ่งลงไป (ดู assertNotJustRegistered)
     allowDuplicate: b.allowDuplicate === true,
   });

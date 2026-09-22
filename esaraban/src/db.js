@@ -257,7 +257,9 @@ export function migrate() {
   -- และประเภทหนังสือ ทำให้หนังสือคนละฝ่ายได้เลขซ้ำกัน จึงเลิกใช้แล้ว แต่เก็บไว้เป็นร่องรอยของข้อมูลเดิม
   CREATE TABLE IF NOT EXISTS document_number_counters (
     year_be INTEGER NOT NULL,
-    direction TEXT NOT NULL, -- incoming | outgoing
+    -- incoming | outgoing | outgoing_circular — "ทะเบียน" ที่นับแยกกัน ไม่ใช่ทิศทางของหนังสือ
+    -- หนังสือเวียนยังเป็นหนังสือส่ง (documents.direction = 'outgoing') แต่มีเล่มทะเบียนของตัวเอง
+    direction TEXT NOT NULL,
     running_number INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (year_be, direction)
   );
@@ -277,6 +279,10 @@ export function migrate() {
     running_number INTEGER NOT NULL,
     year_be INTEGER NOT NULL,
     doc_number_display TEXT NOT NULL, -- e.g. 0001/2569
+    -- หนังสือเวียน: หนังสือที่มีถึงผู้รับจำนวนมากโดยมีใจความอย่างเดียวกัน ตามระเบียบงานสารบรรณให้เพิ่ม
+    -- รหัสตัวพยัญชนะ "ว" หน้าเลขทะเบียนหนังสือส่ง และใช้ทะเบียนของตัวเองแยกจากหนังสือส่งทั่วไป
+    -- (เริ่มนับ 1 ใหม่ทุกปีปฏิทินเหมือนกัน) เช่น ศธ 04056.12/ว 12
+    is_circular INTEGER NOT NULL DEFAULT 0,
     external_doc_number TEXT, -- เลขหนังสือจากหน่วยงานต้นทาง/เลขที่เราจะส่ง
     external_doc_date TEXT, -- ลงวันที่ (วันที่ระบุในหนังสือต้นฉบับ ตามแบบทะเบียนหนังสือรับ-ส่ง)
     -- วันที่รับหนังสือจริง (คนละเรื่องกับ created_at ซึ่งคือเวลาที่พิมพ์เข้าระบบ) — ธุรการมักลงทะเบียน
@@ -580,6 +586,7 @@ export function migrate() {
     priority TEXT NOT NULL DEFAULT 'normal',
     secret_level TEXT NOT NULL DEFAULT 'normal',
     note TEXT,                        -- ข้อความถึงธุรการ เช่น "ขอใช้ส่งวันศุกร์นี้"
+    is_circular INTEGER NOT NULL DEFAULT 0, -- ขอเป็นหนังสือเวียน (เลข "ว" ทะเบียนแยกเล่ม)
     status TEXT NOT NULL DEFAULT 'pending', -- pending | issued | rejected
     reviewed_by TEXT REFERENCES users(id),
     reviewed_at TEXT,
@@ -780,6 +787,13 @@ export function migrate() {
   }
 
   const documentCols = db.prepare("PRAGMA table_info(documents)").all().map((c) => c.name);
+  if (!documentCols.includes('is_circular')) {
+    db.exec('ALTER TABLE documents ADD COLUMN is_circular INTEGER NOT NULL DEFAULT 0');
+  }
+  const outReqCols = db.prepare("PRAGMA table_info(outgoing_number_requests)").all().map((c) => c.name);
+  if (outReqCols.length && !outReqCols.includes('is_circular')) {
+    db.exec('ALTER TABLE outgoing_number_requests ADD COLUMN is_circular INTEGER NOT NULL DEFAULT 0');
+  }
   if (!documentCols.includes('stamp_x')) {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
     db.exec('ALTER TABLE documents ADD COLUMN stamp_y REAL');

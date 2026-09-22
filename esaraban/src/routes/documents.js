@@ -1125,26 +1125,27 @@ function registerColumns(direction) {
   const isIn = direction === 'incoming';
   const isAll = direction === 'all';
   return [
-    { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: 13, get: (d) => d.doc_number_display },
+    { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: isAll ? 17 : 15, get: (d) => d.doc_number_display },
     // "วันที่รับ" อยู่ถัดจากเลขทะเบียนรับทันที ตามแบบทะเบียนหนังสือรับ (แบบที่ 13) ซึ่งจัดสองช่องนี้
     // ไว้เป็นกลุ่ม "ทะเบียนรับ" ด้วยกัน — และเป็นวันที่หนังสือมาถึงจริง ไม่ใช่เวลาที่พิมพ์เข้าระบบ
     // ธุรการลงทะเบียนย้อนหลังเป็นชุดบ่อยมาก ถ้าใช้ created_at วันที่ในทะเบียนราชการจะผิดทุกฉบับ
     ...(isIn ? [{ head: 'วันที่รับ', width: 13, get: (d) => fmtThaiDateShort(d.received_date || d.created_at) }] : []),
     // โหมดค้นหารวมมีทั้งหนังสือเข้าและออกปนกัน ต้องมีคอลัมน์บอกว่าแถวไหนเป็นอะไร ไม่งั้นอ่านไม่รู้เรื่อง
-    ...(isAll ? [{ head: 'ประเภท', width: 10, get: (d) => (d.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก') }] : []),
+    ...(isAll ? [{ head: 'ประเภท', width: 13, get: (d) => (d.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก') }] : []),
     { head: 'ที่ (หนังสือต้นทาง)', width: 18, get: (d) => d.external_doc_number || '' },
     { head: 'ลงวันที่', width: 13, get: (d) => (d.external_doc_date ? fmtThaiDateShort(d.external_doc_date) : '') },
-    { head: isAll ? 'จาก/ถึง' : (isIn ? 'จาก' : 'ถึง'), width: 24, get: (d) => d.correspondent_name || '' },
-    { head: 'เรื่อง', width: 46, get: (d) => d.title },
-    { head: 'ฝ่ายที่รับผิดชอบ', width: 20, get: (d) => d.dept_name },
-    { head: 'ความเร็ว', width: 11, get: (d) => LABELS.PRIORITY_LABEL[d.priority] || d.priority },
-    { head: 'ชั้นความลับ', width: 12, get: (d) => LABELS.SECRET_LABEL[d.secret_level] || d.secret_level },
+    // text: true = ช่องข้อความยาว หน้าพิมพ์จะชิดซ้ายและตัดบรรทัดในช่องแทนการดันจนล้นกรอบ
+    { head: isAll ? 'จาก/ถึง' : (isIn ? 'จาก' : 'ถึง'), width: 26, text: true, get: (d) => d.correspondent_name || '' },
+    { head: 'เรื่อง', width: 42, text: true, get: (d) => d.title },
+    { head: 'ฝ่ายที่รับผิดชอบ', width: 20, text: true, get: (d) => d.dept_name },
+    { head: 'ความเร็ว', width: 13, get: (d) => LABELS.PRIORITY_LABEL[d.priority] || d.priority },
+    { head: 'ชั้นความลับ', width: 13, get: (d) => LABELS.SECRET_LABEL[d.secret_level] || d.secret_level },
     { head: 'การปฏิบัติ', width: 16, get: (d) => LABELS.STATUS_LABEL[d.status] || d.status },
     { head: 'ครบกำหนด', width: 13, get: (d) => (d.due_date ? fmtThaiDateShort(d.due_date) : '') },
     ...(isIn ? [] : [{ head: 'วันที่ลงทะเบียน', width: 15, get: (d) => fmtThaiDateShort(d.created_at) }]),
     // อยู่ท้ายสุดเพราะไม่ใช่คอลัมน์ตามแบบทะเบียนราชการ แต่จำเป็นเวลาใช้ทะเบียนที่พิมพ์/ส่งออกไปแล้ว
     // ตามหาไฟล์สแกน — ไม่ต้องเปิดระบบทีละฉบับเพื่อดูว่าฉบับไหนสแกนไว้แล้วและฉบับไหนยังค้าง
-    { head: 'ไฟล์แนบ', width: 10, get: (d) => (d.attachment_count ? `${d.attachment_count} ไฟล์` : '-') },
+    { head: 'ไฟล์แนบ', width: 11, get: (d) => (d.attachment_count ? `${d.attachment_count} ไฟล์` : '-') },
   ];
 }
 
@@ -1214,7 +1215,7 @@ router.get('/documents/register', requirePage((ctx) => {
   // ตั้งความกว้างคอลัมน์ตายตัว โดยเทียบสัดส่วนจากความกว้างชุดเดียวกับที่ใช้ในไฟล์ Excel — ถ้าปล่อยให้
   // เบราว์เซอร์จัดเอง คอลัมน์ที่บังเอิญว่างทั้งแถบ (เช่น "ลงวันที่" ตอนที่ยังไม่มีใครกรอก) จะถูกบีบจน
   // หัวตารางแตกเป็นตัวอักษรเรียงลงมาแนวตั้ง อ่านไม่ออก
-  const SEQ_WEIGHT = 8;
+  const SEQ_WEIGHT = 10;
   const weightSum = SEQ_WEIGHT + cols.reduce((s, c) => s + c.width, 0);
   const colWidths = [SEQ_WEIGHT, ...cols.map((c) => c.width)].map((w) => ((w / weightSum) * 100).toFixed(2));
 
@@ -1231,22 +1232,39 @@ router.get('/documents/register', requirePage((ctx) => {
 <style>
   /* แนวนอนเพราะทะเบียนมี 12 คอลัมน์ ถ้าพิมพ์แนวตั้งช่อง "เรื่อง" จะแคบจนอ่านไม่ออก */
   @page { size: A4 landscape; margin: 12mm 10mm; }
-  body { font-family: "Sarabun", "TH SarabunPSK", "Noto Sans Thai", sans-serif; font-size: 12px; line-height: 1.5; color: #000; margin: 0; padding: 1rem; }
+  body { font-family: "Sarabun", "TH SarabunPSK", "Noto Sans Thai", sans-serif; font-size: 12px; line-height: 1.5; color: #000; margin: 0; padding: 1rem 0; background: #d9d9d9; }
+
+  /* กระดาษบนจอต้องมีขนาดเท่ากระดาษจริง: A4 แนวนอน = 297 × 210 มม. หักขอบพิมพ์ (@page margin
+     12mm 10mm) เหลือเนื้อที่ 277 × 186 มม. เดิมหน้านี้ปล่อยให้ตารางกว้างเท่าหน้าต่างเบราว์เซอร์ ธุรการ
+     จึงไม่มีทางรู้ก่อนกดพิมพ์ว่าคอลัมน์ไหนจะถูกบีบ — จอกว้างเห็นสวยแต่กระดาษที่ออกมาเบียดกันหมด
+     ใช้ padding ของกระดาษให้เท่ากับ @page margin เป๊ะ ที่เห็นบนจอจึงเท่ากับที่พิมพ์ออกมาจริง */
+  .sheet {
+    width: 297mm; min-height: 210mm; box-sizing: border-box; padding: 12mm 10mm;
+    margin: 0 auto; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.3);
+    transform-origin: top left;
+  }
+  .paper-note { align-self: center; font-size: 12px; color: #333; }
   .sheet-head { text-align: center; margin-bottom: .8rem; }
   .sheet-head h1 { font-size: 17px; margin: 0 0 .15rem; }
   .sheet-head .sub { font-size: 13px; }
   .sheet-head .meta { font-size: 11px; color: #333; margin-top: .3rem; }
   table { border-collapse: collapse; width: 100%; table-layout: fixed; }
   th, td { border: 1px solid #000; padding: 3px 5px; vertical-align: top; overflow-wrap: anywhere; }
-  th { background: #eee; font-weight: 700; text-align: center; }
+  /* หัวตารางเล็กกว่าเนื้อหาเล็กน้อย เพราะคอลัมน์แคบอย่าง "ลำดับ" "ความเร็ว" "ไฟล์แนบ" ถูกหัวคอลัมน์
+     ของตัวเองดันจนขึ้นบรรทัดใหม่กลางคำ (ลำดั/บ) — เนื้อหาในช่องยังเป็น 12px เท่าเดิม อ่านง่ายเหมือนเดิม */
+  th { background: #eee; font-weight: 700; text-align: center; font-size: 11px; }
   /* ให้หัวตารางซ้ำทุกหน้าเวลาพิมพ์ และไม่ให้แถวถูกตัดครึ่งคาบหน้ากระดาษ */
   thead { display: table-header-group; }
   tr { page-break-inside: avoid; }
-  td.num { text-align: center; white-space: nowrap; }
+  /* เดิมเป็น white-space: nowrap ทุกช่องยกเว้นช่องเดียว ทำให้ช่อง "เรื่อง" ของทะเบียนหนังสือรับ
+     (ซึ่งมีคอลัมน์ "วันที่รับ" แทรกอยู่ ลำดับคอลัมน์จึงเลื่อนไปหนึ่งช่อง) ยืดยาวทะลุกรอบออกไปทับ
+     คอลัมน์อื่นเวลาพิมพ์ — ตอนนี้ระบุที่ตัวคอลัมน์ตรงๆ ว่าช่องไหนเป็นข้อความยาว ไม่ใช่นับตำแหน่ง */
+  td.num { text-align: center; }
+  td.txt { text-align: left; }
   .sign { margin-top: 1.6rem; display: flex; justify-content: flex-end; }
   .sign .box { text-align: center; font-size: 12px; min-width: 240px; }
   .sign .line { margin-top: 2.2rem; }
-  .toolbar { margin-bottom: 1rem; display: flex; gap: .5rem; }
+  .toolbar { margin: 0 auto 1rem; padding: 0 1rem; display: flex; gap: .5rem; flex-wrap: wrap; max-width: 297mm; }
   .toolbar button, .toolbar a {
     font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid #888;
     background: #f3f3f3; color: #000; cursor: pointer; text-decoration: none;
@@ -1258,13 +1276,27 @@ router.get('/documents/register', requirePage((ctx) => {
     border: 2px solid #000; padding: .6rem .8rem; margin-bottom: 1rem;
     font-size: 13px; font-weight: 700; text-align: center;
   }
-  @media print { .toolbar { display: none; } body { padding: 0; } }
+  /* เวลาพิมพ์จริง ขอบกระดาษมาจาก @page แล้ว ถ้าปล่อยให้กระดาษจำลองบนจอใส่ padding ซ้ำอีกชั้น
+     ขอบจะกลายเป็นสองเท่าและตารางถูกบีบแคบลงกว่าที่เห็นบนจอ — คืนค่าทุกอย่างให้เป็นหน้าเปล่าปกติ
+     transform ต้องมี !important เพราะการย่อให้พอดีจอเขียนค่าลงที่ style ของธาตุโดยตรง ถ้าไม่ทับ
+     ค่านั้นไว้ คนที่กดพิมพ์จากมือถือจะได้กระดาษที่ตัวหนังสือเล็กเท่าที่ย่อไว้บนจอ */
+  @media print {
+    .toolbar { display: none; }
+    body { padding: 0; background: #fff; }
+    .sheet-wrap { height: auto !important; }
+    .sheet {
+      width: auto; min-height: 0; padding: 0; margin: 0;
+      box-shadow: none; transform: none !important;
+    }
+  }
 </style></head>
 <body>
   <div class="toolbar">
     <button type="button" onclick="window.print()">🖨️ พิมพ์ / บันทึกเป็น PDF</button>
     <a href="/documents?direction=${query.direction}">← กลับทะเบียนในระบบ</a>
+    <span class="paper-note">📄 ขนาดเท่ากระดาษจริง A4 แนวนอน (29.7 × 21 ซม.) — ที่เห็นบนจอคือที่จะพิมพ์ออกมา</span>
   </div>
+  <div class="sheet-wrap" id="sheetWrap"><div class="sheet" id="sheet">
   <div class="sheet-head">
     <h1>${esc(title)}</h1>
     <div class="sub">${esc(schoolName())}</div>
@@ -1285,7 +1317,7 @@ router.get('/documents/register', requirePage((ctx) => {
     <thead><tr><th>ลำดับ</th>${cols.map((c) => `<th>${esc(c.head)}</th>`).join('')}</tr></thead>
     <tbody>${rows.map((d, i) => `<tr>
       <td class="num">${i + 1}</td>
-      ${cols.map((c, ci) => `<td${ci === 4 ? '' : ' class="num"'}>${esc(c.get(d))}</td>`).join('')}
+      ${cols.map((c) => `<td class="${c.text ? 'txt' : 'num'}">${esc(c.get(d))}</td>`).join('')}
     </tr>`).join('')}</tbody>
   </table>
   <div class="sign"><div class="box">
@@ -1294,6 +1326,36 @@ router.get('/documents/register', requirePage((ctx) => {
     <div>ตำแหน่ง ................................................</div>
   </div></div>`
   : '<div class="empty">ไม่มีรายการตามเงื่อนไขที่เลือก</div>'}
+  </div></div>
+  <script>
+    // กระดาษกว้าง 297 มม. (ราว 1123 จุดภาพ) กว้างกว่าจอมือถือและโน้ตบุ๊กเล็กหลายรุ่น ถ้าปล่อยไว้
+    // ต้องเลื่อนซ้ายขวาอ่านทีละครึ่งใบ จึงย่อทั้งใบลงให้พอดีจอแทน (ย่อเฉพาะบนจอ เวลาพิมพ์ CSS
+    // สั่ง transform: none !important อยู่แล้ว ไฟล์ที่พิมพ์ออกมาจึงยังเต็มขนาดเสมอ)
+    function fitSheetToScreen() {
+      var sheet = document.getElementById('sheet');
+      var wrap = document.getElementById('sheetWrap');
+      if (!sheet || !wrap) return;
+      sheet.style.transform = 'none';
+      wrap.style.height = '';
+      var full = sheet.offsetWidth;
+      if (!full) return;
+      // ย่อแล้วหน้าสั้นลงมาก แถบเลื่อนแนวตั้งอาจหายไป ที่ว่างก็กว้างขึ้นอีก 15 จุดภาพ — วัดซ้ำจนนิ่ง
+      // ไม่งั้นจะได้ใบที่กว้างเกินจอไปนิดเดียว แล้วมีแถบเลื่อนซ้ายขวาโผล่มากวนทั้งที่ย่อแล้ว
+      for (var pass = 0; pass < 3; pass++) {
+        var avail = wrap.clientWidth;
+        if (!avail || avail >= full) {
+          sheet.style.transform = 'none';
+          wrap.style.height = '';
+          return;
+        }
+        sheet.style.transform = 'scale(' + (avail / full) + ')';
+        wrap.style.height = Math.ceil(sheet.offsetHeight * (avail / full)) + 'px';
+        if (wrap.clientWidth === avail) return;
+      }
+    }
+    window.addEventListener('load', fitSheetToScreen);
+    window.addEventListener('resize', fitSheetToScreen);
+  </script>
 </body></html>`;
   html(ctx, 200, body);
 }));

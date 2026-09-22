@@ -7454,6 +7454,53 @@ describe('ส่งออกทะเบียนหนังสือ', () => {
     const all = await dispatchGet(reg(), '/documents/register', { direction: 'incoming' });
     assert.doesNotMatch(all.body, /เงื่อนไข:/);
   });
+
+  // หน้านี้สั่งพิมพ์ลงกระดาษ A4 แนวนอนมาตั้งแต่ต้น แต่บนจอกลับกว้างเท่าหน้าต่างเบราว์เซอร์ ธุรการจึง
+  // ไม่มีทางเห็นก่อนกดพิมพ์ว่าจริงๆ แล้วตารางจะออกมาหน้าตาอย่างไร — ต้องจำลองกระดาษให้ตรงขนาดจริง
+  test('หน้าพิมพ์ทะเบียนมีขนาดเท่ากระดาษ A4 แนวนอนจริง และขอบตรงกับที่สั่งพิมพ์', async () => {
+    makeDoc({ title: 'หนังสือสำหรับทดสอบขนาดกระดาษ' });
+    const res = await dispatchGet(reg(), '/documents/register', { direction: 'incoming' });
+    assert.equal(res.status, 200);
+
+    const page = /@page\s*\{\s*size:\s*A4 landscape;\s*margin:\s*([\d.]+)mm\s+([\d.]+)mm;/.exec(res.body);
+    assert.ok(page, 'ต้องสั่งพิมพ์เป็น A4 แนวนอน');
+    const sheet = /\.sheet\s*\{([^}]*)\}/.exec(res.body);
+    assert.ok(sheet, 'ต้องมีกระดาษจำลองบนจอ (.sheet)');
+    assert.match(sheet[1], /width:\s*297mm/, 'กระดาษบนจอต้องกว้าง 297 มม. เท่า A4 แนวนอน');
+    assert.match(sheet[1], /min-height:\s*210mm/, 'กระดาษบนจอต้องสูงอย่างน้อย 210 มม.');
+    assert.match(sheet[1], /box-sizing:\s*border-box/, 'ไม่งั้น 297 มม. จะไม่รวมขอบ กระดาษจะกว้างเกินจริง');
+    // ขอบของกระดาษบนจอต้องเท่ากับ @page margin เป๊ะ ไม่งั้นความกว้างที่เหลือให้ตารางบนจอ
+    // จะไม่เท่ากับตอนพิมพ์ แล้วสิ่งที่เห็นก่อนพิมพ์ก็เชื่อไม่ได้อีก
+    const pad = /padding:\s*([\d.]+)mm\s+([\d.]+)mm/.exec(sheet[1]);
+    assert.ok(pad, 'กระดาษบนจอต้องเว้นขอบเป็นมิลลิเมตร');
+    assert.deepEqual([pad[1], pad[2]], [page[1], page[2]], 'ขอบกระดาษบนจอต้องเท่ากับขอบที่สั่งพิมพ์');
+    // ตอนพิมพ์ต้องคืนค่าให้ขอบมาจาก @page อย่างเดียว ไม่งั้นขอบซ้อนกันสองชั้น ตารางถูกบีบแคบลง
+    const printBlock = /@media print\s*\{([\s\S]*?)\n  \}/.exec(res.body);
+    assert.ok(printBlock && /\.sheet\s*\{[^}]*padding:\s*0/.test(printBlock[1]),
+      'เวลาพิมพ์ต้องไม่เว้นขอบซ้ำจากกระดาษจำลอง');
+    assert.match(res.body, /<div class="sheet-wrap" id="sheetWrap"><div class="sheet" id="sheet">/,
+      'เนื้อหาทะเบียนต้องอยู่ในกระดาษจำลอง');
+  });
+
+  // ช่องที่เป็นข้อความยาวเคยถูกสั่ง white-space: nowrap โดยเลือกจาก "ตำแหน่งคอลัมน์ที่ 4" ซึ่งตรงกับ
+  // ช่อง "ถึง" ของทะเบียนหนังสือส่งเท่านั้น — ทะเบียนหนังสือรับมีคอลัมน์ "วันที่รับ" แทรกอยู่ ตำแหน่งที่ 4
+  // จึงกลายเป็นช่อง "จาก" ส่วนช่อง "เรื่อง" ถูกสั่งห้ามตัดบรรทัด แล้วยืดทะลุกรอบออกไปทับคอลัมน์อื่น
+  // (วัดจริงด้วยเบราว์เซอร์: ตารางล้นออกไป 82 จุดภาพ เมื่อชื่อเรื่องยาวแบบหนังสือราชการปกติ)
+  test('ช่องข้อความยาวในทะเบียนต้องตัดบรรทัดในช่อง ไม่ยืดทะลุกรอบ', async () => {
+    const long = 'ขอความอนุเคราะห์บุคลากรเป็นคณะกรรมการดำเนินการแข่งขันงานศิลปหัตถกรรมนักเรียนระดับเขตพื้นที่การศึกษา';
+    for (const direction of ['incoming', 'outgoing']) {
+      makeDoc({ title: `${long} (${direction})`, direction });
+      const res = await dispatchGet(reg(), '/documents/register', { direction });
+      const cell = new RegExp(`<td class="(\\w+)">${long} \\(${direction}\\)</td>`).exec(res.body);
+      assert.ok(cell, `ต้องมีช่อง "เรื่อง" ในทะเบียน ${direction}`);
+      assert.equal(cell[1], 'txt', `ช่อง "เรื่อง" ของทะเบียน ${direction} ต้องเป็นช่องข้อความยาวที่ตัดบรรทัดได้`);
+    }
+    const res = await dispatchGet(reg(), '/documents/register', { direction: 'incoming' });
+    const numRule = /\btd\.num\s*\{([^}]*)\}/.exec(res.body);
+    assert.ok(numRule && !/nowrap/.test(numRule[1]),
+      'ทะเบียนต้องไม่มีช่องไหนห้ามตัดบรรทัด เพราะความกว้างกระดาษคงที่ ข้อความที่ตัดบรรทัดไม่ได้จะล้นออกไปทับช่องอื่น');
+    assert.match(res.body, /td\.txt\s*\{[^}]*text-align:\s*left/, 'ช่องข้อความยาวต้องชิดซ้ายให้อ่านง่าย');
+  });
 });
 
 // ตัวเขียนไฟล์ .xlsx เอง (zero-dependency) — ถ้าโครงไฟล์ผิดแม้นิดเดียว Excel จะขึ้นว่า "ไฟล์เสียหาย"

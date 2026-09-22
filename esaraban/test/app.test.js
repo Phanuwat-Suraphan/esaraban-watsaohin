@@ -2966,12 +2966,20 @@ describe('ไฟล์แนบเป็น Word/Excel ได้ ไม่ใช
 
   test('ชนิดไฟล์ที่ไม่รับเลย ต้องบอกว่ารับอะไรได้บ้าง', async () => {
     const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบชนิดไฟล์ที่ไม่รับ' });
-    const res = await attach(doc.id, 'รูปถ่าย.png', 'image/png', Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'));
+    // .HEIC คือรูปจากไอโฟนที่ตั้งค่ากล้องเป็น "ประสิทธิภาพสูง" ซึ่งเบราว์เซอร์แสดงไม่ได้
+    // จึงรับไม่ได้ทั้งที่เป็นรูปภาพ — เป็นกรณีที่ครูเจอจริงบ่อยที่สุดในบรรดาชนิดที่ระบบไม่รับ
+    const res = await attach(doc.id, 'รูปถ่ายจากไอโฟน.heic', 'image/heic', Buffer.alloc(40));
     assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status}: ${res.body})`);
     // ต้องบอกรายการชนิดที่รับได้ ไม่ใช่แค่ "ไม่อนุญาต" — ผู้ใช้ต้องรู้ว่าต้องทำอะไรต่อ
     assert.match(res.body, /PDF/, 'ต้องบอกว่ารับ PDF');
     assert.match(res.body, /Word/, 'ต้องบอกว่ารับ Word');
     assert.match(res.body, /Excel/, 'ต้องบอกว่ารับ Excel');
+    assert.match(res.body, /รูปภาพ/, 'ต้องบอกว่ารับรูปภาพ');
+
+    // ไฟล์บีบอัดยังต้องไม่หลุดเข้าไป แม้จะมีลายเซ็น ZIP เหมือน docx/xlsx
+    const zip = await attach(doc.id, 'เอกสาร.zip', 'application/zip',
+      Buffer.concat([Buffer.from('PK\x03\x04', 'latin1'), Buffer.alloc(20)]));
+    assert.equal(zip.status, 400, `ไฟล์ zip ต้องถูกปฏิเสธ (ได้ ${zip.status})`);
   });
 
   // นี่คือจุดที่พลาดง่ายที่สุดของการเปิดรับไฟล์ชนิดอื่น: ตราลงรับ/ตราธุรการ/ตรา ผอ. เดิมหยิบ "ไฟล์แรก
@@ -3103,6 +3111,126 @@ describe('ไฟล์แนบเป็น Word/Excel ได้ ไม่ใช
 // ไม่จบ ซึ่งเกิดขึ้นจริง) แล้วกด "แนบไฟล์เพิ่ม" ระบบตอบสำเร็จและพากลับหน้าเดิม โดยไม่มีไฟล์แนบจริง
 // และไม่มีข้อความอะไรบอกเลย เพราะเงื่อนไข `if (!fileDataBase64)` กลืนกรณีนี้รวมกับ "ไม่ได้แนบไฟล์มา"
 // ซึ่งเป็นคนละเรื่องกัน กว่าธุรการจะรู้ว่าหนังสือฉบับนั้นไม่มีไฟล์สแกนก็ตอนต้องหยิบมาใช้
+// แนบรูปภาพได้ — ครูถ่ายรูปหนังสือด้วยมือถือแล้วแนบเข้ามาตรงๆ เป็นเรื่องปกติที่สุดของโรงเรียน
+// (เร็วกว่าเดินไปสแกนมาก) เดิมต้องไปหาแอปแปลงเป็น PDF ก่อน ซึ่งบนมือถือทำไม่ได้ง่ายๆ
+describe('แนบไฟล์รูปภาพได้', () => {
+  const JPEG = 'image/jpeg';
+  const PNG = 'image/png';
+  // ไบต์จริงพอให้ผ่านการตรวจลายเซ็นไฟล์ (ffd8ff / 89504e470d0a1a0a)
+  const jpegBytes = (tag) => Buffer.concat([Buffer.from('ffd8ffe0', 'hex'), Buffer.from(` ${tag}`)]);
+  const pngBytes = (tag) => Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from(` ${tag}`)]);
+  const pdfBytes = (tag) => Buffer.from(`%PDF-1.4\n% ${tag}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1');
+
+  let n = 0;
+  const attach = (docId, fileName, fileType, buf) => dispatchPost(registrarUser, `/documents/${docId}/attachments`,
+    { fileName, fileType, fileDataBase64: buf.toString('base64') });
+  const attRow = (docId, filename) => db.prepare('SELECT * FROM attachments WHERE document_id = ? AND filename = ?').get(docId, filename);
+
+  test('แนบรูป JPG และ PNG ได้ และเก็บนามสกุลจริงไว้', async () => {
+    const doc = makeDoc({ title: `หนังสือที่แนบรูปถ่าย ${++n}` });
+    for (const [name, type, buf, ext] of [
+      ['รูปถ่ายหนังสือ.jpg', JPEG, jpegBytes('jpg'), 'jpg'],
+      ['สแกนหน้าปก.png', PNG, pngBytes('png'), 'png'],
+    ]) {
+      const res = await attach(doc.id, name, type, buf);
+      assert.ok(res.status < 400, `แนบ ${name} ไม่สำเร็จ (${res.status}): ${res.body}`);
+      const row = attRow(doc.id, name);
+      assert.equal(row.mime_type, type);
+      assert.match(row.filepath, new RegExp(`\\.${ext}$`), `ไฟล์บนดิสก์ต้องลงท้าย .${ext}`);
+    }
+  });
+
+  test('ไฟล์ที่อ้างว่าเป็นรูปแต่ข้างในไม่ใช่ ต้องถูกปฏิเสธ', async () => {
+    const doc = makeDoc({ title: `หนังสือทดสอบรูปปลอม ${++n}` });
+    for (const [label, type, buf] of [
+      ['อ้างว่าเป็น JPG แต่เป็น PDF', JPEG, pdfBytes('ไม่ใช่รูป')],
+      ['อ้างว่าเป็น PNG แต่เป็นข้อความ', PNG, Buffer.from('ไม่ใช่รูปภาพเลย')],
+      ['ไฟล์รันได้ที่เปลี่ยนนามสกุลเป็น .jpg', JPEG, Buffer.from('MZ\x90\x00\x03', 'latin1')],
+    ]) {
+      const res = await attach(doc.id, 'ปลอม.jpg', type, buf);
+      assert.equal(res.status, 400, `${label} ต้องถูกปฏิเสธ (ได้ ${res.status})`);
+      assert.match(res.body, /ลายเซ็นไฟล์/, `${label} ต้องบอกสาเหตุ`);
+    }
+  });
+
+  // SVG รันสคริปต์ได้เมื่อเปิดในเบราว์เซอร์ การรับไว้แล้วเสิร์ฟแบบ inline คือช่องให้ฝังสคริปต์
+  // ลงในระบบที่ทุกคนในโรงเรียนเปิดดู
+  test('SVG ต้องไม่ถูกรับเด็ดขาด', async () => {
+    const doc = makeDoc({ title: `หนังสือทดสอบ svg ${++n}` });
+    const res = await attach(doc.id, 'ปลอม.svg', 'image/svg+xml',
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'));
+    assert.equal(res.status, 400, `ต้องปฏิเสธ (ได้ ${res.status})`);
+  });
+
+  test('รูปภาพเปิดดูในแท็บได้ ไม่ใช่บังคับดาวน์โหลดแบบ Word/Excel', async () => {
+    const doc = makeDoc({ title: `หนังสือเปิดรูปในแท็บ ${++n}` });
+    const bytes = jpegBytes('เปิดในแท็บ');
+    await attach(doc.id, 'รูปเปิดได้.jpg', JPEG, bytes);
+    const att = attRow(doc.id, 'รูปเปิดได้.jpg');
+
+    const res = await dispatchGet(registrarUser, `/files/${att.id}`, {});
+    assert.equal(res.status, 200);
+    assert.equal(res.headers['Content-Type'], JPEG, 'ต้องส่งชนิดไฟล์จริง');
+    assert.match(res.headers['Content-Disposition'], /^inline/, 'รูปภาพต้องเปิดดูในแท็บได้');
+    assert.deepEqual(res.buffer, bytes, 'ไบต์ต้องตรงกับที่อัปโหลด');
+    // แต่ยังต้องมีทางบังคับดาวน์โหลดเหมือนไฟล์อื่น
+    const down = await dispatchGet(registrarUser, `/files/${att.id}`, { download: '1' });
+    assert.match(down.headers['Content-Disposition'], /^attachment/);
+  });
+
+  test('ชื่อไฟล์ไทยล้วนต้องได้ชื่อสำรองเป็นนามสกุลของรูป ไม่ใช่ .pdf', async () => {
+    const doc = makeDoc({ title: `หนังสือรูปชื่อไทย ${++n}` });
+    await attach(doc.id, 'ภาพถ่ายหนังสือ.png', PNG, pngBytes('ไทย'));
+    const att = attRow(doc.id, 'ภาพถ่ายหนังสือ.png');
+    const res = await dispatchGet(registrarUser, `/files/${att.id}`, {});
+    assert.match(res.headers['Content-Disposition'], /filename="document\.png"/,
+      `ได้ ${res.headers['Content-Disposition']}`);
+  });
+
+  // ตราประทับทุกชนิดทำงานด้วยการซ้อนหน้า PDF — รูปภาพประทับไม่ได้ ถ้าไปหยิบรูปมาเป็นเป้าประทับ
+  // ตราจะล้มทั้งหมดทั้งที่หนังสือฉบับนั้นมี PDF แนบอยู่ด้วย
+  test('ตราประทับต้องเล็งไฟล์ PDF แม้รูปภาพจะถูกแนบขึ้นก่อน', async () => {
+    const doc = makeDoc({ title: `หนังสือรูปมาก่อน PDF ${++n}` });
+    await attach(doc.id, 'ถ่ายไว้ก่อน.jpg', JPEG, jpegBytes('ก่อน'));
+    await attach(doc.id, 'ตัวหนังสือจริง.pdf', 'application/pdf', pdfBytes('ตัวจริง'));
+    const pdf = attRow(doc.id, 'ตัวหนังสือจริง.pdf');
+
+    const page = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+    assert.ok(page.body.includes(`var isStampTarget = ${JSON.stringify(pdf.id)}`),
+      'ตราต้องเล็งไฟล์ PDF ไม่ใช่รูปที่แนบมาก่อน');
+  });
+
+  test('หน้าเอกสารให้ดูตัวอย่างรูปได้ และดูจากตัวไฟล์เองไม่ใช่ตัวแปลงหน้าแรกของ PDF', async () => {
+    const doc = makeDoc({ title: `หนังสือดูตัวอย่างรูป ${++n}` });
+    await attach(doc.id, 'ดูตัวอย่างได้.jpg', JPEG, jpegBytes('ตัวอย่าง'));
+    const att = attRow(doc.id, 'ดูตัวอย่างได้.jpg');
+    const page = await dispatchGet(registrarUser, `/documents/${doc.id}`, {});
+
+    assert.ok(page.body.includes(`togglePreview('${att.id}')`), 'รูปภาพต้องมีปุ่มดูตัวอย่าง');
+    assert.ok(page.body.includes(`href="/files/${att.id}" target="_blank"`), 'รูปภาพต้องมีปุ่มเปิดแท็บใหม่');
+    // ต้องอยู่ในรายการรูป เพื่อให้สคริปต์โหลดจาก /files/<id> ตรงๆ ไม่ใช่ /preview.png
+    assert.match(page.body, new RegExp(`var IMAGE_ATTACHMENTS = \\[[^\\]]*${att.id}`),
+      'ต้องบอกสคริปต์ว่าไฟล์นี้เป็นรูป จะได้แสดงตัวเองแทนการเรียกตัวแปลงหน้าแรกของ PDF');
+    assert.match(page.body, /รูปภาพประทับตราลงไปไม่ได้/, 'ต้องบอกว่ารูปประทับตราไม่ได้');
+  });
+
+  test('ทุกฟอร์มแนบไฟล์ต้องเปิดให้เลือกรูปภาพ', async () => {
+    const doc = makeDoc({ title: `หนังสือฟอร์มรับรูป ${++n}` });
+    for (const [p, q] of [
+      ['/documents/new', { direction: 'incoming' }],
+      ['/documents/bulk', { direction: 'incoming' }],
+      [`/documents/${doc.id}`, {}],
+    ]) {
+      const res = await dispatchGet(registrarUser, p, q);
+      assert.equal(res.status, 200, `${p} ต้องเปิดได้`);
+      assert.ok(res.body.includes('.jpg') && res.body.includes('.png'), `${p} ต้องเลือกรูปภาพได้`);
+    }
+    // หน้าลงทะเบียนต้องบอกทางออกของไฟล์ .HEIC จากไอโฟนด้วย เพราะเป็นกรณีที่ครูเจอบ่อยที่สุด
+    const newPage = await dispatchGet(registrarUser, '/documents/new', { direction: 'incoming' });
+    assert.match(newPage.body, /HEIC/, 'ต้องบอกวิธีแก้เมื่อไอโฟนส่งไฟล์ HEIC มา');
+  });
+});
+
 describe('แนบไฟล์ที่ไม่มีข้อมูล (0 ไบต์) ต้องไม่เงียบ', () => {
   // ชื่อเรื่องต้องไม่ซ้ำกันในแต่ละครั้ง — เส้นทางจริงกันการลงทะเบียนเรื่องเดิมซ้ำภายในหนึ่งนาที
   // (ดู assertNotJustRegistered) ซึ่งเป็นพฤติกรรมที่ต้องการ ที่นี่แค่ต้องการหนังสือคนละฉบับจริงๆ

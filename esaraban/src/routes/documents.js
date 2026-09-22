@@ -55,9 +55,23 @@ const FILE_KINDS = [
   { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx', label: 'Excel (.xlsx)', sig: isZip },
   { mime: 'application/msword', ext: 'doc', label: 'Word รุ่นเก่า (.doc)', sig: isOle2 },
   { mime: 'application/vnd.ms-excel', ext: 'xls', label: 'Excel รุ่นเก่า (.xls)', sig: isOle2 },
+  // รูปภาพ — ครูถ่ายรูปหนังสือด้วยมือถือแล้วแนบเข้ามาตรงๆ เป็นเรื่องปกติที่สุดของโรงเรียน
+  // (เร็วกว่าเดินไปสแกนมาก) เดิมต้องไปหาแอปแปลงเป็น PDF ก่อน ซึ่งบนมือถือทำไม่ได้ง่ายๆ
+  // รับเฉพาะ JPG/PNG ที่เบราว์เซอร์แสดงได้จริง — ไม่รับ SVG เด็ดขาด เพราะ SVG รันสคริปต์ได้
+  { mime: 'image/jpeg', ext: 'jpg', label: 'รูปภาพ (.jpg)', sig: (b) => b.subarray(0, 3).toString('hex') === 'ffd8ff' },
+  { mime: 'image/png', ext: 'png', label: 'รูปภาพ (.png)', sig: (b) => b.subarray(0, 8).toString('hex') === '89504e470d0a1a0a' },
 ];
 function isZip(b) { return b.subarray(0, 4).toString('latin1') === 'PK\x03\x04'; }
 function isOle2(b) { return b.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1'; }
+
+/**
+ * ไฟล์ที่เบราว์เซอร์เปิดดูเองได้ — เปิดในแท็บได้ และดูตัวอย่างในหน้าได้
+ *
+ * PDF กับรูปภาพเท่านั้น ส่วน Word/Excel ต้องบังคับดาวน์โหลดเพราะเบราว์เซอร์เปิดเองไม่ได้
+ * (ถ้าปล่อยเป็น inline ผู้ใช้จะได้หน้าว่างๆ แทนที่จะได้ไฟล์ไปเปิดด้วยโปรแกรมของเครื่อง)
+ */
+const VIEWABLE_MIME = new Set(['application/pdf', 'image/jpeg', 'image/png']);
+const isImageMime = (m) => m === 'image/jpeg' || m === 'image/png';
 const ALLOWED_MIME = new Set(FILE_KINDS.map((k) => k.mime));
 const ACCEPT_ATTR = FILE_KINDS.map((k) => `.${k.ext}`).concat([...ALLOWED_MIME]).join(',');
 const ALLOWED_LABEL = FILE_KINDS.map((k) => k.label).join(' / ');
@@ -113,6 +127,7 @@ function attachmentIcon(mimeType) {
   if (!kind) return '📎';
   if (kind.ext === 'pdf') return '📄';
   if (kind.ext === 'doc' || kind.ext === 'docx') return '📝';
+  if (isImageMime(mimeType)) return '🖼️';
   return '📊';
 }
 
@@ -567,7 +582,8 @@ router.get('/documents/new', requirePage((ctx) => {
             — เลือกเพิ่มทีหลังได้อีก ไฟล์ที่เลือกไว้แล้วจะไม่หาย และแนบเพิ่มได้อีกเรื่อยๆ หลังบันทึกเอกสารแล้ว
           </div>
           <div class="help-text">รองรับ ${ALLOWED_LABEL} ขนาดไม่เกิน 10MB ต่อไฟล์ (ระบบจะตรวจลายเซ็นไฟล์และคำนวณ SHA-256 hash)</div>
-          <div class="help-text">ตัวหนังสือควรเป็น <strong>PDF</strong> เพราะตราลงรับ ตราธุรการ และตรา ผอ. ประทับลงได้เฉพาะไฟล์ PDF — สิ่งที่ส่งมาด้วยเป็น Word/Excel ได้ตามปกติ แนบไว้ให้ดาวน์โหลดไปใช้ต่อ</div>
+          <div class="help-text">ตัวหนังสือควรเป็น <strong>PDF</strong> เพราะตราลงรับ ตราธุรการ และตรา ผอ. ประทับลงได้เฉพาะไฟล์ PDF — สิ่งที่ส่งมาด้วยเป็น Word/Excel/รูปภาพ ได้ตามปกติ แนบไว้ให้ดาวน์โหลดไปใช้ต่อ</div>
+          <div class="help-text">ถ่ายรูปหนังสือจากมือถือแล้วแนบได้เลย — ถ้าไอโฟนส่งไฟล์ <code>.HEIC</code> มาแล้วระบบไม่รับ ให้ตั้งค่ากล้องเป็น “ความเข้ากันได้สูงสุด” หรือเปิดรูปแล้วกดแชร์เป็น JPEG ก่อน</div>
         </div>
         <button class="btn btn-primary" type="submit">บันทึกและออกเลข${direction === 'incoming' ? 'รับ' : 'ส่ง'}อัตโนมัติ</button>
         <a class="btn btn-outline" href="/documents?direction=${direction}">ยกเลิก</a>
@@ -2110,7 +2126,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                 </div>
                 <div class="chip-row">
                   ${stampAtt && stampAtt.id === a.id && canStampReceived ? `<button type="button" class="btn btn-sm btn-primary" onclick="applyStamp('${a.id}', this)">🖋️ ประทับตราลงไฟล์ PDF จริง</button>` : ''}
-                  ${a.mime_type === STAMPABLE_MIME ? `
+                  ${VIEWABLE_MIME.has(a.mime_type) ? `
                   <button type="button" class="btn btn-sm btn-outline" onclick="togglePreview('${a.id}')">👁️ ดูตัวอย่าง</button>
                   <a class="btn btn-sm btn-outline" href="/files/${a.id}" target="_blank" rel="noopener">เปิดแท็บใหม่</a>` : ''}
                   <!-- ทุกไฟล์ต้องดาวน์โหลดได้ รวมถึง PDF ด้วย — บนมือถือตัวอ่าน PDF ในเบราว์เซอร์มักไม่มี
@@ -2119,9 +2135,13 @@ router.get('/documents/:id', requirePage((ctx) => {
                   ${a.stamped_storage_provider ? `<a class="btn btn-sm btn-outline" href="/files/${a.id}?original=1" target="_blank" rel="noopener">ดูต้นฉบับ (ไม่มีตรา)</a>` : ''}
                 </div>
               </div>
-              ${a.mime_type !== STAMPABLE_MIME ? `
+              ${!VIEWABLE_MIME.has(a.mime_type) ? `
               <div class="text-muted" style="font-size:.78rem;margin-top:.2rem">
                 ไฟล์ชนิดนี้ดูในหน้าเว็บไม่ได้และประทับตราลงไปไม่ได้ — กดดาวน์โหลดเพื่อเปิดด้วยโปรแกรมในเครื่อง
+              </div>` : ''}
+              ${isImageMime(a.mime_type) ? `
+              <div class="text-muted" style="font-size:.78rem;margin-top:.2rem">
+                รูปภาพประทับตราลงไปไม่ได้ — ตราลงรับ/ตราธุรการ/ตรา ผอ. ลงได้เฉพาะไฟล์ PDF
               </div>` : ''}
               ${a.stamp_failed_at ? `
               <!-- เตือนค้างไว้จนกว่าจะประทับสำเร็จ — เรื่องนี้ทำให้ไฟล์หนังสือราชการขาดความเห็นและ
@@ -2331,6 +2351,7 @@ router.get('/documents/:id', requirePage((ctx) => {
                 .catch(e => { window.restoreBtn(btn); window.toast(e.message, 'danger'); });
             };
             var CAN_DECIDE = ${(isCurrentAssignee && isDirectorDecision) ? 'true' : 'false'};
+            var IMAGE_ATTACHMENTS = ${JSON.stringify(liveAttachments.filter((x) => isImageMime(x.mime_type)).map((x) => x.id))};
             window.togglePreview = function(id){
               var el = document.getElementById('preview-' + id);
               if (el.style.display === 'none') {
@@ -2343,8 +2364,13 @@ router.get('/documents/:id', requirePage((ctx) => {
                   var showMark = isStampTarget && CAN_MARK;
                   var showDecision = isStampTarget && CAN_DECIDE;
                   var showRegistrar = isStampTarget && CAN_REGISTRAR;
+                  // รูปภาพแสดงตัวเองได้เลย ไม่ต้องผ่านตัวแปลงหน้าแรกของ PDF (ซึ่งอ่านรูปไม่ได้
+                  // แล้วจะได้กรอบว่างพร้อมข้อความว่าเปิดตัวอย่างไม่ได้ ทั้งที่รูปเปิดดูได้อยู่แล้ว)
+                  var src = IMAGE_ATTACHMENTS.indexOf(id) !== -1
+                    ? '/files/' + id
+                    : '/files/' + id + '/preview.png';
                   el.innerHTML = '<div class="pdf-preview-wrap" id="stampWrap">' +
-                    '<img class="pdf-frame" src="/files/' + id + '/preview.png" alt="ตัวอย่างไฟล์แนบ" onerror="window.pdfPreviewError(this)" />' +
+                    '<img class="pdf-frame" src="' + src + '" alt="ตัวอย่างไฟล์แนบ" onerror="window.pdfPreviewError(this)" />' +
                     (showStamp ? STAMP_HTML : '') +
                     (showMark ? MARK_HTML : '') +
                     (showDecision ? DECISION_HTML : '') +
@@ -3194,7 +3220,8 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const asDownload = ctx.query.download === '1';
   // สำเนาที่ประทับตราแล้วเป็น PDF เสมอ ไม่ว่าต้นฉบับจะเป็นชนิดไหน
   const serveMime = useStamped ? 'application/pdf' : (att.mime_type || 'application/pdf');
-  const disposition = !asDownload && (useStamped || att.mime_type === STAMPABLE_MIME) ? 'inline' : 'attachment';
+  // เปิดในแท็บได้เฉพาะไฟล์ที่เบราว์เซอร์แสดงเองได้ (PDF/รูปภาพ) — สำเนาที่ประทับตราแล้วเป็น PDF เสมอ
+  const disposition = !asDownload && (useStamped || VIEWABLE_MIME.has(att.mime_type)) ? 'inline' : 'attachment';
   const fallbackName = useStamped ? 'document.pdf' : fallbackFilename(att.mime_type);
 
   if (storageProvider === 'google_drive') {

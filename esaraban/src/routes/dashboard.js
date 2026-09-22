@@ -1,11 +1,13 @@
 import { router, html } from '../router.js';
-import { layout, esc, fmtDate, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour, rowAttrs, rowLink } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour, rowAttrs, rowLink } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
 import { setupChecklist } from '../services/setupChecklist.js';
 import { canUserSeeDocument, visibleDocumentsSqlFilter } from '../services/workflow.js';
 import { getBackupStatus } from '../services/dbBackup.js';
 import { appShortName } from '../services/settings.js';
+import { pendingChaseGroups } from '../services/documentQuery.js';
+import { pendingDigestText, lineShareBlock } from '../services/line.js';
 
 // รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
 // ใช้ซ้ำได้ทั้งตัวนับ KPI, การ์ด "งานของฉัน" ในแดชบอร์ด, และหน้า /tasks
@@ -162,6 +164,11 @@ router.get('/', requirePage((ctx) => {
     `).all(visible.params);
     const maxCount = Math.max(1, ...byDept.map((r) => r.pending_count));
 
+    // ตัวเลข "งานค้างทั้งหมดทุกฝ่าย" บอกว่ามีงานค้างเท่าไร แต่เดิมกดอะไรต่อไม่ได้เลย — คนที่เปิด
+    // แดชบอร์ดเห็นตัวเลขแล้วก็ยังต้องไปไล่เปิดทีละฉบับเพื่อดูว่าค้างที่ใคร แล้วไปพิมพ์ตามในกลุ่มไลน์เอง
+    // ปุ่มนี้รวมให้เป็นข้อความเดียว จัดกลุ่มตามคนที่ต้องดำเนินการ กดทีเดียวจบ (ตัวเดียวกับหน้าทะเบียน)
+    const chase = pendingChaseGroups(user);
+
     execKpiHtml = `
     <div class="card">
       <h3 class="mt-0">📊 ภาพรวมสำหรับผู้บริหาร</h3>
@@ -169,6 +176,14 @@ router.get('/', requirePage((ctx) => {
         ${kpi(avgDays != null ? avgDays.toFixed(1) : '-', 'เวลาเฉลี่ยจนปิดงาน (วัน)', '⏱️', 'primary')}
         ${kpi(byDept.reduce((s, r) => s + r.pending_count, 0), 'งานค้างทั้งหมดทุกฝ่าย', '📋', 'warning')}
       </div>
+      ${chase.total ? `<div style="margin-bottom:1rem">
+        ${lineShareBlock({
+          key: 'dash-chase',
+          text: pendingDigestText(chase.groups, fmtThaiDateLong(todayInBangkok()), { hiddenCount: chase.hiddenCount }),
+          copyLabel: `⏳ คัดลอกข้อความตามงานค้างทั้งหมด (${chase.total})`,
+          title: 'รวมทุกเรื่องที่ยังค้าง จัดกลุ่มตามคนที่ต้องดำเนินการ เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
+        })}
+      </div>` : ''}
       ${byDept.length ? byDept.map((r) => `
         <div style="margin-bottom:.5rem">
           <div class="flex" style="justify-content:space-between;font-size:.85rem"><span>${esc(r.dept_name)}</span><span class="text-muted">${r.pending_count} รายการ</span></div>

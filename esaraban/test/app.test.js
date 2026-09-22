@@ -7503,6 +7503,126 @@ describe('ส่งออกทะเบียนหนังสือ', () => {
   });
 });
 
+// ผู้ใช้แจ้งเข้ามาเองว่า "กดส่งเข้าไลน์แล้วไม่มีข้อความให้ copy" — ปุ่มนั้นเปิด line.me/R/share ซึ่งเป็น
+// หน้าต่างแชร์ของ "แอป LINE" บนมือถือก็จบในปุ่มเดียว แต่เครื่องที่ธุรการใช้ลงทะเบียนจริงๆ คือคอมพิวเตอร์
+// ซึ่งเปิดได้แค่หน้าเว็บของ LINE ที่บอกให้ไปทำต่อในแอป ไม่มีข้อความอะไรมาให้เลย งานค้างอยู่แค่นั้น
+describe('ส่งเข้าไลน์: ต้องมีข้อความให้คัดลอกเสมอ ไม่ใช่มีแต่ปุ่มเปิดแอป', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  // ดึงคู่ (ข้อความในปุ่มคัดลอก, ข้อความในลิงก์ไลน์) ออกมาเทียบกัน — ต้องเป็นข้อความเดียวกันเป๊ะ
+  const sharePairs = (body) => {
+    const unesc = (s) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    // ปุ่มคัดลอกเป็นปุ่มหลักจึงมาก่อน แล้วตามด้วยทางลัดเปิดแอปไลน์
+    return [...body.matchAll(/data-share-text="([^"]*)"[\s\S]{0,400}?href="https:\/\/line\.me\/R\/share\?text=([^"]*)"/g)]
+      .map((m) => ({ inCopyButton: unesc(m[1]), inLink: decodeURIComponent(unesc(m[2])) }));
+  };
+
+  test('ทุกปุ่มส่งเข้าไลน์มีปุ่มคัดลอกข้อความคู่กัน และเป็นข้อความเดียวกัน', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบปุ่มคัดลอกข้อความ' });
+    for (const [label, path] of [['หน้าหนังสือ', `/documents/${doc.id}`], ['หน้าทะเบียน', '/documents']]) {
+      const res = await dispatchGet(reg(), path, path === '/documents' ? { direction: 'incoming' } : {});
+      const pairs = sharePairs(res.body);
+      assert.ok(pairs.length > 0, `${label} ต้องมีปุ่มส่งเข้าไลน์พร้อมปุ่มคัดลอก`);
+      for (const p of pairs) {
+        assert.equal(p.inCopyButton, p.inLink, `${label}: ข้อความในปุ่มคัดลอกต้องตรงกับที่ส่งเข้าไลน์`);
+        // บรรทัดสุดท้ายต้องเป็นลิงก์กลับมาที่ระบบเสมอ (LINE ทำตัวอย่างลิงก์ให้เฉพาะ URL ตัวสุดท้าย)
+        // ในเทสต์ยังไม่เคยมี request จริงผ่านเข้ามา ที่อยู่เต็มจึงยังไม่มี เหลือเป็นเส้นทางขึ้นต้นด้วย /
+        const lastLine = p.inCopyButton.trim().split('\n').pop();
+        assert.match(lastLine, /^(https?:\/\/|\/)\S+$/, `${label}: บรรทัดสุดท้ายต้องเป็นลิงก์กลับมาที่ระบบ`);
+      }
+      assert.match(res.body, /onclick="window\.copyShareText\(this\)"/, `${label} ต้องมีปุ่มคัดลอก`);
+      // ช่องข้อความจริงไว้ให้ดูก่อนส่ง และเป็นทางสำรองเวลาคัดลอกอัตโนมัติไม่ได้ (เว็บที่ไม่ใช่ https)
+      assert.match(res.body, /<textarea id="shareText-[^"]+" readonly/, `${label} ต้องมีช่องข้อความให้คัดลอกเอง`);
+    }
+  });
+
+  test('ข้อความตามเรื่องบอกว่าค้างที่ใคร และสุภาพแบบหนังสือราชการ', async () => {
+    const doc = makeDoc({ title: 'ขอความอนุเคราะห์บุคลากรเป็นคณะกรรมการ', dueDate: '2026-12-31' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const res = await dispatchGet(reg(), `/documents/${doc.id}`);
+    // อ่านชื่อจากฐานข้อมูลสดเหมือนที่หน้าเว็บทำ — เทสต์อื่นแก้คำนำหน้า/ชื่อของ fixture ระหว่างทางได้
+    const u = db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(teacherUser.id);
+    const name = `${u.prefix || ''}${u.first_name} ${u.last_name}`.trim();
+
+    assert.match(res.body, /ตอนนี้เรื่องค้างอยู่ที่/, 'หน้าหนังสือต้องบอกว่าค้างอยู่ที่ใคร');
+    const text = sharePairs(res.body).map((p) => p.inCopyButton).find((t) => t.includes('เรียน'));
+    assert.ok(text, 'ต้องมีข้อความตามเรื่องให้ส่ง');
+    assert.ok(text.includes(name), `ข้อความต้องระบุชื่อคนที่ต้องดำเนินการ — ได้ ${JSON.stringify(text)}`);
+    assert.match(text, /จึงเรียนมาเพื่อโปรดเข้าไปอ่านและดำเนินการต่อ/);
+    assert.match(text, /⏰ ครบกำหนด/, 'มีวันครบกำหนดให้เห็นตั้งแต่ในกลุ่มไลน์');
+    assert.ok(text.includes(`/documents/${doc.id}`), 'ต้องมีลิงก์กลับมาที่หนังสือฉบับนั้น');
+    // คนกดส่งเป็นได้ทั้งธุรการ หัวหน้าฝ่าย และ ผอ. ข้อความกลางจึงต้องไม่ผูกกับเพศของผู้ส่ง
+    assert.ok(!/ครับ|ค่ะ/.test(text), `ข้อความกลางต้องไม่มีครับ/ค่ะ — ได้ ${JSON.stringify(text)}`);
+  });
+
+  test('หนังสือลับ: ตามเรื่องได้ แต่เลขที่และชื่อเรื่องต้องไม่หลุดออกไปในข้อความ', async () => {
+    const secret = makeDoc({ title: 'รายชื่อนักเรียนที่ต้องดูแลเป็นพิเศษ', secretLevel: 'secret' });
+    assignStep({ documentId: secret.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const res = await dispatchGet(reg(), `/documents/${secret.id}`);
+    const text = sharePairs(res.body).map((p) => p.inCopyButton).find((t) => t.includes('เรียน'));
+    assert.ok(text, 'หนังสือลับก็ต้องตามเรื่องได้ ไม่งั้นเรื่องค้างแล้วไม่มีใครตามได้เลย');
+    assert.ok(!text.includes('รายชื่อนักเรียน'), 'ชื่อเรื่องหนังสือลับต้องไม่ติดออกไปนอกระบบ');
+    assert.ok(!text.includes(getDocRow(secret.id).doc_number_display), 'เลขทะเบียนหนังสือลับต้องไม่ติดออกไป');
+    assert.match(text, /ชั้นความลับ/, 'ต้องบอกว่ามีหนังสือลับรอดำเนินการ');
+  });
+
+  test('ค้างหลายเรื่องต้องกดทีเดียวได้ รวมเป็นข้อความเดียวจัดกลุ่มตามคน', async () => {
+    const titles = ['แจ้งกำหนดการสอบปลายภาคสำหรับทดสอบการตามงาน', 'ขอเชิญประชุมผู้ปกครองสำหรับทดสอบการตามงาน'];
+    for (const title of titles) {
+      assignStep({ documentId: makeDoc({ title }).id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    }
+    const res = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+    assert.match(res.body, /ตามงานค้างทั้งหมด \(\d+\)/, 'หน้าทะเบียนต้องมีปุ่มตามงานค้างทั้งหมดพร้อมจำนวน');
+
+    const digest = sharePairs(res.body).map((p) => p.inCopyButton).find((t) => t.startsWith('⏳ หนังสือที่รอดำเนินการ'));
+    assert.ok(digest, 'ต้องมีข้อความรวมงานค้าง');
+    // จัดกลุ่มตามคน = ชื่อคนขึ้นครั้งเดียวแล้วไล่เรื่องของเขาเป็นข้อๆ ไม่ใช่ซ้ำชื่อทุกบรรทัด
+    const headers = (digest.match(/\nเรียน /g) || []).length;
+    const items = (digest.match(/\n\d+\. /g) || []).length;
+    assert.ok(headers >= 1 && items > headers,
+      `ต้องจัดกลุ่มตามคน: มีหัวข้อ "เรียน" ${headers} อัน แต่รายการ ${items} รายการ (ถ้าเท่ากันแปลว่าไม่ได้จัดกลุ่ม)`);
+    assert.match(digest, /\n1\. [\s\S]*\n2\. /, 'เรื่องของคนคนเดียวกันต้องเรียงเป็นข้อ 1. 2. …');
+    assert.match(digest, /\/tasks$/, 'ปิดท้ายด้วยลิงก์ไปหน้างานที่รอดำเนินการ');
+    // เรื่องที่เพิ่งมอบหมายต้องอยู่ในข้อความ เว้นแต่ยาวเกินเพดานแล้ว ซึ่งต้องบอกว่ามีอีกกี่ฉบับ
+    // ไม่ใช่ตัดทิ้งเงียบๆ (ทั้งเล่มของโรงเรียนจริงมีงานค้างเกิน 20 ฉบับได้ตามปกติ)
+    const inMessage = titles.filter((t) => digest.includes(t)).length;
+    assert.ok(inMessage === titles.length || /\(และอีก \d+ ฉบับ/.test(digest),
+      'เรื่องที่ค้างต้องอยู่ในข้อความ หรือถ้าถูกตัดเพราะยาวเกิน ต้องบอกว่าเหลืออีกกี่ฉบับ');
+
+    // ครูทั่วไปไม่มีหน้าที่ไล่ตามทั้งโรงเรียน (ตามรายฉบับที่ตัวเองเกี่ยวข้องได้อยู่แล้วในหน้าหนังสือ)
+    const teacherView = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/documents', { direction: 'incoming' });
+    assert.ok(!/ตามงานค้างทั้งหมด/.test(teacherView.body), 'ครูทั่วไปต้องไม่เห็นปุ่มตามงานค้างทั้งโรงเรียน');
+  });
+
+  // ตัวข้อความเองตรวจแบบตายตัว ไม่ผ่านฐานข้อมูล — หน้าเว็บมีงานค้างจากเทสต์อื่นปนอยู่จนเดาผลไม่ได้
+  test('ข้อความรวม: คนหนึ่งคนขึ้นชื่อครั้งเดียว ไล่เรื่องเป็นข้อ และบอกจำนวนที่ถูกตัด', async () => {
+    const { pendingDigestText } = await import('../src/services/line.js');
+    const text = pendingDigestText([
+      { name: 'นางสมหญิง ใจดี', position: 'ครู', docs: [
+        { number: '0001/2569', title: 'แจ้งกำหนดการสอบ', dueDate: null },
+        { number: '0002/2569', title: 'ขอเชิญประชุม', dueDate: null },
+      ] },
+      { name: 'นายสมชาย รักเรียน', position: '', docs: [{ number: '0003/2569', title: 'สำรวจครุภัณฑ์', dueDate: null }] },
+    ], '22 กันยายน 2569', { hiddenCount: 4 });
+
+    assert.match(text, /^⏳ หนังสือที่รอดำเนินการ ณ วันที่ 22 กันยายน 2569 — 7 ฉบับ/, 'ยอดรวมต้องนับที่ถูกตัดด้วย');
+    assert.equal((text.match(/\nเรียน /g) || []).length, 2, 'สองคน = หัวข้อ "เรียน" สองอัน');
+    assert.match(text, /เรียน นางสมหญิง ใจดี \(ครู\)\n1\. 0001\/2569 แจ้งกำหนดการสอบ\n2\. 0002\/2569 ขอเชิญประชุม/);
+    assert.match(text, /เรียน นายสมชาย รักเรียน\n1\. 0003\/2569 สำรวจครุภัณฑ์/, 'คนถัดไปเริ่มนับ 1 ใหม่');
+    assert.match(text, /\(และอีก 4 ฉบับ — ดูทั้งหมดในระบบ\)/, 'ที่ถูกตัดต้องบอก ไม่ใช่หายเงียบ');
+    assert.match(text, /\/tasks$/);
+  });
+
+  // ตัวเลข "งานค้างทั้งหมดทุกฝ่าย" บนแดชบอร์ดคือจุดที่ผู้บริหารเห็นปัญหา ปุ่มตามงานต้องอยู่ตรงนั้นด้วย
+  // ไม่ใช่ให้เห็นตัวเลขแล้วต้องเดินไปหาปุ่มที่หน้าอื่น
+  test('แดชบอร์ดผู้บริหารมีปุ่มตามงานค้างอยู่ข้างตัวเลขงานค้าง', async () => {
+    assignStep({ documentId: makeDoc({ title: 'หนังสือค้างสำหรับทดสอบแดชบอร์ด' }).id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const res = await dispatchGet(loadUserForTest(seed.userIds.director01), '/');
+    assert.match(res.body, /งานค้างทั้งหมดทุกฝ่าย/);
+    assert.match(res.body, /ตามงานค้างทั้งหมด \(\d+\)/, 'ต้องมีปุ่มตามงานค้างบนแดชบอร์ดผู้บริหาร');
+    assert.match(res.body, /data-share-box="shareText-dash-chase"/, 'ปุ่มคัดลอกข้อความต้องมาคู่กันเสมอ');
+  });
+});
+
 // ตัวเขียนไฟล์ .xlsx เอง (zero-dependency) — ถ้าโครงไฟล์ผิดแม้นิดเดียว Excel จะขึ้นว่า "ไฟล์เสียหาย"
 // แล้วธุรการจะเปิดไม่ได้เลยโดยที่ฝั่งเซิร์ฟเวอร์ไม่มีอะไรฟ้อง
 describe('เขียนไฟล์ Excel', () => {
@@ -10268,10 +10388,10 @@ describe('หนังสือเข้า → กลุ่มไลน์', ()
       makeDoc({ title: 'หนังสือเข้าวันนี้สำหรับสรุป' });
       const res = await dispatchGet(registrarUser, '/documents', { direction: 'incoming' });
       assert.equal(res.status, 200);
-      assert.match(res.body, /ส่งสรุปวันนี้เข้าไลน์/, 'ต้องมีปุ่มส่งสรุปของวัน');
+      assert.match(res.body, /คัดลอกสรุปหนังสือเข้าวันนี้/, 'ต้องมีปุ่มสรุปของวัน');
       // ทะเบียนหนังสือออกไม่ควรมีปุ่มนี้ เพราะสรุปนี้เป็นของหนังสือเข้า
       const out = await dispatchGet(registrarUser, '/documents', { direction: 'outgoing' });
-      assert.ok(!/ส่งสรุปวันนี้เข้าไลน์/.test(out.body), 'ทะเบียนหนังสือออกต้องไม่มีปุ่มนี้');
+      assert.ok(!/คัดลอกสรุปหนังสือเข้าวันนี้/.test(out.body), 'ทะเบียนหนังสือออกต้องไม่มีปุ่มนี้');
     });
 
     // ครูเห็นเฉพาะหนังสือที่ตัวเองมีสิทธิ์เห็น ปุ่มสรุปก็ต้องยึดเกณฑ์เดียวกัน ไม่ใช่ดึงทั้งฐานข้อมูล

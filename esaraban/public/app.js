@@ -469,6 +469,43 @@
     if (btn.dataset.origHtml !== undefined) btn.innerHTML = btn.dataset.origHtml;
   };
 
+  // ---------- คัดลอกข้อความที่จะส่งเข้ากลุ่มไลน์ ----------
+  //
+  // ปุ่ม "ส่งเข้าไลน์" เปิดที่อยู่ line.me/R/share ซึ่งเป็นหน้าต่างแชร์ของ "แอป LINE" — บนมือถือที่ติดตั้ง
+  // แอปไว้จะเด้งให้เลือกกลุ่มพร้อมข้อความมาให้เลย แต่บนคอมพิวเตอร์ (ซึ่งเป็นเครื่องที่ธุรการใช้ลงทะเบียน
+  // จริงๆ) เบราว์เซอร์เปิดได้แค่หน้าเว็บของ LINE ที่บอกให้ไปเปิดในแอป — ไม่มีข้อความอะไรให้คัดลอกเลย
+  // งานก็ค้างอยู่แค่นั้น ปุ่มนี้จึงต้องมีคู่กันเสมอ: คัดลอกข้อความเดียวกันนั้นไปวางในกลุ่มไลน์บนคอมได้ตรงๆ
+  //
+  // ข้อความอยู่ที่ data-share-text ของตัวปุ่มเอง ไม่ได้ประกอบเป็นสตริงในสคริปต์ — ชื่อเรื่องหนังสือมี
+  // ทั้งอัญประกาศ วงเล็บ และขึ้นบรรทัดใหม่ ซึ่งพังทันทีถ้าเอาไปแปะกลางโค้ด
+  window.copyShareText = async function (btn) {
+    if (!btn) return;
+    const text = btn.getAttribute('data-share-text') || '';
+    const box = document.getElementById(btn.getAttribute('data-share-box') || '');
+    const done = 'คัดลอกข้อความแล้ว — ไปวางในกลุ่มไลน์ได้เลย';
+    try {
+      // ต้องเป็นหน้าเว็บที่ปลอดภัย (https) เท่านั้น ถ้าโรงเรียนติดตั้งเองแล้วเข้าผ่าน http://192.168.x.x
+      // ตัวนี้จะใช้ไม่ได้ ต้องตกไปใช้วิธีสำรองด้านล่าง
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        window.toast(done, 'success');
+        return;
+      }
+    } catch (err) { /* ตกไปใช้วิธีสำรอง */ }
+    if (!box) { window.toast('คัดลอกไม่สำเร็จ กรุณาเลือกข้อความแล้วคัดลอกเอง', 'warning'); return; }
+    // วิธีสำรอง: กางช่องข้อความออกมาแล้วเลือกให้ทั้งหมด อย่างน้อยผู้ใช้กด Ctrl+C ต่อได้ทันที
+    // ไม่ต้องไปลากเลือกเอง (และบนมือถือก็แตะค้างแล้วกดคัดลอกได้)
+    const details = box.closest('details');
+    if (details) details.open = true;
+    box.focus();
+    box.select();
+    box.setSelectionRange(0, 99999);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+    window.toast(ok ? done : 'เลือกข้อความให้แล้ว — กด Ctrl+C เพื่อคัดลอก (บนมือถือแตะค้างแล้วกดคัดลอก)',
+      ok ? 'success' : 'info');
+  };
+
   // ---------- confetti when every task is cleared (UX Bible Part 21 §11) ----------
   // triggered by a hidden marker element the server renders only when the user just
   // acknowledged their last pending item — never replays on a plain revisit with 0 tasks

@@ -187,3 +187,59 @@ export function describeFilters({ q, statusFilter, f }) {
   if (f.overdue) parts.push('เฉพาะที่เลยกำหนดและยังไม่ปิด');
   return parts.join(' · ');
 }
+
+// ---------------- ตามงานค้าง: ใครค้างอะไรอยู่บ้าง ----------------
+//
+// ใช้ร่วมกันระหว่างหน้าทะเบียนหนังสือกับแดชบอร์ดผู้บริหาร ถ้าต่างคนต่างประกอบ SQL เอง สิ่งที่จะเกิดคือ
+// ตัวเลขบนการ์ด "งานค้างทั้งหมดทุกฝ่าย" ไม่ตรงกับจำนวนในปุ่ม "ตามงานค้างทั้งหมด" ที่อยู่ข้างๆ กันเอง
+//
+// นับเป็น "ขั้นตอนที่ค้าง" ไม่ใช่ "จำนวนหนังสือ" โดยตั้งใจ เพราะหนังสือฉบับเดียวที่ ผอ. สั่งการถึงครู
+// สี่คนพร้อมกัน คือคนสี่คนที่ต้องไปตาม ไม่ใช่เรื่องเดียว
+
+/** จำนวนฉบับสูงสุดที่ใส่ในข้อความตามงานค้าง — ยาวกว่านี้ไม่มีใครอ่านในกลุ่มไลน์ และ LINE ก็ตัดทิ้ง */
+export const MAX_CHASE_DOCS = 20;
+
+/** บทบาทที่มีหน้าที่ไล่ตามเรื่องค้างทั้งโรงเรียน — ครูทั่วไปตามรายฉบับที่ตัวเองเกี่ยวข้องได้อยู่แล้ว */
+export const CHASE_ROLES = ['admin', 'director', 'vice_director', 'head', 'registrar'];
+export const canChasePending = (user) => CHASE_ROLES.some((r) => user.roleCodes.includes(r));
+
+export function pendingChaseGroups(user) {
+  if (!canChasePending(user)) return { groups: [], total: 0, hiddenCount: 0 };
+  const visible = visibleDocumentsSqlFilter(user);
+  const rows = db.prepare(`
+    SELECT d.id, d.doc_number_display, d.title, d.due_date, d.secret_level,
+      ws.assignee_id, u.prefix, u.first_name, u.last_name, u.position
+    FROM workflow_steps ws
+    JOIN documents d ON d.id = ws.document_id
+    JOIN users u ON u.id = ws.assignee_id
+    WHERE ws.status = 'waiting' AND d.deleted_at IS NULL
+      AND d.status NOT IN (${CLOSED_STATUSES.map((s) => `'${s}'`).join(', ')})
+      AND ${visible.sql}
+    -- ในแต่ละคนเรียงตามวันครบกำหนด โดยฉบับที่ไม่มีกำหนดส่งไปอยู่ท้ายสุดเสมอ ไม่ใช่ขึ้นก่อนเพราะ
+    -- ค่าว่างเรียงมาก่อนใน SQL — ฉบับที่ใกล้ครบกำหนดคือฉบับที่ต้องรีบตาม
+    ORDER BY u.first_name, u.last_name, ws.assignee_id, (d.due_date IS NULL), d.due_date, d.doc_number_display
+  `).all(visible.params);
+
+  const groups = [];
+  let shown = 0;
+  let hiddenCount = 0;
+  for (const r of rows) {
+    if (shown >= MAX_CHASE_DOCS) { hiddenCount++; continue; }
+    const last = groups[groups.length - 1];
+    const entry = {
+      number: r.doc_number_display, title: r.title, dueDate: r.due_date,
+      secret: ['secret', 'top_secret'].includes(r.secret_level),
+    };
+    if (last && last.assigneeId === r.assignee_id) last.docs.push(entry);
+    else {
+      groups.push({
+        assigneeId: r.assignee_id,
+        name: `${r.prefix || ''}${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        position: r.position,
+        docs: [entry],
+      });
+    }
+    shown++;
+  }
+  return { groups, total: rows.length, hiddenCount };
+}

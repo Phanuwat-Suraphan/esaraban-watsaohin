@@ -21,10 +21,14 @@ import {
   ACK_BOX_ROWS, MAX_STAMP_TEXT,
 } from '../services/pdfStamp.js';
 import { assertMaxLength, requireDate } from '../services/validate.js';
-import { canShareToLine, documentShareText, incomingDigestText, lineShareUrl } from '../services/line.js';
+import {
+  canShareToLine, documentShareText, incomingDigestText, pendingReminderText, pendingDigestText,
+  lineShareBlock,
+} from '../services/line.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
 import {
   buildDocumentQuery, countDocuments, listDocuments, describeFilters, listRegisterYears, CLOSED_STATUSES,
+  pendingChaseGroups,
 } from '../services/documentQuery.js';
 import { buildXlsx } from '../services/xlsxWrite.js';
 import { Readable } from 'node:stream';
@@ -430,6 +434,11 @@ router.get('/documents', requirePage((ctx) => {
     ORDER BY d.created_at
   `).all({ ...visibleDocumentsSqlFilter(ctx.user).params, today: todayInBangkok() }) : [];
 
+  // ตามงานค้าง "ทีเดียวทั้งหมด" — ปลายสัปดาห์เรื่องค้างพร้อมกันสิบกว่าฉบับเป็นเรื่องปกติ ถ้าตามทีละฉบับ
+  // คือยิงเข้ากลุ่มไลน์สิบกว่าข้อความติดกัน ซึ่งกลบข้อความอื่นในกลุ่มจนคนเลื่อนผ่าน และธุรการก็ไม่ทำจริง
+  // เพราะเสียเวลา — รวมเป็นข้อความเดียวที่จัดกลุ่มว่าใครค้างอะไรบ้าง (ใช้ตัวเดียวกับแดชบอร์ดผู้บริหาร)
+  const chase = pendingChaseGroups(ctx.user);
+
   const content = `
     <div class="card-header">
       <div>
@@ -445,9 +454,18 @@ router.get('/documents', requirePage((ctx) => {
         <a class="btn btn-outline" href="/documents?direction=outgoing">📤 ทะเบียนหนังสือออก</a>
       </div>` : `
       <div class="flex gap-2 flex-wrap">
-        ${direction === 'incoming' && todayIncoming.length ? `<a class="btn btn-outline" target="_blank" rel="noopener"
-          href="${esc(lineShareUrl(incomingDigestText(todayIncoming, fmtThaiDateLong(todayInBangkok()))))}"
-          title="ส่งสรุปหนังสือเข้าของวันนี้เข้ากลุ่มไลน์เป็นข้อความเดียว">💬 ส่งสรุปวันนี้เข้าไลน์ (${todayIncoming.length})</a>` : ''}
+        ${chase.total ? lineShareBlock({
+          key: 'chase', inline: true,
+          text: pendingDigestText(chase.groups, fmtThaiDateLong(todayInBangkok()), { hiddenCount: chase.hiddenCount }),
+          copyLabel: `⏳ คัดลอกข้อความตามงานค้างทั้งหมด (${chase.total})`,
+          title: 'รวมทุกเรื่องที่ยังค้าง จัดกลุ่มตามคนที่ต้องดำเนินการ เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
+        }) : ''}
+        ${direction === 'incoming' && todayIncoming.length ? lineShareBlock({
+          key: 'digest', inline: true,
+          text: incomingDigestText(todayIncoming, fmtThaiDateLong(todayInBangkok())),
+          copyLabel: `📋 คัดลอกสรุปหนังสือเข้าวันนี้ (${todayIncoming.length})`,
+          title: 'สรุปหนังสือเข้าของวันนี้เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
+        }) : ''}
         <a class="btn btn-outline" href="/documents/bulk?direction=${direction}">📎 ลงหลายฉบับรวดเดียว</a>
         <!-- ทะเบียนหนังสือส่งเป็นสมุดของธุรการ ครูที่จะส่งหนังสือออกต้อง "ขอเลข" ไม่ใช่กดออกเลขเอง
              (ดูเหตุผลเต็มใน services/outgoingRequest.js) ปุ่มขอเลขจึงเป็นปุ่มหลักของหน้าหนังสือออก
@@ -2060,8 +2078,8 @@ router.get('/documents/:id', requirePage((ctx) => {
       <p class="help-text" style="margin:0 0 .6rem">
         ส่งเข้ากลุ่มไลน์ให้ครูรู้ได้เลย — ข้อความมีเลขทะเบียน ชื่อเรื่อง และลิงก์กลับมาที่หนังสือฉบับนี้
       </p>
-      <div class="chip-row">
-        <a class="btn btn-primary btn-sm" href="${esc(lineShareUrl(documentShareText(doc)))}" target="_blank" rel="noopener">💬 ส่งเข้ากลุ่มไลน์</a>
+      ${lineShareBlock({ key: `${doc.id}-new`, text: documentShareText(doc), copyLabel: '📋 คัดลอกข้อความแจ้งครู', primary: true })}
+      <div class="chip-row" style="margin-top:.5rem">
         <a class="btn btn-outline btn-sm" href="/documents?direction=${esc(doc.direction)}">ไว้ทีหลัง ไปที่ทะเบียน</a>
       </div>
     </div>` : '<div class="alert alert-success">✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</div>') : ''}
@@ -2080,8 +2098,10 @@ router.get('/documents/:id', requirePage((ctx) => {
              ปุ่ม "พิมพ์เอกสาร" จะกลายเป็นการดาวน์โหลดไฟล์ Word แทนที่จะเปิดตัวหนังสือให้สั่งพิมพ์ -->
         <a class="btn btn-outline btn-sm" href="${stampAtt ? `/files/${stampAtt.id}` : `/documents/${doc.id}/print`}" target="_blank" rel="noopener">🖨️ พิมพ์เอกสาร${stampAtt ? ' (PDF ที่บันทึกไว้)' : ''}</a>
         ${liveAttachments.length ? `<a class="btn btn-outline btn-sm" href="/documents/${doc.id}/print" target="_blank" rel="noopener">📝 บันทึกข้อความ/สรุปลายเซ็น</a>` : ''}
-        ${canShareToLine(doc) ? `<a class="btn btn-outline btn-sm" href="${esc(lineShareUrl(documentShareText(doc)))}" target="_blank" rel="noopener"
-          title="เปิดหน้าต่างแชร์ของ LINE พร้อมเลขที่ ชื่อเรื่อง และลิงก์กลับมาที่หนังสือฉบับนี้ (ใช้บนมือถือที่มีแอป LINE)">💬 ส่งเข้าไลน์</a>` : ''}
+        ${canShareToLine(doc) ? lineShareBlock({
+          key: `${doc.id}-bar`, text: documentShareText(doc), inline: true,
+          title: 'เปิดหน้าต่างแชร์ของ LINE พร้อมเลขที่ ชื่อเรื่อง และลิงก์กลับมาที่หนังสือฉบับนี้ (ใช้บนมือถือที่มีแอป LINE)',
+        }) : ''}
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
         ${canForceDelete ? `<a class="btn btn-outline btn-sm" href="/admin/audit?document=${esc(doc.id)}">🧾 ประวัติการดำเนินการ (audit)</a>` : ''}
@@ -2100,6 +2120,27 @@ router.get('/documents/:id', requirePage((ctx) => {
           .catch(function(e){ toast(e.message, 'danger'); btn.disabled = false; });
       }
     </script>` : ''}
+
+    <!-- ตามเรื่องที่ค้าง — งานประจำที่ธุรการต้องทำซ้ำทุกสัปดาห์คือ "เรื่องนี้ค้างที่ใคร แล้วไปตามให้เขาทำ"
+         เดิมต้องเปิดไทม์ไลน์ดูเอง จำชื่อไว้ แล้วไปพิมพ์ในกลุ่มไลน์เองทุกครั้ง ชื่อผิด/เลขที่ผิดได้ง่าย
+         และครูที่ยังไม่ได้ผูกไลน์ส่วนตัวก็ยังได้รับผ่านกลุ่มด้วย
+         ใช้ waitingSteps (ทุกคนที่ค้าง) ไม่ใช่ขั้นบนสุดขั้นเดียว เพราะ ผอ. สั่งการถึงหลายคนพร้อมกันได้
+         ถ้าตามแค่คนเดียว อีกสามคนก็ไม่มีใครไปบอก -->
+    ${waitingSteps.length ? `<div class="alert alert-warning">
+      <p style="margin:0 0 .35rem"><strong>⏳ ตอนนี้เรื่องค้างอยู่ที่ ${
+        waitingSteps.map((s) => esc(signerIdentity(s).name)).join(', ')
+      }</strong></p>
+      <p class="help-text" style="margin:0 0 .6rem">
+        ส่งข้อความสุภาพแจ้งให้เข้าไปอ่านและดำเนินการต่อ — มีชื่อผู้ที่ต้องดำเนินการ เลขทะเบียน ชื่อเรื่อง
+        วันครบกำหนด และลิงก์กลับมาที่หนังสือฉบับนี้ให้ครบแล้ว
+      </p>
+      ${lineShareBlock({
+        key: `${doc.id}-remind`,
+        text: pendingReminderText(doc, waitingSteps.map((s) => signerIdentity(s))),
+        copyLabel: '📋 คัดลอกข้อความแจ้งเตือน',
+        title: 'คัดลอกข้อความตามเรื่องไปวางในช่องทางที่ใช้ส่งให้ครู',
+      })}
+    </div>` : ''}
 
     <div class="grid-2 doc-detail-grid">
       <div class="doc-main">

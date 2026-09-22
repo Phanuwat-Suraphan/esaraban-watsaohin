@@ -12,7 +12,7 @@
 // ที่อยู่ในตัวข้อความไม่ผ่านการเช็คสิทธิ์ใดๆ ทั้งสิ้น หนังสือชั้นความลับจึงแชร์ไม่ได้ (ดู canShareToLine)
 // ซึ่งตรงกับที่ระบบห้ามกด "ประชาสัมพันธ์ให้ทุกคน" กับหนังสือลับอยู่แล้ว
 import { absoluteUrl } from './publicUrl.js';
-import { fmtThaiDateShort } from '../render.js';
+import { fmtThaiDateShort, daysUntil, esc } from '../render.js';
 
 // ชั้นความลับที่ห้ามเอาชื่อเรื่องออกนอกระบบ — ระเบียบว่าด้วยการรักษาความลับของทางราชการ
 // กำหนดช่องทางส่งหนังสือลับไว้เฉพาะ กลุ่มไลน์ไม่ใช่หนึ่งในนั้น
@@ -53,6 +53,80 @@ export function documentShareText(doc) {
   return lines.join('\n');
 }
 
+/**
+ * ข้อความ "ตามเรื่องที่ค้าง" — บอกว่าตอนนี้หนังสือค้างอยู่ที่ใคร และขอให้เข้าไปดำเนินการต่อ
+ *
+ * ทำไมต้องมีแยกจาก documentShareText: ข้อความแชร์ปกติคือ "มีหนังสือเข้าใหม่นะ" ซึ่งส่งตอนลงทะเบียน
+ * เสร็จ แต่งานที่ธุรการต้องทำซ้ำๆ ทุกสัปดาห์คือ "เรื่องนี้ค้างอยู่ที่ใคร แล้วไปตามให้เขาทำ" — ซึ่งเดิม
+ * ต้องเปิดไทม์ไลน์ดูเอง จำชื่อไว้ แล้วไปพิมพ์ในกลุ่มไลน์เองทุกครั้ง ตกหล่นและพิมพ์ผิดชื่อได้ง่าย
+ *
+ * ถ้อยคำใช้แบบหนังสือราชการ ไม่ใส่ครับ/ค่ะ เพราะคนกดส่งเป็นได้ทั้งธุรการ หัวหน้าฝ่าย และ ผอ.
+ * ข้อความเดียวกันจึงต้องสุภาพและใช้ได้กับทุกคนที่กดส่ง
+ *
+ * หนังสือชั้นความลับใช้เกณฑ์เดียวกับการแจ้งเตือนทางไลน์ (composeLineMessage) คือบอกได้แค่ว่า
+ * "มีหนังสือลับรอท่านดำเนินการ" ห้ามมีเลขที่และชื่อเรื่องติดออกไปนอกระบบ
+ */
+export function pendingReminderText(doc, waiting = []) {
+  const who = waiting
+    .map((w) => (w.position ? `${w.name} (${clip(w.position, 40)})` : w.name))
+    .filter(Boolean).join('  ');
+  const lines = [];
+  if (SECRET_LEVELS_NO_SHARE.includes(doc.secret_level)) {
+    lines.push('🔒 แจ้งเรื่องที่รอดำเนินการ');
+    if (who) lines.push(`เรียน ${who}`);
+    lines.push('มีหนังสือชั้นความลับรอท่านดำเนินการ — ไม่แสดงเลขที่และชื่อเรื่องนอกระบบ ตามระเบียบว่าด้วยการรักษาความลับของทางราชการ');
+  } else {
+    lines.push(`📄 ${doc.doc_number_display || ''} ${clip(doc.title, MAX_TITLE_IN_SHARE)}`.trim());
+    if (who) lines.push(`เรียน ${who}`);
+    lines.push('ขณะนี้หนังสือฉบับนี้อยู่ระหว่างรอท่านดำเนินการ');
+  }
+  if (doc.due_date) lines.push(dueLine(doc.due_date));
+  lines.push('จึงเรียนมาเพื่อโปรดเข้าไปอ่านและดำเนินการต่อในระบบสารบรรณ จะขอบคุณยิ่ง');
+  lines.push('เปิดอ่านในระบบสารบรรณ (ต้องเข้าสู่ระบบก่อน):');
+  lines.push(absoluteUrl(`/documents/${doc.id}`));
+  return lines.join('\n');
+}
+
+/** บรรทัดบอกวันครบกำหนดแบบสั้น ใช้ทั้งข้อความตามเรื่องเดี่ยวและแบบรวม */
+function dueLine(dueDate) {
+  if (!dueDate) return '';
+  const n = daysUntil(dueDate);
+  const when = fmtThaiDateShort(dueDate);
+  if (n < 0) return `⏰ ครบกำหนด ${when} (เลยกำหนดมาแล้ว ${Math.abs(n)} วัน)`;
+  if (n === 0) return `⏰ ครบกำหนดวันนี้ (${when})`;
+  return `⏰ ครบกำหนด ${when} (อีก ${n} วัน)`;
+}
+
+/**
+ * ข้อความตามงานค้าง "ทีเดียวทั้งหมด" — รวมทุกเรื่องที่ยังค้าง จัดกลุ่มตามคนที่ต้องดำเนินการ
+ *
+ * ทำไมต้องมีทั้งที่ตามรายฉบับได้แล้ว: ปลายสัปดาห์เรื่องค้างพร้อมกันสิบกว่าฉบับเป็นเรื่องปกติ การตาม
+ * ทีละฉบับคือการยิงเข้ากลุ่มสิบกว่าข้อความติดกัน ซึ่งกลบข้อความอื่นในกลุ่มจนคนเลื่อนผ่าน และธุรการ
+ * ก็ไม่ทำจริงเพราะเสียเวลา — ข้อความเดียวที่จัดกลุ่มว่า "ใครค้างอะไรบ้าง" อ่านแล้วรู้เรื่องกว่ามาก
+ *
+ * groups = [{ name, position, docs: [{ number, title, dueDate, secret }] }]
+ */
+export function pendingDigestText(groups, dateLabel, { hiddenCount = 0 } = {}) {
+  const total = groups.reduce((s, g) => s + g.docs.length, 0);
+  const lines = [`⏳ หนังสือที่รอดำเนินการ ณ วันที่ ${dateLabel} — ${total + hiddenCount} ฉบับ`];
+  groups.forEach((g) => {
+    lines.push('');
+    lines.push(`เรียน ${g.position ? `${g.name} (${clip(g.position, 40)})` : g.name}`);
+    g.docs.forEach((d, i) => {
+      // หนังสือลับบอกได้แค่ว่ามี ไม่บอกเลขที่และชื่อเรื่อง — เกณฑ์เดียวกับการแชร์รายฉบับ
+      const head = d.secret ? '🔒 หนังสือชั้นความลับ (ดูในระบบ)' : `${d.number || ''} ${clip(d.title, 90)}`.trim();
+      const due = d.secret ? '' : dueLine(d.dueDate);
+      lines.push(`${i + 1}. ${head}${due ? ` ${due}` : ''}`);
+    });
+  });
+  if (hiddenCount > 0) lines.push('', `(และอีก ${hiddenCount} ฉบับ — ดูทั้งหมดในระบบ)`);
+  lines.push('');
+  lines.push('จึงเรียนมาเพื่อโปรดเข้าไปอ่านและดำเนินการต่อในระบบสารบรรณ จะขอบคุณยิ่ง');
+  lines.push('เปิดงานที่รอท่านดำเนินการ:');
+  lines.push(absoluteUrl('/tasks'));
+  return lines.join('\n');
+}
+
 /** ข้อความประกาศ/ประชาสัมพันธ์ที่จะไปโผล่ในกลุ่มไลน์ */
 export function announcementShareText(ann) {
   const lines = [];
@@ -74,6 +148,39 @@ export function announcementShareText(ann) {
  */
 export function lineShareUrl(text) {
   return `https://line.me/R/share?text=${encodeURIComponent(String(text || ''))}`;
+}
+
+/**
+ * ปุ่มส่งเข้าไลน์ + ปุ่มคัดลอกข้อความ + ช่องข้อความจริงให้ดู/คัดลอกเอง
+ *
+ * ปุ่มคัดลอกเป็นปุ่มหลัก ไม่ใช่ปุ่มสำรอง: ปุ่ม "ส่งเข้าไลน์" เปิดหน้าต่างแชร์ของ *แอป LINE* ซึ่งบนมือถือ
+ * ที่ติดตั้งแอปไว้ก็จบในปุ่มเดียว แต่เครื่องที่ธุรการใช้ลงทะเบียนหนังสือจริงๆ คือคอมพิวเตอร์ ซึ่งเปิดได้แค่
+ * หน้าเว็บของ LINE ที่บอกให้ไปทำต่อในแอป — ไม่มีข้อความอะไรมาให้เลย ต่อไม่ติดตรงนั้นพอดี (ผู้ใช้แจ้ง
+ * เข้ามาเองว่า "กดส่งเข้าไลน์แล้วไม่มีข้อความให้ copy") และที่สำคัญกว่านั้นคือโรงเรียนมีช่องทางส่งให้ครู
+ * ของตัวเองอยู่แล้ว (กลุ่มไลน์ที่เปิดบนคอม/ช่องทางอื่น) สิ่งที่ต้องการจริงๆ จึงเป็น "ข้อความที่คัดลอกได้"
+ * ไม่ใช่การให้ระบบพาไปส่งเอง — ปุ่มคัดลอกจึงมาก่อนและเป็นปุ่มเด่น ส่วนปุ่มไลน์เป็นทางลัดสำหรับมือถือ
+ *
+ * ช่องข้อความ (details/textarea) มีไว้สองอย่าง: ให้เห็นก่อนส่งว่าจะไปโผล่ในกลุ่มว่าอย่างไร และเป็น
+ * ทางสำรองเวลาคัดลอกอัตโนมัติไม่ได้ (เว็บที่ไม่ใช่ https คัดลอกด้วยสคริปต์ไม่ได้เลย)
+ *
+ * key ต้องไม่ซ้ำกันในหน้าเดียวกัน เพราะเอาไปทำ id ของช่องข้อความ
+ */
+export function lineShareBlock({ key, text, copyLabel = '📋 คัดลอกข้อความ', lineLabel = '💬 ส่งเข้าไลน์', primary = false, title = '', inline = false }) {
+  const id = `shareText-${String(key).replace(/[^A-Za-z0-9_-]/g, '')}`;
+  const rows = Math.min(12, Math.max(3, String(text || '').split('\n').length + 1));
+  const buttons = `<button class="btn ${primary ? 'btn-primary' : 'btn-outline'} btn-sm" type="button"
+        data-share-text="${esc(text)}" data-share-box="${id}"
+        title="${esc(title || 'คัดลอกข้อความไปวางในช่องทางที่ใช้ส่งให้ครู — ใช้ได้ทั้งบนคอมและมือถือ')}"
+        onclick="window.copyShareText(this)">${copyLabel}</button>
+      <a class="btn btn-outline btn-sm" href="${esc(lineShareUrl(text))}" target="_blank" rel="noopener"
+        title="ทางลัดสำหรับมือถือที่มีแอป LINE — เปิดหน้าต่างแชร์พร้อมข้อความนี้ให้เลือกกลุ่ม">${lineLabel}</a>`;
+  // flex-basis:100% = ช่องข้อความลงไปอยู่บรรทัดของตัวเองเสมอ เวลาวางปนกับปุ่มอื่นในแถวเดียวกัน
+  const box = `<details style="${inline ? 'flex-basis:100%;margin:0' : 'margin-top:.4rem'}">
+      <summary class="text-muted" style="font-size:.82rem;cursor:pointer">ดูข้อความที่จะส่ง</summary>
+      <textarea id="${id}" readonly rows="${rows}" onclick="this.select()"
+        style="width:100%;margin-top:.4rem;font:inherit;font-size:.85rem">${esc(text)}</textarea>
+    </details>`;
+  return inline ? `${buttons}\n    ${box}` : `<div class="chip-row">\n      ${buttons}\n    </div>\n    ${box}`;
 }
 
 /**

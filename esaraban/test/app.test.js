@@ -7593,6 +7593,52 @@ describe('ส่งเข้าไลน์: ต้องมีข้อคว�
     assert.ok(!/ตามงานค้างทั้งหมด/.test(teacherView.body), 'ครูทั่วไปต้องไม่เห็นปุ่มตามงานค้างทั้งโรงเรียน');
   });
 
+  // "ยังไม่ได้เปิดอ่าน" กับ "เปิดอ่านแล้วแต่ยังไม่ได้ทำ" เป็นคนละปัญหา และต้องตามคนละแบบ —
+  // อย่างแรกคือเจ้าตัวยังไม่รู้ว่ามีหนังสือ อย่างหลังคือรู้แล้วแต่ติดอะไรอยู่
+  test('หน้าหนังสือบอกว่าผู้รับผิดชอบเปิดอ่านหรือยัง และนับตั้งแต่ครั้งแรกที่เปิด', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบสถานะการเปิดอ่าน' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const stepOf = () => db.prepare("SELECT * FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(doc.id);
+    assert.equal(stepOf().opened_at, null, 'เพิ่งมอบหมาย ยังไม่ควรมีเวลาเปิดอ่าน');
+
+    // ธุรการเปิดดูเองไม่นับ — ไม่ใช่คนที่เรื่องค้างอยู่
+    // จับเฉพาะป้ายสถานะจริงๆ ไม่ใช่ข้อความในคอมเมนต์ของโค้ดที่ติดไปกับหน้าเว็บด้วย
+    const unread = (body) => /badge-danger">ยังไม่ได้เปิดอ่าน</.test(body);
+    const read = (body) => /badge-info">👁️ เปิดอ่านแล้ว /.test(body);
+    const before = await dispatchGet(reg(), `/documents/${doc.id}`);
+    assert.ok(unread(before.body), 'ต้องบอกว่าเจ้าตัวยังไม่ได้เปิดอ่าน');
+    assert.ok(!read(before.body), 'ยังไม่ควรขึ้นว่าเปิดอ่านแล้ว');
+    assert.equal(stepOf().opened_at, null, 'คนอื่นเปิดดูต้องไม่ถูกนับว่าเจ้าตัวอ่านแล้ว');
+
+    // เจ้าตัวเปิดเอง = อ่านแล้ว
+    await dispatchGet(loadUserForTest(teacherUser.id), `/documents/${doc.id}`);
+    const firstOpen = stepOf().opened_at;
+    assert.ok(firstOpen, 'ผู้รับผิดชอบเปิดหน้าหนังสือแล้วต้องถูกบันทึกว่าเปิดอ่าน');
+
+    // เปิดซ้ำต้องไม่เลื่อนเวลา — สิ่งที่ต้องการรู้คือ "รู้เรื่องนี้ตั้งแต่เมื่อไร" ไม่ใช่เวลาที่เปิดล่าสุด
+    // (ถ้าเขียนทับทุกครั้ง เวลาจะขยับเป็นปัจจุบันตลอดจนดูไม่ออกว่าค้างมานานแค่ไหน)
+    await dispatchGet(loadUserForTest(teacherUser.id), `/documents/${doc.id}`);
+    assert.equal(stepOf().opened_at, firstOpen, 'เปิดซ้ำต้องไม่เลื่อนเวลาที่เปิดครั้งแรก');
+
+    const after = await dispatchGet(reg(), `/documents/${doc.id}`);
+    assert.ok(read(after.body), 'หลังเจ้าตัวเปิดแล้ว ต้องขึ้นว่าเปิดอ่านแล้ว');
+    assert.ok(!unread(after.body), 'ต้องไม่ขึ้นทั้งสองอย่างพร้อมกัน');
+  });
+
+  test('ผู้รักษาการแทนเปิดอ่านก็นับ เพราะเป็นคนที่ดำเนินการแทนได้จริง', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับทดสอบการเปิดอ่านของผู้รักษาการแทน' });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const today = todayInBangkok();
+    db.prepare(`INSERT INTO user_delegations (id, delegator_id, delegate_id, start_date, end_date, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(uuid(), teacherUser.id, adminUser.id, today, today, 'ทดสอบ', nowIso());
+
+    await dispatchGet(loadUserForTest(adminUser.id), `/documents/${doc.id}`);
+    const step = db.prepare("SELECT * FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(doc.id);
+    assert.ok(step.opened_at, 'ผู้รักษาการแทนเปิดอ่านต้องนับว่าเรื่องนี้มีคนรับรู้แล้ว');
+    db.prepare('DELETE FROM user_delegations WHERE delegator_id = ? AND delegate_id = ?').run(teacherUser.id, adminUser.id);
+  });
+
   // ตัวข้อความเองตรวจแบบตายตัว ไม่ผ่านฐานข้อมูล — หน้าเว็บมีงานค้างจากเทสต์อื่นปนอยู่จนเดาผลไม่ได้
   test('ข้อความรวม: คนหนึ่งคนขึ้นชื่อครั้งเดียว ไล่เรื่องเป็นข้อ และบอกจำนวนที่ถูกตัด', async () => {
     const { pendingDigestText } = await import('../src/services/line.js');

@@ -493,6 +493,9 @@ export function migrate() {
     instruction TEXT, -- ข้อความเกษียณ/สั่งการ
     status TEXT NOT NULL DEFAULT 'waiting', -- waiting|acknowledged|approved|rejected|returned
     decided_at TEXT,
+    -- เวลาที่ผู้รับผิดชอบเปิดอ่านหนังสือฉบับนี้ครั้งแรก (NULL = ยังไม่เคยเปิดเลย) ใช้แยกเรื่องที่
+    -- "ยังไม่รู้ว่ามีหนังสือ" ออกจาก "รู้แล้วแต่ยังไม่ได้ทำ" ซึ่งต้องตามคนละแบบกันโดยสิ้นเชิง
+    opened_at TEXT,
     created_at TEXT NOT NULL
   );
 
@@ -881,6 +884,17 @@ export function migrate() {
         signer_position = (SELECT u.position FROM users u WHERE u.id = workflow_steps.assignee_id)
       WHERE decided_at IS NOT NULL
     `);
+  }
+
+  // "เปิดอ่านหรือยัง" — เดิมระบบรู้แค่ว่ายังไม่มีใครกดดำเนินการ ซึ่งตอบไม่ได้ว่าเป็นเพราะยังไม่รู้ว่ามี
+  // หนังสือ หรือรู้แล้วแต่ยังไม่ได้ทำ สองอย่างนี้ต้องตามคนละแบบ (อย่างแรกคือแจ้งซ้ำ อย่างหลังคือถาม
+  // ว่าติดอะไร) ฐานข้อมูลที่ deploy ไปแล้วจะเป็น NULL ทั้งหมด = "ยังไม่เคยเปิด" ซึ่งไม่ถูกกับของเก่า
+  // จึงเติมย้อนหลังให้ขั้นตอนที่ตัดสินใจไปแล้ว (จะตัดสินใจได้ก็ต้องเคยเปิดอ่านมาก่อน) ส่วนขั้นที่ยัง
+  // ค้างอยู่ปล่อยเป็น NULL ตามจริง เพราะไม่มีหลักฐานว่าเคยเปิดหรือไม่
+  const stepColsForOpened = db.prepare('PRAGMA table_info(workflow_steps)').all().map((c) => c.name);
+  if (!stepColsForOpened.includes('opened_at')) {
+    db.exec('ALTER TABLE workflow_steps ADD COLUMN opened_at TEXT');
+    db.exec('UPDATE workflow_steps SET opened_at = decided_at WHERE decided_at IS NOT NULL');
   }
 
   const delegationCols = db.prepare("PRAGMA table_info(user_delegations)").all().map((c) => c.name);

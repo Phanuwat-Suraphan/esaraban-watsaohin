@@ -105,6 +105,30 @@ export function daysUntil(dateStr) {
   return Math.round((target - today) / 86400000);
 }
 
+/**
+ * "3 วันก่อน" — ใช้บอกว่าเรื่องค้างมานานแค่ไหน / เปิดอ่านไปเมื่อไร
+ *
+ * ต่างจาก fmtDate ตรงที่ตอบคำถามว่า "นานหรือยัง" ซึ่งเป็นสิ่งที่คนไล่ตามเรื่องอยากรู้จริงๆ —
+ * "22 ก.ย. 2569 14:03" ต้องเอาไปลบกับวันนี้ในหัวก่อนถึงจะรู้ว่าควรทวงหรือยัง
+ *
+ * คำนวณจากผลต่างของเวลาตรงๆ ไม่แตะ API ตระกูล locale (ทั้งโปรเจกต์มีด่านกวาดห้ามใช้โดยไม่ระบุ timeZone)
+ */
+export function fmtAgo(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const mins = Math.floor((Date.now() - t) / 60000);
+  // เวลาในอนาคต (นาฬิกาเครื่องเพี้ยน/ข้อมูลนำเข้า) ไม่ควรกลายเป็น "-5 นาทีก่อน" ที่อ่านไม่รู้เรื่อง
+  if (mins < 1) return 'เมื่อสักครู่';
+  if (mins < 60) return `${mins} นาทีก่อน`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} ชั่วโมงก่อน`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} วันก่อน`;
+  const months = Math.floor(days / 30);
+  return months < 12 ? `${months} เดือนก่อน` : `${Math.floor(months / 12)} ปีก่อน`;
+}
+
 // ป้ายบอกว่าเหลืออีกกี่วัน/เลยมากี่วัน — คนละเรื่องกับ "ความเร็ว" ที่ธุรการกรอกตอนลงทะเบียน
 // อันนั้นคือความเร่งด่วนที่ต้นทางระบุมา อันนี้คือความจริงว่าวันนี้ยังทันไหม
 export function dueChip(n) {

@@ -1,5 +1,5 @@
 import { router, html, json, redirect, contentDispositionHeader, truncateFilename } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, schoolName, rowAttrs, rowLink } from '../render.js';
+import { layout, esc, fmtDate, fmtAgo, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, schoolName, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
 import { db, uuid, nowIso, audit, todayInBangkok, bangkokDateSql, RETENTION_LABEL } from '../db.js';
 import {
@@ -7,7 +7,7 @@ import {
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, groupStepsByOrder, currentStep, currentStepFor,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
-  isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep,
+  isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep, markStepOpened,
   adminReassignStep, adminAddAssignees, adminRemoveAssignee, MAX_PARALLEL_ASSIGNEES,
   broadcastDocument, listBroadcasts, canBroadcast,
 } from '../services/workflow.js';
@@ -460,6 +460,9 @@ router.get('/documents', requirePage((ctx) => {
           copyLabel: `⏳ คัดลอกข้อความตามงานค้างทั้งหมด (${chase.total})`,
           title: 'รวมทุกเรื่องที่ยังค้าง จัดกลุ่มตามคนที่ต้องดำเนินการ เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
         }) : ''}
+        ${chase.unopenedCount ? `<span class="text-muted" style="align-self:center;font-size:.82rem">
+          ในนั้น <strong>${fmtCount(chase.unopenedCount)}</strong> เรื่องเจ้าตัวยังไม่ได้เปิดอ่านเลย
+        </span>` : ''}
         ${direction === 'incoming' && todayIncoming.length ? lineShareBlock({
           key: 'digest', inline: true,
           text: incomingDigestText(todayIncoming, fmtThaiDateLong(todayInBangkok())),
@@ -1535,6 +1538,10 @@ router.get('/documents/:id', requirePage((ctx) => {
       content: emptyState('🔍', 'ไม่พบเอกสารนี้ หรือคุณไม่มีสิทธิ์เข้าถึง') }));
   }
 
+  // นับว่า "เปิดอ่านแล้ว" ตั้งแต่ตอนเปิดหน้านี้ ไม่ใช่ตอนกดปุ่มอะไรสักอย่าง — เพราะสิ่งที่ธุรการอยากรู้คือ
+  // "เจ้าตัวรู้เรื่องนี้หรือยัง" ซึ่งเกิดขึ้นตั้งแต่เปิดหนังสือขึ้นมาอ่านแล้ว (บันทึกเฉพาะครั้งแรก)
+  markStepOpened(doc.id, ctx.user.id);
+
   const attachments = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER}`).all(doc.id);
   // ไฟล์ที่ยังเปิดได้จริง — ปุ่มทุกปุ่มที่พาไปเปิดไฟล์ต้องดูจากรายการนี้ ไม่ใช่ attachments ทั้งหมด
   // เพราะไฟล์ที่ถูกทำลายตามระเบียบยังมีแถวอยู่ (เก็บไว้เป็นหลักฐาน) แต่ตัวไฟล์ไม่มีแล้ว
@@ -1595,7 +1602,12 @@ router.get('/documents/:id', requirePage((ctx) => {
         // ถ้าไม่บอก ไทม์ไลน์จะอ่านเหมือนหนังสือวิ่งผ่านคนเหล่านั้นทีละคน ซึ่งคนละเรื่องกัน
         stepsInSameOrder[s.step_order] > 1
           ? ` <span class="badge badge-info">พร้อมกัน ${stepsInSameOrder[s.step_order]} ท่าน</span>` : ''}</div>
-        <div class="t-meta">มอบหมาย ${fmtDate(s.created_at)}${s.decided_at ? ' · ดำเนินการ ' + fmtDate(s.decided_at) : ''}</div>
+        <div class="t-meta">มอบหมาย ${fmtDate(s.created_at)}${s.decided_at ? ' · ดำเนินการ ' + fmtDate(s.decided_at) : ''}${
+        // ขั้นที่ยังค้าง: บอกด้วยว่าเจ้าตัวเปิดอ่านหรือยัง — "ยังไม่เปิด" กับ "เปิดแล้วแต่ยังไม่ทำ"
+        // เป็นคนละสถานการณ์กัน และเป็นสิ่งแรกที่คนไล่ตามเรื่องอยากรู้
+        s.status === 'waiting'
+          ? (s.opened_at ? ` · 👁️ เปิดอ่านแล้ว ${esc(fmtAgo(s.opened_at))}` : ' · ⚠️ ยังไม่ได้เปิดอ่าน')
+          : ''}</div>
         ${s.instruction ? `<div class="t-note">${esc(s.instruction).replace(/\n/g, '<br/>')}</div>` : ''}
         ${signed ? `
         <div class="t-note" style="text-align:center;max-width:220px;margin-top:.4rem;color:var(--primary)">
@@ -2130,6 +2142,16 @@ router.get('/documents/:id', requirePage((ctx) => {
       <p style="margin:0 0 .35rem"><strong>⏳ ตอนนี้เรื่องค้างอยู่ที่ ${
         waitingSteps.map((s) => esc(signerIdentity(s).name)).join(', ')
       }</strong></p>
+      <!-- "ยังไม่ได้เปิดอ่าน" กับ "เปิดอ่านแล้วแต่ยังไม่ได้ทำ" ต้องตามคนละแบบ — อย่างแรกคือแจ้งซ้ำ
+           ให้รู้ตัว อย่างหลังคือถามว่าติดอะไร เดิมระบบไม่แยกให้ ธุรการจึงทวงด้วยข้อความเดียวกันหมด -->
+      <div style="font-size:.85rem;margin-bottom:.6rem">
+        ${waitingSteps.map((s) => `<div style="margin:.15rem 0">
+          • ${esc(signerIdentity(s).name)} — มอบหมายเมื่อ ${esc(fmtAgo(s.created_at))}
+          ${s.opened_at
+            ? `· <span class="badge badge-info">👁️ เปิดอ่านแล้ว ${esc(fmtAgo(s.opened_at))}</span>`
+            : '· <span class="badge badge-danger">ยังไม่ได้เปิดอ่าน</span>'}
+        </div>`).join('')}
+      </div>
       <p class="help-text" style="margin:0 0 .6rem">
         ส่งข้อความสุภาพแจ้งให้เข้าไปอ่านและดำเนินการต่อ — มีชื่อผู้ที่ต้องดำเนินการ เลขทะเบียน ชื่อเรื่อง
         วันครบกำหนด และลิงก์กลับมาที่หนังสือฉบับนี้ให้ครบแล้ว

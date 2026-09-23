@@ -183,6 +183,9 @@ router.get('/', requirePage((ctx) => {
           copyLabel: `⏳ คัดลอกข้อความตามงานค้างทั้งหมด (${chase.total})`,
           title: 'รวมทุกเรื่องที่ยังค้าง จัดกลุ่มตามคนที่ต้องดำเนินการ เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
         })}
+        ${chase.unopenedCount ? `<p class="text-muted" style="margin:.4rem 0 0;font-size:.82rem">
+          ⚠️ ในนั้นมี <strong>${chase.unopenedCount}</strong> เรื่องที่ผู้รับผิดชอบยังไม่ได้เปิดอ่านเลยสักครั้ง
+        </p>` : ''}
       </div>` : ''}
       ${byDept.length ? byDept.map((r) => `
         <div style="margin-bottom:.5rem">

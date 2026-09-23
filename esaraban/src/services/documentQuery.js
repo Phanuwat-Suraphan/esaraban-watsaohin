@@ -204,11 +204,11 @@ export const CHASE_ROLES = ['admin', 'director', 'vice_director', 'head', 'regis
 export const canChasePending = (user) => CHASE_ROLES.some((r) => user.roleCodes.includes(r));
 
 export function pendingChaseGroups(user) {
-  if (!canChasePending(user)) return { groups: [], total: 0, hiddenCount: 0 };
+  if (!canChasePending(user)) return { groups: [], total: 0, hiddenCount: 0, unopenedCount: 0 };
   const visible = visibleDocumentsSqlFilter(user);
   const rows = db.prepare(`
     SELECT d.id, d.doc_number_display, d.title, d.due_date, d.secret_level,
-      ws.assignee_id, u.prefix, u.first_name, u.last_name, u.position
+      ws.assignee_id, ws.opened_at, u.prefix, u.first_name, u.last_name, u.position
     FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id
     JOIN users u ON u.id = ws.assignee_id
@@ -223,6 +223,9 @@ export function pendingChaseGroups(user) {
   const groups = [];
   let shown = 0;
   let hiddenCount = 0;
+  // เรื่องที่เจ้าตัวยัง "ไม่เคยเปิดอ่าน" คือกลุ่มที่การแจ้งซ้ำได้ผลจริง ส่วนที่เปิดอ่านแล้วแต่ยังไม่ทำ
+  // คือคนละปัญหา (ติดอะไรอยู่) — แยกตัวเลขให้เห็น คนไล่ตามจะได้รู้ว่ากำลังตามอะไรอยู่
+  const unopenedCount = rows.filter((r) => !r.opened_at).length;
   for (const r of rows) {
     if (shown >= MAX_CHASE_DOCS) { hiddenCount++; continue; }
     const last = groups[groups.length - 1];
@@ -241,5 +244,5 @@ export function pendingChaseGroups(user) {
     }
     shown++;
   }
-  return { groups, total: rows.length, hiddenCount };
+  return { groups, total: rows.length, hiddenCount, unopenedCount };
 }

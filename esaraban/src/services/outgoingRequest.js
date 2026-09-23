@@ -112,7 +112,7 @@ export function listMyOutgoingRequests(userId, limit = 30) {
 
 export function recentReviewedOutgoingRequests(limit = 20) {
   return db.prepare(`
-    SELECT r.*, doc.doc_number_display,
+    SELECT r.*, doc.doc_number_display, doc.id AS doc_id, doc.status AS doc_status,
       u.prefix AS requester_prefix, u.first_name AS requester_first, u.last_name AS requester_last,
       rv.first_name AS reviewer_first, rv.last_name AS reviewer_last
     FROM outgoing_number_requests r
@@ -229,4 +229,77 @@ export function cancelOutgoingRequest({ requestId, actorUser }) {
   db.prepare('DELETE FROM outgoing_number_requests WHERE id = ?').run(requestId);
   audit({ userId: actorUser.id, action: 'outgoing_number_request_cancelled', tableName: 'outgoing_number_requests', recordId: requestId, detail: { title: req.title } });
   return { ok: true };
+}
+
+// ---------------- ผู้ดูแลระบบแก้/ลบเลขหนังสือส่งที่ออกไปแล้ว ----------------
+//
+// ข้อ 3 ข้างบนยังจริงอยู่: เลขที่ "ออกไปแล้ว" นำกลับมาใช้ซ้ำไม่ได้ และหนังสือที่ไม่ได้ใช้จริงต้องยกเลิก
+// ที่ตัวหนังสือเพื่อให้เลขคงอยู่ในลำดับ — สิ่งที่สองฟังก์ชันนี้แก้คือคนละเรื่องกัน คือ "พิมพ์เลขผิด"
+// กับ "แถวคำขอที่ไม่ควรอยู่ในรายการแล้ว" ซึ่งเดิมไม่มีทางแก้เลยทั้งคู่ ต้องเข้าไปแก้ฐานข้อมูลเองเท่านั้น
+//
+// จำกัดไว้ที่ผู้ดูแลระบบ ไม่ใช่ธุรการทุกคน เพราะเป็นการแก้ทะเบียนราชการย้อนหลังหลังจากที่เลขถูกแจ้ง
+// ออกไปให้เจ้าตัวแล้ว (และอาจถูกพิมพ์ลงบนหนังสือจริงไปแล้วด้วย)
+
+const MAX_DOC_NUMBER = 100;
+
+/** แก้เลขหนังสือส่งที่ออกให้ไปแล้ว — แก้ที่ตัวหนังสือจริง ทะเบียน/ตราประทับ/หน้าพิมพ์จึงตรงกันหมด */
+export function editIssuedOutgoingNumber({ requestId, docNumber, allowDuplicate, actorUser }) {
+  if (!actorUser?.roleCodes.includes('admin')) {
+    throw httpError(403, 'แก้เลขหนังสือส่งที่ออกไปแล้วได้เฉพาะผู้ดูแลระบบเท่านั้น');
+  }
+  const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(requestId);
+  if (!req) throw httpError(404, 'ไม่พบคำขอนี้');
+  if (req.status !== 'issued' || !req.document_id) throw httpError(409, 'คำขอนี้ยังไม่ได้ออกเลข จึงไม่มีเลขให้แก้');
+  const doc = db.prepare('SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL').get(req.document_id);
+  if (!doc) throw httpError(409, 'หนังสือของคำขอนี้ถูกลบออกจากระบบไปแล้ว');
+
+  const num = asText(docNumber);
+  if (!num) throw httpError(400, 'เลขหนังสือส่งเว้นว่างไม่ได้ — หนังสือทุกฉบับต้องมีเลขทะเบียน');
+  assertMaxLength(num, MAX_DOC_NUMBER, 'เลขหนังสือส่ง');
+  if (num === doc.doc_number_display) return { ok: true, changed: false, docNumberDisplay: num };
+
+  // เลขซ้ำเกิดขึ้นได้จริงตอนแก้ให้ตรงกับเล่มกระดาษ จึงถามยืนยันแทนที่จะห้าม — แต่ห้ามผ่านเงียบๆ
+  // เพราะเลขทะเบียนคือสิ่งที่ใช้อ้างอิงหนังสือฉบับนั้นไปตลอด (เกณฑ์เดียวกับการแก้ทะเบียนที่หน้าหนังสือ)
+  const dup = db.prepare('SELECT id FROM documents WHERE doc_number_display = ? AND id != ? AND deleted_at IS NULL').get(num, doc.id);
+  if (dup && allowDuplicate !== true) {
+    throw httpError(409, `เลข "${num}" ซ้ำกับหนังสืออีกฉบับที่มีอยู่แล้ว`, {
+      confirmRetry: { field: 'allowDuplicate', message: `เลข "${num}" ซ้ำกับหนังสืออีกฉบับในระบบ — ยืนยันใช้เลขซ้ำหรือไม่?` },
+    });
+  }
+
+  db.prepare('UPDATE documents SET doc_number_display = ?, updated_at = ? WHERE id = ?').run(num, nowIso(), doc.id);
+  // ผู้ขอได้เลขเดิมไปแล้วและอาจพิมพ์ลงหนังสือจริงไปแล้ว — ต้องรู้ว่าเลขเปลี่ยน ไม่ใช่มาเจอเองทีหลัง
+  notifyUser({
+    userId: req.requester_id, documentId: doc.id,
+    title: `แก้เลขหนังสือส่งเป็น ${num}`,
+    message: `${req.title} — เลขเดิม ${doc.doc_number_display} ถูกแก้เป็น ${num} โดยผู้ดูแลระบบ กรุณาใช้เลขใหม่บนหนังสือ`,
+    priority: 'warning',
+  });
+  audit({
+    userId: actorUser.id, action: 'outgoing_number_edited', tableName: 'documents', recordId: doc.id,
+    detail: { requestId: req.id, before: doc.doc_number_display, after: num, duplicateAllowed: Boolean(dup) },
+  });
+  return { ok: true, changed: true, docNumberDisplay: num };
+}
+
+/**
+ * ลบคำขอเลขหนังสือส่งออกจากรายการ
+ *
+ * ลบเฉพาะ "บันทึกคำขอ" เท่านั้น ถ้าออกเลขไปแล้วตัวหนังสือยังอยู่ในทะเบียนตามเดิมโดยตั้งใจ — ลบหนังสือ
+ * ทิ้งพร้อมกันจะทำให้เลขทะเบียนขาดเป็นรูโหว่ในเล่มที่อธิบายไม่ได้ตอนตรวจ ถ้าหนังสือไม่ได้ใช้จริงต้อง
+ * ไป "ยกเลิกเอกสาร" ที่ตัวหนังสือ ซึ่งเลขยังคงอยู่ในลำดับพร้อมเหตุผลกำกับ ตามหลักงานสารบรรณ
+ */
+export function deleteOutgoingRequest({ requestId, actorUser }) {
+  if (!actorUser?.roleCodes.includes('admin')) {
+    throw httpError(403, 'ลบคำขอเลขหนังสือส่งได้เฉพาะผู้ดูแลระบบเท่านั้น');
+  }
+  const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(requestId);
+  if (!req) throw httpError(404, 'ไม่พบคำขอนี้');
+
+  db.prepare('DELETE FROM outgoing_number_requests WHERE id = ?').run(requestId);
+  audit({
+    userId: actorUser.id, action: 'outgoing_number_request_deleted', tableName: 'outgoing_number_requests', recordId: requestId,
+    detail: { title: req.title, status: req.status, documentId: req.document_id || null, requesterId: req.requester_id },
+  });
+  return { ok: true, documentKept: Boolean(req.document_id), documentId: req.document_id || null };
 }

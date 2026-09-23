@@ -3,14 +3,14 @@
 // ตามระเบียบงานสารบรรณ ทะเบียนหนังสือส่งเป็นสมุดของเจ้าหน้าที่ธุรการ ครูที่จะส่งหนังสือออกต้องขอเลข
 // จากธุรการก่อน ไม่ใช่ดึงเลขถัดไปมาใช้เอง (ดูเหตุผลเต็มใน services/outgoingRequest.js)
 import { router, html, json, redirect } from '../router.js';
-import { layout, esc, fmtDate, emptyState, statusBadge, priorityBadge, LABELS } from '../render.js';
+import { layout, esc, fmtDate, emptyState, statusBadge, priorityBadge, rowLink, LABELS } from '../render.js';
 import { requireApi, requirePage } from '../middleware.js';
 import { previewNextNumber } from '../numbering.js';
 import { db } from '../db.js';
 import {
   submitOutgoingRequest, listPendingOutgoingRequests, listMyOutgoingRequests,
   recentReviewedOutgoingRequests, issueOutgoingNumber, rejectOutgoingRequest,
-  cancelOutgoingRequest, canIssueOutgoingNumber,
+  cancelOutgoingRequest, canIssueOutgoingNumber, editIssuedOutgoingNumber, deleteOutgoingRequest,
 } from '../services/outgoingRequest.js';
 
 function departments() {
@@ -148,6 +148,9 @@ router.get('/outgoing-requests', requirePage((ctx) => {
 
   const pending = listPendingOutgoingRequests();
   const reviewed = recentReviewedOutgoingRequests();
+  // แก้/ลบเลขที่ออกไปแล้วเป็นการแก้ทะเบียนราชการย้อนหลัง หลังจากที่เลขถูกแจ้งออกไปให้เจ้าตัวแล้ว
+  // (และอาจถูกพิมพ์ลงบนหนังสือจริงไปแล้ว) จึงจำกัดไว้ที่ผู้ดูแลระบบ ไม่ใช่ธุรการทุกคน
+  const isAdmin = ctx.user.roleCodes.includes('admin');
   const card = (r) => `
     <div class="card" id="outreq-${esc(r.id)}">
       <div class="card-header">
@@ -193,14 +196,29 @@ router.get('/outgoing-requests', requirePage((ctx) => {
     ${reviewed.length ? `
       <h3 style="margin-top:1.5rem">ออกเลข/ตรวจไปแล้วล่าสุด</h3>
       <div class="card"><table class="table-plain">
-        ${reviewed.map((r) => `<tr>
-          <td>${esc(r.title)}<div class="text-muted" style="font-size:.78rem">${esc(fullName(r))}</div></td>
+        ${reviewed.map((r) => `<tr id="outreq-row-${esc(r.id)}">
+          <td>${r.doc_id ? rowLink(`/documents/${r.doc_id}`, esc(r.title)) : esc(r.title)}
+            <div class="text-muted" style="font-size:.78rem">${esc(fullName(r))}</div></td>
           <td>${r.status === 'issued'
-            ? `<span class="badge badge-success">ออกเลข ${esc(r.doc_number_display || '')}</span>`
+            ? `<span class="badge badge-success" id="outnum-${esc(r.id)}">ออกเลข ${esc(r.doc_number_display || '')}</span>`
             : `<span class="badge badge-muted">ไม่ออกให้</span>${r.reject_reason ? ` <span class="text-muted" style="font-size:.82rem">${esc(r.reject_reason)}</span>` : ''}`}</td>
           <td class="text-muted" style="font-size:.82rem;white-space:nowrap">${esc(fmtDate(r.reviewed_at))}${r.reviewer_first ? ` โดย ${esc(r.reviewer_first)} ${esc(r.reviewer_last)}` : ''}</td>
+          ${isAdmin ? `<td style="white-space:nowrap">
+            <!-- เลขเดิมส่งผ่าน data- ไม่ใช่แปะเป็นสตริงกลาง onclick — เลขทะเบียนมีทั้งเครื่องหมาย
+                 คำพูดและอักขระอื่นได้ ซึ่งทำให้ทั้ง attribute แตกแล้วสคริปต์ของหน้าตายทั้งก้อน -->
+            ${r.status === 'issued' && r.doc_id
+              ? `<button class="btn btn-outline btn-sm" type="button" data-num="${esc(r.doc_number_display || '')}"
+                  onclick="editOutNum('${esc(r.id)}', this)">✏️ แก้เลข</button>` : ''}
+            <button class="btn btn-outline btn-sm" type="button"
+              onclick="deleteOutReq('${esc(r.id)}', ${r.status === 'issued' ? 'true' : 'false'}, this)">🗑️ ลบ</button>
+          </td>` : ''}
         </tr>`).join('')}
-      </table></div>` : ''}
+      </table></div>
+      ${isAdmin ? `<p class="text-muted" style="font-size:.8rem;margin-top:.4rem">
+        🛠️ ผู้ดูแลระบบ: "แก้เลข" แก้ที่ตัวหนังสือจริง ทะเบียน/ตราประทับ/หน้าพิมพ์จะเปลี่ยนตามทั้งหมด
+        และแจ้งผู้ขอให้อัตโนมัติ · "ลบ" ลบเฉพาะแถวคำขอนี้ หนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียนตามเดิม
+        (ถ้าไม่ได้ใช้จริงให้กด "ยกเลิกเอกสาร" ที่ตัวหนังสือ เลขจะได้คงอยู่ในลำดับตามระเบียบ)
+      </p>` : ''}` : ''}
 
     <script>
       function issueNum(id, btn) {
@@ -228,6 +246,51 @@ router.get('/outgoing-requests', requirePage((ctx) => {
           document.getElementById('circ-' + id).checked ? NEXT_CIRCULAR : NEXT_PLAIN;
       }
       window.syncNumHint = syncNumHint;
+
+      function editOutNum(id, btn) {
+        var num = prompt('แก้เลขหนังสือส่งของคำขอนี้ (จะเปลี่ยนที่ตัวหนังสือจริง และแจ้งผู้ขอให้อัตโนมัติ)',
+          btn.getAttribute('data-num') || '');
+        if (num === null) return;
+        num = num.trim();
+        if (!num) { toast('เลขหนังสือส่งเว้นว่างไม่ได้', 'warning'); return; }
+        send(num, false);
+        function send(value, allowDuplicate) {
+          window.setBtnLoading(btn, 'กำลังบันทึก...');
+          fetch('/outgoing-requests/' + id + '/number', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ docNumber: value, allowDuplicate: allowDuplicate }),
+          }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){
+              window.restoreBtn(btn);
+              // เลขซ้ำไม่ใช่ข้อห้าม แต่ต้องยืนยันก่อน (เช่นแก้ให้ตรงกับเล่มกระดาษที่เคยลงซ้ำไว้)
+              if (!res.ok && res.d.confirmRetry) {
+                if (confirm(res.d.confirmRetry.message)) send(value, true);
+                return;
+              }
+              if (!res.ok) throw new Error(res.d.error || 'แก้เลขไม่สำเร็จ');
+              toast('แก้เลขเป็น ' + res.d.docNumberDisplay + ' แล้ว — แจ้งผู้ขอให้อัตโนมัติ', 'success');
+              setTimeout(function(){ location.reload(); }, 1000);
+            })
+            .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        }
+      }
+
+      function deleteOutReq(id, issued, btn) {
+        var msg = issued
+          ? 'ลบแถวคำขอนี้ออกจากรายการ?\\n\\nหนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียนตามเดิม ถ้าไม่ได้ใช้จริง ให้กด "ยกเลิกเอกสาร" ที่ตัวหนังสือแทน เลขจะได้คงอยู่ในลำดับตามระเบียบ'
+          : 'ลบแถวคำขอนี้ออกจากรายการ?';
+        if (!confirm(msg)) return;
+        window.setBtnLoading(btn, 'กำลังลบ...');
+        fetch('/outgoing-requests/' + id + '/delete', { method: 'POST' })
+          .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+          .then(function(res){
+            if (!res.ok) throw new Error(res.d.error || 'ลบไม่สำเร็จ');
+            var row = document.getElementById('outreq-row-' + id);
+            if (row) row.remove();
+            toast(res.d.documentKept ? 'ลบคำขอแล้ว — หนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียน' : 'ลบคำขอแล้ว', 'success');
+          })
+          .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+      }
 
       function rejectNum(id, btn) {
         var reason = prompt('บอกเหตุผลที่ยังออกเลขให้ไม่ได้ (ผู้ขอจะได้รู้ว่าต้องแก้อะไรก่อนยื่นใหม่)');
@@ -268,6 +331,19 @@ router.post('/outgoing-requests/:id/issue', requireApi(async (ctx) => {
 
 router.post('/outgoing-requests/:id/reject', requireApi(async (ctx) => {
   json(ctx, 200, rejectOutgoingRequest({ requestId: ctx.params.id, reason: ctx.body?.reason, actorUser: ctx.user }));
+}));
+
+// ผู้ดูแลระบบแก้เลขที่ออกไปแล้ว (พิมพ์ผิด/ต้องให้ตรงกับเล่มกระดาษ) — แก้ที่ตัวหนังสือจริง
+router.post('/outgoing-requests/:id/number', requireApi(async (ctx) => {
+  json(ctx, 200, editIssuedOutgoingNumber({
+    requestId: ctx.params.id, docNumber: ctx.body?.docNumber,
+    allowDuplicate: ctx.body?.allowDuplicate === true, actorUser: ctx.user,
+  }));
+}));
+
+// ผู้ดูแลระบบลบแถวคำขอออกจากรายการ (หนังสือที่ออกเลขไปแล้วยังอยู่ ดูเหตุผลใน service)
+router.post('/outgoing-requests/:id/delete', requireApi(async (ctx) => {
+  json(ctx, 200, deleteOutgoingRequest({ requestId: ctx.params.id, actorUser: ctx.user }));
 }));
 
 router.post('/outgoing-requests/:id/cancel', requireApi(async (ctx) => {

@@ -1023,7 +1023,7 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
   // ทุกเทสต์ในกลุ่มนี้กวาดหน้าเว็บทั้งระบบ ถ้าหน้าไหนยังไม่มีข้อมูลเลย ส่วนที่แสดงเฉพาะเมื่อมีรายการ
   // (ปุ่มลบ ปุ่มยกเลิก แถวในตาราง) จะไม่ถูก render ออกมา แล้วเทสต์จะเขียวทั้งที่ไม่ได้ตรวจส่วนนั้นเลย
   // — พิสูจน์แล้ว: ใส่ชื่อฟังก์ชันผิดในปุ่มยกเลิกการมอบหมาย แต่เทสต์ยังผ่าน เพราะไม่มีการมอบหมายสักรายการ
-  before(() => {
+  before(async () => {
     const doc = makeDoc({ title: 'เอกสารตัวอย่างสำหรับกวาดหน้าเว็บ', dueDate: '2026-08-25' });
     assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เพื่อพิจารณา', actorUser: registrarUser });
     // ต้องจองช่วงวันจากตัวจ่ายช่วงกลาง ห้ามเขียนวันที่ตายตัว — fixture นี้เคยตรึงไว้ที่ 24-26 ส.ค. 2569
@@ -1042,6 +1042,20 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
       INSERT INTO announcements (id, category, title, body, created_by, created_at, updated_at)
       VALUES (?, 'ประกาศ', 'ประกาศตัวอย่างสำหรับกวาดหน้าเว็บ', 'เนื้อหาประกาศ', ?, ?, ?)
     `).run('ann-' + Math.random().toString(36).slice(2), seed.userIds.admin, nowIso(), nowIso());
+
+    // คำขอเลขหนังสือส่งครบทั้งสามสถานะ — ถ้าไม่มี ตาราง "ออกเลข/ตรวจไปแล้ว" จะว่างเปล่า แล้วปุ่ม
+    // แก้เลข/ลบของผู้ดูแลระบบจะไม่ถูก render ออกมาให้ด่านตรวจไวยากรณ์เห็นเลย — ซึ่งเป็นช่องที่บั๊กจริง
+    // เคยหลุดผ่านไปได้ (ปุ่มแก้เลขทำให้สคริปต์ของหน้านั้นตายทั้งก้อน แต่เทสต์เขียวสนิท)
+    const outReq = await import('../src/services/outgoingRequest.js');
+    const askOut = (title) => outReq.submitOutgoingRequest({
+      title, correspondentName: 'ผู้อำนวยการสำนักงานเขตพื้นที่การศึกษา', departmentId: deptId,
+      priority: 'normal', secretLevel: 'normal', requester: teacherUser,
+    });
+    outReq.issueOutgoingNumber({ requestId: askOut('ขอเลขหนังสือส่งตัวอย่างที่ออกเลขแล้ว').id, actorUser: registrarUser });
+    outReq.rejectOutgoingRequest({
+      requestId: askOut('ขอเลขหนังสือส่งตัวอย่างที่ถูกปฏิเสธ').id, reason: 'ยังไม่แนบร่างหนังสือ', actorUser: registrarUser,
+    });
+    askOut('ขอเลขหนังสือส่งตัวอย่างที่ยังรออยู่');
 
     // เอกสารฉบับนี้ยังค้างอยู่ที่ ผอ. ปุ่มอนุมัติ/รับทราบ/ไม่อนุมัติ จึงถูก render ออกมาให้ตรวจได้จริง
     // ตอนกวาดในบทบาทของ director01 (ถ้าไม่มีขั้นตอนค้าง ปุ่มพวกนี้จะไม่ขึ้นเลย แล้วเทสต์จะไม่ได้ตรวจ)
@@ -1098,6 +1112,35 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
     }
     assert.deepEqual([...new Set(offenders)], [],
       `สคริปต์ในหน้าเว็บมีไวยากรณ์ผิด (ปุ่มทั้งก้อนจะไม่ทำงาน):\n  ${[...new Set(offenders)].join('\n  ')}`);
+  });
+
+  // ด่านข้างบนตรวจเฉพาะ <script> ซึ่งไม่ครอบคลุม onclick="..." — และตรงนั้นพังได้ง่ายกว่าด้วยซ้ำ
+  //
+  // เกิดขึ้นจริงมาแล้ว: ปุ่ม "แก้เลข" ส่งเลขทะเบียนเดิมเข้าไปกลาง onclick ด้วย JSON.stringify ซึ่งใส่
+  // เครื่องหมายคำพูดคู่มาด้วย ทำให้ attribute ที่คร่อมด้วย " ปิดกลางคัน เบราว์เซอร์อ่านที่เหลือเป็น
+  // แอตทริบิวต์มั่วๆ แล้วสคริปต์ของหน้านั้นตายทั้งก้อน (Unexpected end of input) — ฝั่งเซิร์ฟเวอร์
+  // ตอบ 200 ปกติ และด่าน <script> ก็เขียวสนิท เพราะโค้ดที่พังไม่ได้อยู่ใน <script>
+  test('โค้ดใน onclick ของทุกหน้าต้องไม่มีไวยากรณ์ผิด', async () => {
+    const vm = await import('node:vm');
+    const unesc = (s) => s.replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    const offenders = [];
+    for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
+      const user = userAs(code);
+      for (const pathname of [...pages, ...detailPages]) {
+        const res = await openPage(pathname, user);
+        if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
+        for (const m of res.body.matchAll(/\son(?:click|change|submit|input)="([^"]*)"/g)) {
+          try {
+            new vm.Script(unesc(m[1]));
+          } catch (err) {
+            offenders.push(`${pathname} (${code}): ${err.message} — ใกล้ๆ "${m[1].slice(0, 70)}"`);
+          }
+        }
+      }
+    }
+    assert.deepEqual([...new Set(offenders)], [],
+      `โค้ดใน onclick มีไวยากรณ์ผิด (สคริปต์ของหน้านั้นจะตายทั้งก้อน):\n  ${[...new Set(offenders)].join('\n  ')}`);
   });
 
   // ปุ่มที่เรียกฟังก์ชันซึ่งไม่มีอยู่จริง จะ "กดแล้วไม่มีอะไรเกิดขึ้น" เงียบๆ เหมือนกัน — เซิร์ฟเวอร์ตอบ 200
@@ -2514,19 +2557,23 @@ describe('คำขอลงทะเบียนที่ค้างอยู�
   };
   after(() => { for (const id of pendingIds) db.prepare('DELETE FROM registration_requests WHERE id = ?').run(id); });
 
+  // ดูป้ายของเมนู "คำขอลงทะเบียน" โดยเฉพาะ ไม่ใช่ nav-count อันไหนก็ได้ — เมนูอื่น (คำขอเลขหนังสือส่ง)
+  // ก็มีป้ายนับของตัวเองเหมือนกัน ถ้าจับรวมกันหมด เทสต์นี้จะแดงเพราะของคนอื่นโดยที่ตัวเองไม่ได้พัง
+  const regBadge = (body) => /คำขอลงทะเบียน<\/span><span class="nav-count">(\d+)<\/span>/.exec(body)?.[1] || null;
+
   test('เมนูของผู้ดูแลต้องขึ้นจำนวนคำขอที่รอตรวจ', async () => {
     const before = await dispatchGet(adminUser, '/', {});
-    assert.ok(!/nav-count/.test(before.body), 'ไม่มีคำขอค้างก็ต้องไม่ขึ้นป้าย');
+    assert.equal(regBadge(before.body), null, 'ไม่มีคำขอค้างก็ต้องไม่ขึ้นป้าย');
 
     addPending(`pend-${Date.now()}-1`);
     addPending(`pend-${Date.now()}-2`);
     const after = await dispatchGet(adminUser, '/', {});
-    assert.match(after.body, /<span class="nav-count">2<\/span>/, 'ต้องขึ้นจำนวนคำขอที่รอตรวจบนเมนู');
+    assert.equal(regBadge(after.body), '2', 'ต้องขึ้นจำนวนคำขอที่รอตรวจบนเมนู');
   });
 
   test('คนที่ไม่ใช่ผู้ดูแลต้องไม่เห็นป้ายนี้ เพราะกดเข้าไปทำอะไรไม่ได้อยู่ดี', async () => {
     const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/', {});
-    assert.ok(!/nav-count/.test(res.body), 'ครูต้องไม่เห็นป้ายคำขอลงทะเบียน');
+    assert.ok(!/คำขอลงทะเบียน/.test(res.body), 'ครูต้องไม่เห็นทั้งเมนูและป้ายคำขอลงทะเบียน');
   });
 
   // ช่องทางที่โรงเรียนใช้สื่อสารกันจริงคือกลุ่มไลน์ — การให้คัดลอกลิงก์ไปวางเองเป็นขั้นที่คนมักไม่ทำ
@@ -2722,7 +2769,9 @@ describe('คำขอลงทะเบียนที่ค้างอยู�
     try {
       const res = await dispatchGet(adminUser, '/', {});
       assert.equal(res.status, 200, 'หน้าต้องยังเปิดได้');
-      assert.ok(!/nav-count/.test(res.body));
+      // ดูป้ายของเมนูคำขอลงทะเบียนโดยเฉพาะ — เมนูอื่นมีป้ายนับของตัวเองซึ่งต้องทำงานต่อได้ตามปกติ
+      assert.ok(!/คำขอลงทะเบียน<\/span><span class="nav-count">/.test(res.body),
+        'นับไม่ได้ก็ต้องไม่ขึ้นป้าย ไม่ใช่พังทั้งหน้า');
     } finally {
       db.exec('ALTER TABLE registration_requests_tmp RENAME TO registration_requests');
     }
@@ -5921,6 +5970,106 @@ describe('ขอเลขหนังสือส่ง', () => {
     const d = JSON.parse(row.detail);
     assert.equal(d.docNumber, issued.json.docNumberDisplay);
     assert.equal(d.requesterId, seed.userIds.teacher001);
+  });
+
+  // เลขที่ออกไปแล้วพิมพ์ผิดเป็นเรื่องที่เกิดขึ้นจริง เดิมแก้ไม่ได้เลยนอกจากแก้ฐานข้อมูลเอง —
+  // คนละเรื่องกับ "เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้" ซึ่งยังคงเป็นอย่างนั้นอยู่
+  test('ผู้ดูแลระบบแก้เลขหนังสือส่งที่ออกไปแล้วได้ และแก้ที่ตัวหนังสือจริง', async () => {
+    const res = await ask(teacher());
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    const edit = await dispatchPost(admin(), `/outgoing-requests/${res.json.id}/number`, { docNumber: 'ศธ 04056.12/๙๙๙' });
+    assert.equal(edit.status, 200, edit.body);
+
+    const doc = db.prepare('SELECT doc_number_display FROM documents WHERE id = ?').get(issued.json.documentId);
+    assert.equal(doc.doc_number_display, 'ศธ 04056.12/๙๙๙', 'ต้องแก้ที่ตัวหนังสือ ทะเบียน/ตราประทับ/หน้าพิมพ์จะได้ตรงกันหมด');
+    // ผู้ขอได้เลขเดิมไปแล้วและอาจพิมพ์ลงหนังสือจริงไปแล้ว ต้องรู้ว่าเลขเปลี่ยน ไม่ใช่มาเจอเองทีหลัง
+    const note = db.prepare('SELECT title, message FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(seed.userIds.teacher001);
+    assert.match(note.title, /แก้เลขหนังสือส่งเป็น ศธ 04056\.12\/๙๙๙/);
+    assert.ok(note.message.includes(issued.json.docNumberDisplay), 'ต้องบอกด้วยว่าเลขเดิมคืออะไร');
+
+    const log = db.prepare(`SELECT user_id, detail FROM audit_logs WHERE record_id = ? AND action = 'outgoing_number_edited' ORDER BY created_at DESC LIMIT 1`)
+      .get(issued.json.documentId);
+    assert.ok(log, 'การแก้ทะเบียนย้อนหลังต้องมีบันทึกไว้เสมอ');
+    assert.equal(JSON.parse(log.detail).before, issued.json.docNumberDisplay);
+  });
+
+  test('แก้เลขได้เฉพาะผู้ดูแลระบบ และค่าที่ใช้ไม่ได้ต้องถูกปฏิเสธ', async () => {
+    const res = await ask(teacher());
+    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    for (const [label, user, body, expect] of [
+      ['ครูแก้เอง', teacher, { docNumber: 'ก/1' }, 403],
+      // ธุรการเป็นคนออกเลข แต่การแก้ย้อนหลังหลังแจ้งออกไปแล้วเป็นอำนาจผู้ดูแลระบบ
+      ['ธุรการแก้', registrar, { docNumber: 'ก/2' }, 403],
+      ['เลขว่าง', admin, { docNumber: '   ' }, 400],
+      ['เลขยาวเกิน', admin, { docNumber: 'ก'.repeat(200) }, 400],
+    ]) {
+      const r = await dispatchPost(user(), `/outgoing-requests/${res.json.id}/number`, body);
+      assert.equal(r.status, expect, `${label} ควรได้ ${expect} — ได้ ${r.status} ${r.body}`);
+    }
+    // คำขอที่ยังไม่ได้ออกเลข ไม่มีเลขให้แก้
+    const pendingReq = await ask(teacher());
+    const r2 = await dispatchPost(admin(), `/outgoing-requests/${pendingReq.json.id}/number`, { docNumber: 'ก/3' });
+    assert.equal(r2.status, 409, 'คำขอที่ยังไม่ออกเลขต้องแก้เลขไม่ได้');
+  });
+
+  test('เลขซ้ำต้องถามยืนยันก่อน ไม่ใช่ห้าม และไม่ใช่ปล่อยผ่านเงียบๆ', async () => {
+    const a = await ask(teacher());
+    const issuedA = await dispatchPost(registrar(), `/outgoing-requests/${a.json.id}/issue`, {});
+    const b = await ask(teacher());
+    await dispatchPost(registrar(), `/outgoing-requests/${b.json.id}/issue`, {});
+
+    const clash = await dispatchPost(admin(), `/outgoing-requests/${b.json.id}/number`, { docNumber: issuedA.json.docNumberDisplay });
+    assert.equal(clash.status, 409, 'เลขซ้ำต้องเตือนก่อน');
+    assert.ok(clash.json.confirmRetry, 'ต้องบอกหน้าเว็บว่าให้ถามยืนยันแล้วส่งมาใหม่ได้');
+
+    const forced = await dispatchPost(admin(), `/outgoing-requests/${b.json.id}/number`,
+      { docNumber: issuedA.json.docNumberDisplay, allowDuplicate: true });
+    assert.equal(forced.status, 200, 'ยืนยันแล้วต้องแก้ได้ (เช่นแก้ให้ตรงกับเล่มกระดาษที่เคยลงซ้ำไว้)');
+  });
+
+  test('ผู้ดูแลระบบลบแถวคำขอได้ แต่หนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียน', async () => {
+    const res = await ask(teacher());
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+
+    assert.equal((await dispatchPost(teacher(), `/outgoing-requests/${res.json.id}/delete`, {})).status, 403, 'ครูลบไม่ได้');
+    assert.equal((await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/delete`, {})).status, 403, 'ธุรการลบไม่ได้');
+
+    const del = await dispatchPost(admin(), `/outgoing-requests/${res.json.id}/delete`, {});
+    assert.equal(del.status, 200, del.body);
+    assert.equal(del.json.documentKept, true, 'ต้องบอกหน้าเว็บว่าหนังสือยังอยู่');
+    assert.equal(rowById(res.json.id), undefined, 'แถวคำขอต้องหายไป');
+    // เลขทะเบียนที่ออกไปแล้วต้องไม่หายไปจากเล่ม ไม่งั้นเลขขาดเป็นรูโหว่ที่อธิบายไม่ได้ตอนตรวจ
+    const doc = db.prepare('SELECT deleted_at, doc_number_display FROM documents WHERE id = ?').get(issued.json.documentId);
+    assert.ok(doc && !doc.deleted_at, 'หนังสือที่ออกเลขไปแล้วต้องยังอยู่ในทะเบียน');
+    assert.equal(doc.doc_number_display, issued.json.docNumberDisplay);
+
+    const log = db.prepare(`SELECT detail FROM audit_logs WHERE record_id = ? AND action = 'outgoing_number_request_deleted' LIMIT 1`).get(res.json.id);
+    assert.ok(log, 'ต้องบันทึกไว้ว่าใครลบอะไร');
+    assert.equal(JSON.parse(log.detail).documentId, issued.json.documentId);
+  });
+
+  test('คำขอที่ยังไม่ได้ออกเลข/ถูกปฏิเสธ ผู้ดูแลลบทิ้งได้เหมือนกัน', async () => {
+    const pendingReq = await ask(teacher());
+    assert.equal((await dispatchPost(admin(), `/outgoing-requests/${pendingReq.json.id}/delete`, {})).status, 200);
+    assert.equal(rowById(pendingReq.json.id), undefined);
+
+    const rejected = await ask(teacher());
+    await dispatchPost(registrar(), `/outgoing-requests/${rejected.json.id}/reject`, { reason: 'ยังไม่แนบร่างหนังสือ' });
+    const del = await dispatchPost(admin(), `/outgoing-requests/${rejected.json.id}/delete`, {});
+    assert.equal(del.status, 200);
+    assert.equal(del.json.documentKept, false, 'ไม่มีหนังสือให้เก็บ');
+  });
+
+  test('หน้าคำขอแสดงปุ่มแก้/ลบเฉพาะผู้ดูแลระบบ', async () => {
+    const res = await ask(teacher());
+    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    const asAdmin = await dispatchGet(admin(), '/outgoing-requests', {});
+    assert.match(asAdmin.body, /✏️ แก้เลข/, 'ผู้ดูแลต้องเห็นปุ่มแก้เลข');
+    assert.match(asAdmin.body, /onclick="deleteOutReq\(/, 'ผู้ดูแลต้องเห็นปุ่มลบ');
+    const asReg = await dispatchGet(registrar(), '/outgoing-requests', {});
+    assert.ok(!/✏️ แก้เลข/.test(asReg.body), 'ธุรการต้องไม่เห็นปุ่มแก้เลข');
+    assert.ok(!/onclick="deleteOutReq\(/.test(asReg.body), 'ธุรการต้องไม่เห็นปุ่มลบ');
   });
 });
 

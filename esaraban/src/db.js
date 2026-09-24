@@ -600,6 +600,23 @@ export function migrate() {
   CREATE INDEX IF NOT EXISTS idx_outreq_status ON outgoing_number_requests(status, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_outreq_requester ON outgoing_number_requests(requester_id, created_at DESC);
 
+  -- ร่างหนังสือที่ครูแนบมากับคำขอเลข — ธุรการต้องได้เห็นตัวหนังสือก่อนตัดสินใจออกเลขให้
+  --
+  -- เก็บเนื้อไฟล์ไว้ในฐานข้อมูลตรงๆ ไม่ใช่ลงดิสก์เหมือนไฟล์แนบของหนังสือ เพราะร่างที่ยังไม่ได้ออกเลข
+  -- อยู่ได้ไม่นาน (จนกว่าธุรการจะกดออกเลข/ปฏิเสธ) แต่บนโฮสต์ที่ดิสก์ถูกล้างทุกครั้งที่ deploy
+  -- ไฟล์บนดิสก์จะหายไปเงียบๆ ระหว่างรอ ส่วนฐานข้อมูลถูกสำรองขึ้น Google Drive อยู่แล้ว
+  -- พอออกเลขให้ ไฟล์จะถูกย้ายเข้าไฟล์แนบของหนังสือด้วยเส้นทางปกติ แล้วลบแถวนี้ทิ้ง
+  CREATE TABLE IF NOT EXISTS outgoing_request_files (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES outgoing_number_requests(id),
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    filesize INTEGER NOT NULL,
+    content BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_outreq_file ON outgoing_request_files(request_id);
+
   -- สรุปงานรายวันที่ธุรการอัปโหลดมาเป็นไฟล์ Excel แล้วระบบแตกออกมาเก็บเป็นรายการ เพื่อให้แก้ไขต่อในระบบได้
   -- และรวมดูข้ามวันได้ — แยกเก็บทีละวัน (summary_date) เพื่อให้ย้อนหาเอกสารของวันนั้นๆ ได้ง่าย
   CREATE TABLE IF NOT EXISTS daily_summaries (

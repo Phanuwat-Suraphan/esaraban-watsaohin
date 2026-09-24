@@ -9,10 +9,11 @@
 //   1. คำขอ "ไม่ใช่" หนังสือ และต้องยังไม่กินเลขทะเบียน จนกว่าธุรการจะกดออกเลข
 //   2. ออกเลขให้คำขอเดิมซ้ำสองครั้งไม่ได้ ไม่งั้นหนังสือเรื่องเดียวจะมีสองเลข
 //   3. เลขที่ออกไปแล้วยกเลิกไม่ได้ ต้องไปยกเลิกที่ตัวหนังสือ (ซึ่งบันทึกเหตุผลไว้)
-import { db, uuid, nowIso, audit } from '../db.js';
+import { db, uuid, nowIso, audit, getUserRoles } from '../db.js';
 import { httpError, asText, asTextOrNull, assertMaxLength } from './validate.js';
 import { notifyUser } from './notify.js';
 import { createDocument } from './workflow.js';
+import { fileKindOf, ALLOWED_LABEL, saveAttachment } from './attachments.js';
 
 /**
  * ประเภทเอกสารเริ่มต้นของหนังสือที่ออกจากคำขอ — หนังสือส่งของโรงเรียนคือหนังสือภายนอกเป็นหลัก
@@ -36,7 +37,51 @@ export const canIssueOutgoingNumber = (user) =>
   Boolean(user) && (user.roleCodes.includes('admin') || user.roleCodes.includes('registrar'));
 
 /** ครูยื่นคำขอเลขหนังสือส่ง — ยังไม่กินเลขทะเบียน */
-export function submitOutgoingRequest({ title, correspondentName, departmentId, priority, secretLevel, note, isCircular, requester }) {
+/**
+ * ขนาดสูงสุดของร่างหนังสือที่แนบมากับคำขอ — เล็กกว่าไฟล์แนบของหนังสือจริง (10MB) โดยตั้งใจ
+ *
+ * ร่างเก็บเป็นก้อนข้อมูลอยู่ในฐานข้อมูลจนกว่าจะออกเลขให้ ซึ่งฐานข้อมูลทั้งไฟล์ถูกสำรองขึ้น Google Drive
+ * ทุกรอบ ถ้าปล่อยให้ใหญ่เท่าไฟล์แนบจริง คำขอที่ค้างอยู่ไม่กี่สิบใบก็ทำให้ไฟล์สำรองโตขึ้นเป็นหลายร้อย
+ * เมกะไบต์ต่อรอบได้ — ร่างหนังสือของจริงเป็น Word/PDF ไม่กี่หน้า ขนาดหลักร้อยกิโลไบต์เท่านั้น
+ */
+const MAX_DRAFT_BYTES = 5 * 1024 * 1024;
+
+/**
+ * แนบร่างหนังสือเข้ากับคำขอ — ใช้ตัวตรวจชนิดไฟล์/ลายเซ็นไฟล์ชุดเดียวกับหน้าหนังสือ
+ *
+ * ทำไมต้องมี: เดิมธุรการเห็นแค่ชื่อเรื่องกับปลายทาง แล้วต้องออกเลขทะเบียนส่งให้โดยไม่เคยเห็นตัวหนังสือเลย
+ * ทั้งที่เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ ในทางปฏิบัติจึงต้องไปตามขอไฟล์กันทางไลน์ก่อนทุกครั้ง
+ */
+function saveDraft({ requestId, fileName, fileType, fileDataBase64 }) {
+  if (!fileDataBase64) return null;
+  const kind = fileKindOf(fileType);
+  if (!kind) throw httpError(400, `ชนิดไฟล์นี้แนบไม่ได้ — รับเฉพาะ ${ALLOWED_LABEL}`);
+  const buf = Buffer.from(fileDataBase64, 'base64');
+  if (!buf.length) throw httpError(400, 'ไฟล์ที่แนบมาไม่มีข้อมูล (0 ไบต์) — อาจสแกนไม่สำเร็จหรือไฟล์เสียหาย');
+  if (buf.length > MAX_DRAFT_BYTES) throw httpError(413, 'ร่างหนังสือที่แนบมากับคำขอต้องไม่เกิน 5MB — ถ้าใหญ่กว่านี้ให้ขอเลขก่อน แล้วค่อยแนบไฟล์ที่หน้าหนังสือ');
+  // ตรวจลายเซ็นไฟล์จริง ไม่ใช่เชื่อ MIME ที่แจ้งมา (เกณฑ์เดียวกับไฟล์แนบของหนังสือ)
+  if (!kind.sig(buf)) {
+    throw httpError(400, `ไฟล์นี้ไม่ใช่ ${kind.label} ที่ถูกต้อง (ตรวจลายเซ็นไฟล์ไม่ผ่าน) — ถ้าเปลี่ยนนามสกุลไฟล์เอง ให้บันทึกเป็นชนิดที่ถูกต้องก่อน`);
+  }
+  const id = uuid();
+  db.prepare(`INSERT INTO outgoing_request_files (id, request_id, filename, mime_type, filesize, content, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, requestId, asText(fileName) || `document.${kind.ext}`, fileType, buf.length, buf, nowIso());
+  return { id, filesize: buf.length };
+}
+
+/** ร่างที่แนบมากับคำขอ (ไม่ดึงเนื้อไฟล์ เพราะใช้แค่ทำรายการ) */
+export function listRequestDrafts(requestId) {
+  return db.prepare('SELECT id, request_id, filename, mime_type, filesize, created_at FROM outgoing_request_files WHERE request_id = ? ORDER BY created_at')
+    .all(requestId);
+}
+
+/** เนื้อไฟล์ของร่าง — ใช้ตอนเปิดดู/ดาวน์โหลด และตอนย้ายเข้าไฟล์แนบของหนังสือ */
+export function getRequestDraft(fileId) {
+  return db.prepare('SELECT * FROM outgoing_request_files WHERE id = ?').get(fileId);
+}
+
+export function submitOutgoingRequest({ title, correspondentName, departmentId, priority, secretLevel, note, isCircular, draft, requester }) {
   title = asText(title);
   correspondentName = asText(correspondentName);
   note = asTextOrNull(note);
@@ -58,7 +103,11 @@ export function submitOutgoingRequest({ title, correspondentName, departmentId, 
   const dup = db.prepare(`
     SELECT id FROM outgoing_number_requests WHERE requester_id = ? AND title = ? AND status = 'pending'
   `).get(requester.id, title);
-  if (dup) return { id: dup.id, duplicate: true };
+  if (dup) {
+    // กดซ้ำเพราะเพิ่งนึกได้ว่าลืมแนบร่าง — ต้องแนบเข้าใบเดิมได้ ไม่ใช่เงียบไปเฉยๆ แล้วครูไม่รู้ว่าไฟล์หาย
+    if (draft?.fileDataBase64) saveDraft({ requestId: dup.id, ...draft });
+    return { id: dup.id, duplicate: true };
+  }
 
   const id = uuid();
   db.prepare(`
@@ -67,6 +116,8 @@ export function submitOutgoingRequest({ title, correspondentName, departmentId, 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
   `).run(id, requester.id, title, correspondentName, deptId, priority || 'normal', secretLevel || 'normal', note,
     isCircular ? 1 : 0, nowIso());
+
+  if (draft?.fileDataBase64) saveDraft({ requestId: id, ...draft });
 
   const who = `${requester.prefix || ''}${requester.first_name} ${requester.last_name}`.trim();
   // บอกธุรการทันที ไม่ใช่รอให้บังเอิญเปิดหน้านั้นเจอเอง — ครูที่ขอเลขมักกำลังรอส่งหนังสือให้ทัน
@@ -132,7 +183,7 @@ export function recentReviewedOutgoingRequests(limit = 20) {
  * คำขอเดิมค้างอยู่แล้วกดออกเลขซ้ำ จนหนังสือเรื่องเดียวมีสองเลข ซึ่งแก้ทีหลังไม่ได้แล้วเพราะเลขที่ออกไป
  * แล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ
  */
-export function issueOutgoingNumber({ requestId, customDocNumber, isCircular, actorUser }) {
+export async function issueOutgoingNumber({ requestId, customDocNumber, isCircular, actorUser }) {
   if (!canIssueOutgoingNumber(actorUser)) {
     throw httpError(403, 'ออกเลขหนังสือส่งได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
   }
@@ -173,6 +224,30 @@ export function issueOutgoingNumber({ requestId, customDocNumber, isCircular, ac
     throw e;
   }
 
+  // ย้ายร่างที่ครูแนบมาเข้าเป็นไฟล์แนบของหนังสือ — ครูจะได้ไม่ต้องแนบซ้ำอีกรอบ และธุรการที่เพิ่งดูร่าง
+  // เพื่อตัดสินใจออกเลขก็เห็นไฟล์เดียวกันนั้นอยู่กับหนังสือทันที
+  //
+  // อยู่นอกธุรกรรมโดยตั้งใจ: การย้ายไฟล์อาจต้องอัปโหลดขึ้น Google Drive ซึ่งช้าและล้มได้จากเน็ตโรงเรียน
+  // ถ้าเอาไปไว้ในธุรกรรมเดียวกัน เน็ตสะดุดครั้งเดียวจะย้อนการออกเลขทั้งก้อน ทั้งที่เลขทะเบียนออกไปแล้ว
+  // — ถ้าย้ายไม่สำเร็จ หนังสือยังอยู่ครบ แค่บอกให้ไปแนบไฟล์เองที่หน้าหนังสือ
+  const drafts = listRequestDrafts(req.id);
+  const failedDrafts = [];
+  for (const d of drafts) {
+    try {
+      const row = getRequestDraft(d.id);
+      // saveAttachment เช็คสิทธิ์การเห็นหนังสือ (เพื่อคำเตือนไฟล์ซ้ำ) จาก user.roleCodes — แถวดิบจาก
+      // ตาราง users ไม่มีฟิลด์นั้น ต้องเติมบทบาทให้ครบเหมือนผู้ใช้ที่ล็อกอินเข้ามาจริง
+      const uploader = { ...requester, roleCodes: getUserRoles(requester.id).map((r) => r.name) };
+      await saveAttachment({
+        documentId: doc.id, fileName: row.filename, fileType: row.mime_type,
+        fileDataBase64: Buffer.from(row.content).toString('base64'), uploader,
+      });
+      db.prepare('DELETE FROM outgoing_request_files WHERE id = ?').run(d.id);
+    } catch (err) {
+      failedDrafts.push(`${d.filename}: ${err.message}`);
+    }
+  }
+
   notifyUser({
     userId: requester.id, documentId: doc.id,
     title: `ได้เลขหนังสือส่งแล้ว: ${doc.docNumberDisplay}`,
@@ -183,7 +258,13 @@ export function issueOutgoingNumber({ requestId, customDocNumber, isCircular, ac
     userId: actorUser.id, action: 'outgoing_number_issued', tableName: 'outgoing_number_requests', recordId: req.id,
     detail: { documentId: doc.id, docNumber: doc.docNumberDisplay, requesterId: requester.id },
   });
-  return { ok: true, documentId: doc.id, docNumberDisplay: doc.docNumberDisplay };
+  return {
+    ok: true, documentId: doc.id, docNumberDisplay: doc.docNumberDisplay,
+    attachedDrafts: drafts.length - failedDrafts.length,
+    draftWarning: failedDrafts.length
+      ? `ออกเลขให้เรียบร้อยแล้ว แต่ย้ายร่างที่แนบมาเข้าหนังสือไม่สำเร็จ (${failedDrafts.join(', ')}) — ให้แนบไฟล์เองที่หน้าหนังสือ`
+      : null,
+  };
 }
 
 /** ธุรการปฏิเสธคำขอ — ต้องบอกเหตุผล ไม่งั้นครูไม่รู้ว่าต้องแก้อะไรแล้วยื่นใหม่ */
@@ -209,6 +290,8 @@ export function rejectOutgoingRequest({ requestId, reason, actorUser }) {
     message: `${req.title} — ${reason}`,
     priority: 'warning',
   });
+  // ร่างที่แนบมาไม่ได้ใช้แล้ว ทิ้งไปพร้อมกัน ไม่ปล่อยให้ก้อนข้อมูลค้างอยู่ในฐานข้อมูล (ซึ่งถูกสำรองทุกรอบ)
+  db.prepare('DELETE FROM outgoing_request_files WHERE request_id = ?').run(req.id);
   audit({
     userId: actorUser.id, action: 'outgoing_number_rejected', tableName: 'outgoing_number_requests', recordId: req.id,
     detail: { reason },
@@ -228,6 +311,7 @@ export function cancelOutgoingRequest({ requestId, actorUser }) {
       ? 'คำขอนี้ออกเลขไปแล้ว ถอนไม่ได้ — เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ ถ้าไม่ได้ใช้จริงให้ยกเลิกที่ตัวหนังสือ'
       : 'คำขอนี้ถูกตรวจไปแล้ว');
   }
+  db.prepare('DELETE FROM outgoing_request_files WHERE request_id = ?').run(requestId);
   db.prepare('DELETE FROM outgoing_number_requests WHERE id = ?').run(requestId);
   audit({ userId: actorUser.id, action: 'outgoing_number_request_cancelled', tableName: 'outgoing_number_requests', recordId: requestId, detail: { title: req.title } });
   return { ok: true };
@@ -298,6 +382,7 @@ export function deleteOutgoingRequest({ requestId, actorUser }) {
   const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(requestId);
   if (!req) throw httpError(404, 'ไม่พบคำขอนี้');
 
+  db.prepare('DELETE FROM outgoing_request_files WHERE request_id = ?').run(requestId);
   db.prepare('DELETE FROM outgoing_number_requests WHERE id = ?').run(requestId);
   audit({
     userId: actorUser.id, action: 'outgoing_number_request_deleted', tableName: 'outgoing_number_requests', recordId: requestId,

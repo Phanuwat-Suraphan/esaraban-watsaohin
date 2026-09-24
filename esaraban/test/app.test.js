@@ -1051,7 +1051,7 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
       title, correspondentName: 'ผู้อำนวยการสำนักงานเขตพื้นที่การศึกษา', departmentId: deptId,
       priority: 'normal', secretLevel: 'normal', requester: teacherUser,
     });
-    outReq.issueOutgoingNumber({ requestId: askOut('ขอเลขหนังสือส่งตัวอย่างที่ออกเลขแล้ว').id, actorUser: registrarUser });
+    await outReq.issueOutgoingNumber({ requestId: askOut('ขอเลขหนังสือส่งตัวอย่างที่ออกเลขแล้ว').id, actorUser: registrarUser });
     outReq.rejectOutgoingRequest({
       requestId: askOut('ขอเลขหนังสือส่งตัวอย่างที่ถูกปฏิเสธ').id, reason: 'ยังไม่แนบร่างหนังสือ', actorUser: registrarUser,
     });
@@ -6091,6 +6091,80 @@ describe('ขอเลขหนังสือส่ง', () => {
     const del = await dispatchPost(admin(), `/outgoing-requests/${rejected.json.id}/delete`, {});
     assert.equal(del.status, 200);
     assert.equal(del.json.documentKept, false, 'ไม่มีหนังสือให้เก็บ');
+  });
+
+  // ธุรการต้องออกเลขทะเบียนส่งให้โดยไม่เคยเห็นตัวหนังสือเลย ทั้งที่เลขที่ออกไปแล้วใช้ซ้ำไม่ได้ —
+  // ในทางปฏิบัติจึงต้องไปตามขอไฟล์กันทางไลน์ก่อนทุกครั้ง
+  describe('แนบร่างหนังสือมากับคำขอ', () => {
+    const pdf = () => Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n', 'latin1').toString('base64');
+    const draftsOf = (reqId) => db.prepare('SELECT * FROM outgoing_request_files WHERE request_id = ?').all(reqId);
+
+    test('ครูแนบร่างมาได้ ธุรการเปิดดูได้ และครูเจ้าของก็เปิดได้', async () => {
+      const res = await ask(teacher(), { draft: { fileName: 'ร่างหนังสือขออนุญาต.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      assert.equal(res.status, 200, res.body);
+      const [file] = draftsOf(res.json.id);
+      assert.ok(file, 'ต้องเก็บร่างไว้กับคำขอ');
+      assert.equal(file.filename, 'ร่างหนังสือขออนุญาต.pdf');
+
+      const page = await dispatchGet(registrar(), '/outgoing-requests', {});
+      assert.ok(page.body.includes('ร่างหนังสือขออนุญาต.pdf'), 'ธุรการต้องเห็นชื่อไฟล์ร่างในใบคำขอ');
+      assert.ok(page.body.includes(`/outgoing-requests/files/${file.id}`), 'ต้องมีลิงก์เปิดดูร่าง');
+
+      const opened = await dispatchGet(registrar(), `/outgoing-requests/files/${file.id}`, {});
+      assert.equal(opened.status, 200, 'ธุรการต้องเปิดร่างได้');
+      assert.match(opened.headers['Content-Type'], /application\/pdf/);
+      assert.match(opened.headers['Content-Disposition'], /inline/, 'PDF ต้องเปิดดูในแท็บได้เลย');
+      assert.equal((await dispatchGet(teacher(), `/outgoing-requests/files/${file.id}`, {})).status, 200, 'เจ้าของคำขอต้องเปิดดูได้');
+    });
+
+    test('คนอื่นที่ไม่เกี่ยวข้องเปิดร่างไม่ได้ — ยังไม่ใช่หนังสือที่ออกเลขด้วยซ้ำ', async () => {
+      const res = await ask(teacher(), { draft: { fileName: 'ร่างลับ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      const [file] = draftsOf(res.json.id);
+      const outsider = loadUserForTest(seed.userIds.director01);
+      // ผอ. ไม่ใช่ผู้ขอและไม่ใช่ผู้ออกเลข จึงไม่ควรเปิดร่างของคนอื่นได้
+      assert.equal((await dispatchGet(outsider, `/outgoing-requests/files/${file.id}`, {})).status, 403);
+    });
+
+    test('ไฟล์ที่อ้างว่าเป็น PDF แต่ไม่ใช่ ต้องถูกปฏิเสธตั้งแต่ตอนขอ', async () => {
+      const fake = Buffer.from('MZ\x90\x00 ไม่ใช่ PDF เลย', 'latin1').toString('base64');
+      const res = await ask(teacher(), { draft: { fileName: 'ปลอม.pdf', fileType: 'application/pdf', fileDataBase64: fake } });
+      assert.equal(res.status, 400, 'ต้องตรวจลายเซ็นไฟล์เหมือนไฟล์แนบของหนังสือ');
+      assert.match(res.json.error, /ลายเซ็นไฟล์/);
+    });
+
+    test('ออกเลขแล้ว ร่างต้องกลายเป็นไฟล์แนบของหนังสือเอง ไม่ต้องแนบซ้ำ', async () => {
+      const res = await ask(teacher(), { draft: { fileName: 'ร่างที่จะย้ายเข้าหนังสือ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+      assert.equal(issued.status, 200, issued.body);
+      assert.equal(issued.json.attachedDrafts, 1, 'ต้องบอกว่าย้ายไฟล์เข้าหนังสือให้กี่ไฟล์');
+
+      const atts = db.prepare('SELECT * FROM attachments WHERE document_id = ?').all(issued.json.documentId);
+      assert.equal(atts.length, 1, 'หนังสือที่ออกเลขให้ต้องมีไฟล์แนบมาแล้ว');
+      assert.equal(atts[0].filename, 'ร่างที่จะย้ายเข้าหนังสือ.pdf');
+      assert.equal(atts[0].uploaded_by, seed.userIds.teacher001, 'ผู้อัปโหลดต้องเป็นครูผู้ขอ ไม่ใช่ธุรการที่กดออกเลข');
+      // ไม่เหลือก้อนข้อมูลค้างอยู่ในฐานข้อมูล (ซึ่งถูกสำรองขึ้น Drive ทุกรอบ)
+      assert.equal(draftsOf(res.json.id).length, 0, 'ร่างต้องถูกย้ายออกไปแล้ว ไม่ค้างอยู่สองที่');
+    });
+
+    test('ปฏิเสธ/ถอนคำขอ ต้องไม่ทิ้งก้อนไฟล์ค้างไว้ในฐานข้อมูล', async () => {
+      const a = await ask(teacher(), { draft: { fileName: 'ร่างที่จะถูกปฏิเสธ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      await dispatchPost(registrar(), `/outgoing-requests/${a.json.id}/reject`, { reason: 'ร่างยังไม่ถูกต้อง' });
+      assert.equal(draftsOf(a.json.id).length, 0, 'ปฏิเสธแล้วต้องลบร่างทิ้ง');
+
+      const b = await ask(teacher(), { draft: { fileName: 'ร่างที่จะถูกถอน.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      await dispatchPost(teacher(), `/outgoing-requests/${b.json.id}/cancel`, {});
+      assert.equal(draftsOf(b.json.id).length, 0, 'ถอนคำขอแล้วต้องลบร่างทิ้ง');
+    });
+
+    test('กดขอซ้ำเรื่องเดิมเพราะลืมแนบร่าง ต้องแนบเข้าใบเดิมได้', async () => {
+      const title = 'ขออนุมัติจัดกิจกรรมวันวิทยาศาสตร์';
+      const first = await ask(teacher(), { title });
+      assert.equal(draftsOf(first.json.id).length, 0);
+      const again = await ask(teacher(), { title, draft: { fileName: 'ร่างที่ลืมแนบ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      assert.equal(again.json.id, first.json.id, 'ต้องเป็นใบเดิม ไม่ใช่ใบใหม่');
+      assert.equal(again.json.duplicate, true);
+      assert.equal(draftsOf(first.json.id).length, 1, 'ร่างต้องเข้าไปอยู่กับใบเดิม ไม่ใช่หายไปเงียบๆ');
+    });
   });
 
   test('หน้าคำขอแสดงปุ่มแก้/ลบเฉพาะผู้ดูแลระบบ', async () => {

@@ -2,15 +2,17 @@
 //
 // ตามระเบียบงานสารบรรณ ทะเบียนหนังสือส่งเป็นสมุดของเจ้าหน้าที่ธุรการ ครูที่จะส่งหนังสือออกต้องขอเลข
 // จากธุรการก่อน ไม่ใช่ดึงเลขถัดไปมาใช้เอง (ดูเหตุผลเต็มใน services/outgoingRequest.js)
-import { router, html, json, redirect } from '../router.js';
+import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, emptyState, statusBadge, priorityBadge, rowLink, LABELS } from '../render.js';
 import { requireApi, requirePage } from '../middleware.js';
 import { previewNextNumber } from '../numbering.js';
 import { db } from '../db.js';
+import { ACCEPT_ATTR, ALLOWED_LABEL, VIEWABLE_MIME, attachMimeScript, fallbackFilename } from '../services/attachments.js';
 import {
   submitOutgoingRequest, listPendingOutgoingRequests, listMyOutgoingRequests,
   recentReviewedOutgoingRequests, issueOutgoingNumber, rejectOutgoingRequest,
   cancelOutgoingRequest, canIssueOutgoingNumber, editIssuedOutgoingNumber, deleteOutgoingRequest,
+  listRequestDrafts, getRequestDraft,
 } from '../services/outgoingRequest.js';
 
 function departments() {
@@ -18,6 +20,9 @@ function departments() {
 }
 
 const fullName = (r) => `${r.requester_prefix || ''}${r.requester_first} ${r.requester_last}`.trim();
+// ไฟล์เล็กกว่า 1 KB ต้องไม่ขึ้นว่า "0 KB" ซึ่งอ่านเหมือนไฟล์ว่างเปล่า
+const fmtKb = (bytes) => (bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  : bytes >= 1024 ? `${Math.round(bytes / 1024)} KB` : `${bytes} ไบต์`);
 
 // ---------------- ฟอร์มของครู ----------------
 
@@ -64,17 +69,49 @@ function requestFormCard(user) {
           <label for="orNote">ข้อความถึงธุรการ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <input type="text" id="orNote" maxlength="300" placeholder="เช่น ขอใช้ส่งวันศุกร์นี้" />
         </div>
+        <!-- ธุรการต้องได้เห็นตัวหนังสือก่อนตัดสินใจออกเลข เดิมเห็นแค่ชื่อเรื่องแล้วต้องไปตามขอไฟล์กัน
+             ทางไลน์ทุกครั้ง ทั้งที่เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ -->
+        <div class="field">
+          <label for="orFile">แนบร่างหนังสือ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <input type="file" id="orFile" accept="${ACCEPT_ATTR}" onchange="attachFilePreview(this, 'orFileName')" />
+          <div class="help-text" id="orFileName"></div>
+          <div class="help-text">
+            ธุรการจะได้ดูร่างก่อนออกเลขให้ และเมื่อออกเลขแล้ว<strong>ไฟล์นี้จะกลายเป็นไฟล์แนบของหนังสือให้เลย ไม่ต้องแนบซ้ำ</strong>
+            — รับ ${esc(ALLOWED_LABEL)} ขนาดไม่เกิน 5MB
+          </div>
+        </div>
         <button class="btn btn-primary" type="submit">ขอเลขหนังสือส่ง</button>
       </form>
     </div>
     <script>
-      document.getElementById('outReqForm').addEventListener('submit', function(e){
+      document.getElementById('outReqForm').addEventListener('submit', async function(e){
         e.preventDefault();
         var btn = e.target.querySelector('[type=submit]');
         var title = document.getElementById('orTitle').value.trim();
         var to = document.getElementById('orTo').value.trim();
         if (!title || !to) { toast('กรุณากรอกเรื่องและปลายทางให้ครบ', 'warning'); return; }
         window.setBtnLoading(btn, 'กำลังส่งคำขอ...');
+        var draft = null;
+        var file = document.getElementById('orFile').files[0];
+        if (file) {
+          if (file.size > 5 * 1024 * 1024) {
+            window.restoreBtn(btn);
+            toast('ร่างหนังสือต้องไม่เกิน 5MB — ถ้าใหญ่กว่านี้ให้ขอเลขก่อน แล้วค่อยแนบที่หน้าหนังสือ', 'warning');
+            return;
+          }
+          try {
+            draft = {
+              fileName: file.name,
+              // มือถือหลายรุ่นไม่บอกชนิดไฟล์ Word/Excel มาให้ ต้องเดาจากนามสกุลเอง (ดู attachMime)
+              fileType: window.attachMime(file.name, file.type),
+              fileDataBase64: await window.fileToBase64(file),
+            };
+          } catch (err) {
+            window.restoreBtn(btn);
+            toast('อ่านไฟล์ที่แนบไม่สำเร็จ กรุณาลองใหม่', 'danger');
+            return;
+          }
+        }
         fetch('/outgoing-requests', {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({
@@ -84,6 +121,7 @@ function requestFormCard(user) {
             secretLevel: document.getElementById('orSecret').value,
             note: document.getElementById('orNote').value.trim(),
             isCircular: document.getElementById('orCircular').checked,
+            draft: draft,
           }),
         }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){
@@ -101,7 +139,8 @@ function requestFormCard(user) {
           .then(function(res){ if (!res.ok) throw new Error(res.d.error); location.reload(); })
           .catch(function(err){ window.restoreBtn(btn); toast(err.message, 'danger'); });
       };
-    </script>`;
+    </script>
+    ${attachMimeScript()}`;
 }
 
 function myRequestsCard(rows) {
@@ -119,6 +158,8 @@ function myRequestsCard(rows) {
         <tbody>${rows.map((r) => `<tr>
           <td>${esc(r.title)}${r.is_circular ? ' <span class="badge badge-info">ว เวียน</span>' : ''}
             <div class="text-muted" style="font-size:.78rem">เรียน ${esc(r.correspondent_name)}</div>
+            ${listRequestDrafts(r.id).map((f) => `<div style="font-size:.78rem">
+              <a href="/outgoing-requests/files/${esc(f.id)}" target="_blank" rel="noopener">📎 ${esc(f.filename)}</a></div>`).join('')}
             ${r.status === 'rejected' && r.reject_reason ? `<div class="text-muted" style="font-size:.78rem">เหตุผล: ${esc(r.reject_reason)}</div>` : ''}</td>
           <td>${statusChip(r)}</td>
           <td>${!r.doc_number_display ? '<span class="text-muted">—</span>'
@@ -167,6 +208,12 @@ router.get('/outgoing-requests', requirePage((ctx) => {
         <tr><td class="text-muted">ฝ่าย</td><td>${esc(r.department_name || '-')}</td></tr>
         <tr><td class="text-muted">ชั้นความเร็ว/ความลับ</td><td>${priorityBadge(r.priority)} ${esc(LABELS.SECRET_LABEL[r.secret_level] || '')}</td></tr>
         ${r.note ? `<tr><td class="text-muted">ข้อความถึงธุรการ</td><td>${esc(r.note)}</td></tr>` : ''}
+        <tr><td class="text-muted" style="white-space:nowrap">ร่างหนังสือ</td><td>${
+          // ต้องได้เห็นตัวหนังสือก่อนกดออกเลข — เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้
+          listRequestDrafts(r.id).map((f) => `<a href="/outgoing-requests/files/${esc(f.id)}" target="_blank" rel="noopener">
+              📎 ${esc(f.filename)}</a> <span class="text-muted" style="font-size:.8rem">(${fmtKb(f.filesize)})</span>`).join('<br/>')
+          || '<span class="text-muted">ผู้ขอไม่ได้แนบร่างมา</span>'
+        }</td></tr>
       </table>
       <div class="field" style="margin-top:.6rem">
         <label class="check-inline" style="display:block">
@@ -315,6 +362,36 @@ router.get('/outgoing-requests', requirePage((ctx) => {
   html(ctx, 200, layout({ user: ctx.user, title: 'คำขอเลขหนังสือส่ง', path: '/outgoing-requests', content }));
 }));
 
+/**
+ * เปิด/ดาวน์โหลดร่างที่แนบมากับคำขอ
+ *
+ * สิทธิ์: เจ้าของคำขอ กับเจ้าหน้าที่ที่ออกเลขได้ (ธุรการ/ผู้ดูแล) เท่านั้น — ร่างหนังสือเป็นเนื้อหาของ
+ * หนังสือราชการที่ยังไม่ได้ออกเลขด้วยซ้ำ ไม่ใช่ของที่ทุกคนที่ล็อกอินได้ควรเปิดดูได้
+ */
+router.get('/outgoing-requests/files/:fileId', requirePage((ctx) => {
+  // ตอบเป็นหน้าเว็บเวลาเปิดไม่ได้ ไม่ใช่โยน error ดิบ — ผู้ใช้กดลิงก์นี้จากหน้าเว็บโดยตรง
+  const deny = (status, message) => html(ctx, status, layout({
+    user: ctx.user, title: 'เปิดไฟล์ไม่ได้', path: '/outgoing-requests', content: emptyState('📄', message),
+  }));
+  const file = getRequestDraft(ctx.params.fileId);
+  if (!file) return deny(404, 'ไม่พบไฟล์ร่างนี้ — อาจถูกย้ายเข้าหนังสือหลังออกเลขไปแล้ว');
+  const req = db.prepare('SELECT requester_id FROM outgoing_number_requests WHERE id = ?').get(file.request_id);
+  if (!req) return deny(404, 'ไม่พบคำขอของไฟล์นี้');
+  if (req.requester_id !== ctx.user.id && !canIssueOutgoingNumber(ctx.user)) {
+    return deny(403, 'เปิดดูร่างหนังสือได้เฉพาะผู้ขอและเจ้าหน้าที่ธุรการเท่านั้น');
+  }
+  const buf = Buffer.from(file.content);
+  ctx.res.writeHead(200, {
+    'Content-Type': file.mime_type,
+    'Content-Length': buf.length,
+    // PDF/รูป เปิดดูในแท็บได้เลย ส่วน Word/Excel เบราว์เซอร์เปิดเองไม่ได้ ต้องให้ดาวน์โหลด
+    'Content-Disposition': contentDispositionHeader(
+      file.filename, fallbackFilename(file.mime_type), VIEWABLE_MIME.has(file.mime_type) ? 'inline' : 'attachment',
+    ),
+  });
+  ctx.res.end(buf);
+}));
+
 // ---------------- API ----------------
 
 router.post('/outgoing-requests', requireApi(async (ctx) => {
@@ -322,12 +399,12 @@ router.post('/outgoing-requests', requireApi(async (ctx) => {
     title: ctx.body?.title, correspondentName: ctx.body?.correspondentName,
     departmentId: ctx.body?.departmentId, priority: ctx.body?.priority,
     secretLevel: ctx.body?.secretLevel, note: ctx.body?.note,
-    isCircular: ctx.body?.isCircular === true, requester: ctx.user,
+    isCircular: ctx.body?.isCircular === true, draft: ctx.body?.draft, requester: ctx.user,
   }));
 }));
 
 router.post('/outgoing-requests/:id/issue', requireApi(async (ctx) => {
-  json(ctx, 200, issueOutgoingNumber({
+  json(ctx, 200, await issueOutgoingNumber({
     requestId: ctx.params.id, customDocNumber: ctx.body?.customDocNumber,
     isCircular: ctx.body?.isCircular, actorUser: ctx.user,
   }));

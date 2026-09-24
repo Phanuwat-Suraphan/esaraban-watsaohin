@@ -147,6 +147,8 @@ export function dueCell(dateStr, { long = false } = {}) {
   return `${esc(text)}<div style="margin-top:.2rem">${dueChip(n)}</div>`;
 }
 
+import { DISPATCH_METHODS as DISPATCH_LABEL } from './services/dispatch.js';
+
 const PRIORITY_LABEL = { normal: 'ปกติ', urgent: 'ด่วน', very_urgent: 'ด่วนมาก', most_urgent: 'ด่วนที่สุด' };
 const PRIORITY_BADGE = { normal: 'badge-muted', urgent: 'badge-warning', very_urgent: 'badge-danger', most_urgent: 'badge-danger' };
 const SECRET_LABEL = { normal: 'ปกติ', internal: 'ภายใน', secret: 'ลับ', top_secret: 'ลับมาก' };
@@ -169,7 +171,9 @@ export function secretBadge(s) {
 export function statusBadge(s) {
   return `<span class="badge ${STATUS_BADGE[s] || 'badge-muted'}">${esc(STATUS_LABEL[s] || s)}</span>`;
 }
-export const LABELS = { PRIORITY_LABEL, SECRET_LABEL, STATUS_LABEL };
+// วิธีส่งหนังสือออก — ป้ายภาษาไทยอยู่ที่ services/dispatch.js (ที่เดียว) แล้วยกมาไว้ในชุด LABELS
+// เพื่อให้ทะเบียน/ไฟล์ Excel/หน้าพิมพ์ ใช้คำเดียวกันกับที่หน้าเว็บให้เลือก
+export const LABELS = { PRIORITY_LABEL, SECRET_LABEL, STATUS_LABEL, DISPATCH_LABEL };
 
 /**
  * แถวตารางที่กดแล้วเปิดรายการนั้น

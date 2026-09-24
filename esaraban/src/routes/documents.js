@@ -31,6 +31,7 @@ import {
   pendingChaseGroups,
 } from '../services/documentQuery.js';
 import { buildXlsx } from '../services/xlsxWrite.js';
+import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, countUnsentOutgoing } from '../services/dispatch.js';
 import {
   UPLOAD_DIR, FILE_KINDS, attachMimeScript, VIEWABLE_MIME, isImageMime, ALLOWED_MIME, ACCEPT_ATTR, ALLOWED_LABEL,
   STAMPABLE_MIME, MAX_FILE_BYTES, MAX_ATTACH_FILES, ATTACHMENT_ORDER, EMPTY_UPLOAD_MESSAGE,
@@ -312,6 +313,10 @@ router.get('/documents', requirePage((ctx) => {
               <input type="checkbox" name="hasFile" value="1" ${f.hasFile ? 'checked' : ''} />
               เฉพาะที่มีไฟล์แนบแล้ว
             </label>
+            ${direction === 'outgoing' ? `<label class="check-inline">
+              <input type="checkbox" name="unsent" value="1" ${f.unsent ? 'checked' : ''} />
+              เฉพาะที่ยังไม่ได้บันทึกการส่ง
+            </label>` : ''}
           </div>
         </div>
         <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
@@ -324,6 +329,9 @@ router.get('/documents', requirePage((ctx) => {
     </div>`;
 
   const canIssueOutgoing = canIssueOutgoingNumber(ctx.user);
+  // "ออกเลขแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" — ฉบับที่ยังไม่ได้บันทึกการส่งคือกองที่ธุรการต้องตามเคลียร์
+  const unsentCount = direction === 'outgoing' && canRecordDispatch(ctx.user)
+    ? countUnsentOutgoing(visibleDocumentsSqlFilter(ctx.user).sql, visibleDocumentsSqlFilter(ctx.user).params) : 0;
 
   // หนังสือเข้าที่ลงทะเบียนวันนี้ — ใช้ทำปุ่ม "ส่งสรุปวันนี้เข้าไลน์" ข้อความเดียวจบ แทนการแชร์ทีละฉบับ
   // ซึ่งวันที่มีหนังสือเข้าหกฉบับจะกลายเป็นยิงเข้ากลุ่มหกข้อความติดกัน จนคนในกลุ่มเลื่อนผ่าน
@@ -371,6 +379,8 @@ router.get('/documents', requirePage((ctx) => {
           copyLabel: `📋 คัดลอกสรุปหนังสือเข้าวันนี้ (${todayIncoming.length})`,
           title: 'สรุปหนังสือเข้าของวันนี้เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
         }) : ''}
+        ${direction === 'outgoing' && unsentCount && !f.unsent ? `<a class="btn btn-outline" href="/documents?direction=outgoing&unsent=1"
+          title="หนังสือส่งที่ออกเลขทะเบียนแล้วแต่ยังไม่ได้บันทึกว่าส่งออกไปเมื่อไร ด้วยวิธีใด">📮 ยังไม่ได้บันทึกการส่ง (${fmtCount(unsentCount)})</a>` : ''}
         <a class="btn btn-outline" href="/documents/bulk?direction=${direction}">📎 ลงหลายฉบับรวดเดียว</a>
         <!-- ทะเบียนหนังสือส่งเป็นสมุดของธุรการ ครูที่จะส่งหนังสือออกต้อง "ขอเลข" ไม่ใช่กดออกเลขเอง
              (ดูเหตุผลเต็มใน services/outgoingRequest.js) ปุ่มขอเลขจึงเป็นปุ่มหลักของหน้าหนังสือออก
@@ -986,7 +996,9 @@ function registerColumns(direction) {
   const isIn = direction === 'incoming';
   const isAll = direction === 'all';
   return [
-    { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: isAll ? 17 : 15, get: (d) => d.doc_number_display },
+    // ทะเบียนหนังสือส่งมีคอลัมน์ "การส่ง" เพิ่มมาอีกช่อง ช่องเลขทะเบียนจึงถูกบีบจนเลขขึ้นบรรทัดใหม่
+    // กลางเลข (0003/256 / 9) ทั้งที่เป็นเลขหลักของแถว — กันที่ไว้ให้พอตั้งแต่ต้น
+    { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: isIn ? 15 : 17, get: (d) => d.doc_number_display },
     // "วันที่รับ" อยู่ถัดจากเลขทะเบียนรับทันที ตามแบบทะเบียนหนังสือรับ (แบบที่ 13) ซึ่งจัดสองช่องนี้
     // ไว้เป็นกลุ่ม "ทะเบียนรับ" ด้วยกัน — และเป็นวันที่หนังสือมาถึงจริง ไม่ใช่เวลาที่พิมพ์เข้าระบบ
     // ธุรการลงทะเบียนย้อนหลังเป็นชุดบ่อยมาก ถ้าใช้ created_at วันที่ในทะเบียนราชการจะผิดทุกฉบับ
@@ -1004,6 +1016,14 @@ function registerColumns(direction) {
     { head: 'การปฏิบัติ', width: 16, get: (d) => LABELS.STATUS_LABEL[d.status] || d.status },
     { head: 'ครบกำหนด', width: 13, get: (d) => (d.due_date ? fmtThaiDateShort(d.due_date) : '') },
     ...(isIn ? [] : [{ head: 'วันที่ลงทะเบียน', width: 15, get: (d) => fmtThaiDateShort(d.created_at) }]),
+    // การส่งออกจริง — ระเบียบฯ ใช้ช่อง "หมายเหตุ" ของทะเบียนหนังสือส่งบันทึกวิธีส่งอยู่แล้ว
+    // รวมวันที่กับวิธีไว้ช่องเดียวเพราะกระดาษ A4 แนวนอนมีที่จำกัด และสองค่านี้อ่านคู่กันเสมอ
+    ...(isIn ? [] : [{
+      head: 'การส่ง', width: 20, text: true,
+      get: (d) => (d.sent_at
+        ? `${fmtThaiDateShort(d.sent_at)} · ${LABELS.DISPATCH_LABEL[d.sent_method] || d.sent_method || ''}${d.sent_note ? ` (${d.sent_note})` : ''}`
+        : 'ยังไม่ได้ส่ง'),
+    }]),
     // อยู่ท้ายสุดเพราะไม่ใช่คอลัมน์ตามแบบทะเบียนราชการ แต่จำเป็นเวลาใช้ทะเบียนที่พิมพ์/ส่งออกไปแล้ว
     // ตามหาไฟล์สแกน — ไม่ต้องเปิดระบบทีละฉบับเพื่อดูว่าฉบับไหนสแกนไว้แล้วและฉบับไหนยังค้าง
     { head: 'ไฟล์แนบ', width: 11, get: (d) => (d.attachment_count ? `${d.attachment_count} ไฟล์` : '-') },
@@ -1922,6 +1942,83 @@ router.get('/documents/:id', requirePage((ctx) => {
           : daysUntil(doc.due_date) === 0 ? ' (วันนี้)' : ` (อีก ${daysUntil(doc.due_date)} วัน)`}</span>`
     : '';
 
+  // ---------------- การส่งออกจริงของหนังสือส่ง ----------------
+  //
+  // "ออกเลขทะเบียนแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" หนังสืออาจยังรอ ผอ. ลงนาม รอซอง รอไปรษณีย์รอบบ่าย
+  // เดิมไม่มีที่ไหนในระบบบอกได้เลยว่าฉบับไหนส่งไปแล้ว ธุรการต้องจำเอง และตอบปลายทางที่โทรมาถามว่า
+  // "ส่งมาหรือยัง" ไม่ได้ ทั้งที่เป็นคำถามที่เจอบ่อยที่สุดเกี่ยวกับหนังสือส่ง
+  const canDispatch = canRecordDispatch(ctx.user) && !['voided', 'destroyed'].includes(doc.status);
+  const sentByName = doc.sent_by
+    ? (() => {
+      const u = db.prepare('SELECT prefix, first_name, last_name FROM users WHERE id = ?').get(doc.sent_by);
+      return u ? `${u.prefix || ''}${u.first_name} ${u.last_name}`.trim() : '';
+    })()
+    : '';
+  const dispatchCard = doc.direction !== 'outgoing' ? '' : `
+        <div class="card" id="dispatchCard">
+          <div class="card-header"><h3 class="mt-0">📮 การส่งออก</h3>
+            ${doc.sent_at
+              ? `<span class="badge badge-success">ส่งแล้ว ${esc(fmtThaiDateShort(doc.sent_at))}</span>`
+              : '<span class="badge badge-warning">ยังไม่ได้บันทึกการส่ง</span>'}</div>
+          ${doc.sent_at ? `<table class="table-plain" style="min-width:0"><tbody>
+            <tr><td class="text-muted" style="white-space:nowrap">วันที่ส่ง</td><td>${esc(fmtThaiDateLong(doc.sent_at))}</td></tr>
+            <tr><td class="text-muted">วิธีส่ง</td><td>${esc(LABELS.DISPATCH_LABEL[doc.sent_method] || doc.sent_method || '-')}</td></tr>
+            ${doc.sent_note ? `<tr><td class="text-muted">หมายเหตุ</td><td>${esc(doc.sent_note)}</td></tr>` : ''}
+            ${sentByName ? `<tr><td class="text-muted">ผู้บันทึก</td><td>${esc(sentByName)}</td></tr>` : ''}
+          </tbody></table>` : `<p class="text-muted" style="margin:.2rem 0 0;font-size:.88rem">
+            ออกเลขทะเบียนแล้วไม่ได้แปลว่าส่งออกไปแล้ว — บันทึกไว้ว่าส่งเมื่อไรด้วยวิธีใด จะได้ตอบได้ทันที
+            เวลาปลายทางโทรมาถามว่าส่งไปหรือยัง และตามเลขพัสดุย้อนหลังได้
+          </p>`}
+          ${canDispatch ? `
+          <details class="field-more" style="margin-top:.6rem"${doc.sent_at ? '' : ' open'}>
+            <summary>${doc.sent_at ? '✏️ แก้ไขบันทึกการส่ง' : '📮 บันทึกการส่ง'}</summary>
+            <div class="form-grid cols-2" style="margin-top:.7rem">
+              <div class="field">
+                <label for="sentDate">วันที่ส่ง</label>
+                <input type="date" id="sentDate" value="${esc(doc.sent_at || todayInBangkok())}" />
+              </div>
+              <div class="field">
+                <label for="sentMethod">วิธีส่ง</label>
+                <select id="sentMethod">
+                  ${Object.entries(DISPATCH_METHODS).map(([k, v]) =>
+                    `<option value="${k}"${doc.sent_method === k ? ' selected' : ''}>${esc(v)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="sentNote">เลขพัสดุ / ผู้รับ / หมายเหตุ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+              <input type="text" id="sentNote" maxlength="200" value="${esc(doc.sent_note || '')}" placeholder="เช่น EX123456789TH หรือ มอบคุณครูสมชายนำไปส่ง" />
+            </div>
+            <div class="chip-row">
+              <button class="btn btn-primary btn-sm" type="button" onclick="saveDispatch(this)">บันทึกการส่ง</button>
+              ${doc.sent_at ? '<button class="btn btn-outline btn-sm" type="button" onclick="clearDispatchRecord(this)">ล้างบันทึกการส่ง</button>' : ''}
+            </div>
+          </details>
+          <script>
+            window.saveDispatch = function (btn) {
+              window.setBtnLoading(btn, 'กำลังบันทึก...');
+              window.postJson('/documents/${doc.id}/dispatch', {
+                sentDate: document.getElementById('sentDate').value,
+                method: document.getElementById('sentMethod').value,
+                note: document.getElementById('sentNote').value.trim(),
+              }).then(function (d) {
+                if (d === null) { window.restoreBtn(btn); return; }
+                window.toast('บันทึกการส่งแล้ว', 'success');
+                setTimeout(function () { location.reload(); }, 600);
+              }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+            };
+            window.clearDispatchRecord = function (btn) {
+              if (!confirm('ล้างบันทึกการส่งของหนังสือฉบับนี้? (ทะเบียนจะกลับไปเป็น "ยังไม่ได้ส่ง")')) return;
+              window.setBtnLoading(btn, 'กำลังล้าง...');
+              window.postJson('/documents/${doc.id}/dispatch/clear', {}).then(function (d) {
+                if (d === null) { window.restoreBtn(btn); return; }
+                window.toast('ล้างบันทึกการส่งแล้ว', 'success');
+                setTimeout(function () { location.reload(); }, 600);
+              }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+            };
+          </script>` : ''}
+        </div>`;
+
   const content = `
     ${ctx.query.created ? (canShareToLine(doc) ? `<div class="alert alert-success">
       <p style="margin:0 0 .5rem"><strong>✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</strong></p>
@@ -2059,6 +2156,8 @@ router.get('/documents/:id', requirePage((ctx) => {
           ${doc.void_reason ? `<div class="alert alert-danger">ยกเลิกแล้ว: ${esc(doc.void_reason)}</div>` : ''}
           ${doc.status === 'destroyed' ? `<div class="alert alert-danger">🗄️ ทำลายแล้วตามมติคณะกรรมการทำลายหนังสือ เมื่อ ${fmtDate(doc.destroyed_at)} (ไฟล์แนบถูกลบออกจากระบบถาวร รายการทะเบียน/เลขที่ยังคงอยู่เป็นหลักฐาน)</div>` : ''}
         </div>
+
+        ${dispatchCard}
 
         <div class="card">
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
@@ -3103,6 +3202,22 @@ router.post('/documents/:id/register-info', requireApi((ctx) => {
     detail: { before: Object.fromEntries(Object.keys(patch).map((k) => [k, before[k]])), after: patch },
   });
   json(ctx, 200, { ok: true, changed: true });
+}));
+
+// บันทึก/แก้ไขการส่งออกจริงของหนังสือส่ง (ดูเหตุผลใน services/dispatch.js)
+router.post('/documents/:id/dispatch', requireApi((ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  json(ctx, 200, recordDispatch({
+    documentId: doc.id, sentDate: ctx.body?.sentDate, method: ctx.body?.method,
+    note: ctx.body?.note, actorUser: ctx.user,
+  }));
+}));
+
+router.post('/documents/:id/dispatch/clear', requireApi((ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  json(ctx, 200, clearDispatch({ documentId: doc.id, actorUser: ctx.user }));
 }));
 
 router.post('/documents/:id/archive', requireApi(async (ctx) => {

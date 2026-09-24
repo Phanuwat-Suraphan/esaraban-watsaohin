@@ -7643,6 +7643,113 @@ describe('รายงาน CSV: คอลัมน์วันที่ต้�
   });
 });
 
+// "ออกเลขทะเบียนแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" — หนังสืออาจยังรอ ผอ. ลงนาม รอซอง รอไปรษณีย์รอบบ่าย
+// เดิมไม่มีที่ไหนในระบบบอกได้ว่าฉบับไหนส่งไปแล้ว ธุรการต้องจำเอง และตอบปลายทางที่โทรมาถามไม่ได้
+describe('บันทึกการส่งหนังสือออก', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const outDoc = (over = {}) => makeDoc({ direction: 'outgoing', title: 'หนังสือส่งสำหรับทดสอบการส่งออก', ...over });
+  const row = (id) => db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+
+  test('ธุรการบันทึกวันที่ส่ง วิธีส่ง และเลขพัสดุได้ และขึ้นในหน้าหนังสือ', async () => {
+    const doc = outDoc();
+    const res = await dispatchPost(reg(), `/documents/${doc.id}/dispatch`, {
+      sentDate: '2026-10-05', method: 'post_registered', note: 'EX123456789TH',
+    });
+    assert.equal(res.status, 200, res.body);
+
+    const after = row(doc.id);
+    assert.equal(after.sent_at, '2026-10-05');
+    assert.equal(after.sent_method, 'post_registered');
+    assert.equal(after.sent_note, 'EX123456789TH');
+    assert.equal(after.sent_by, seed.userIds.reg001, 'ต้องรู้ว่าใครเป็นคนบันทึก');
+
+    const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+    assert.match(page.body, /ไปรษณีย์ลงทะเบียน/, 'หน้าหนังสือต้องบอกวิธีส่ง');
+    assert.match(page.body, /EX123456789TH/, 'ต้องเห็นเลขพัสดุไว้ตามของ');
+    // การแก้ทะเบียนราชการต้องมีบันทึกเสมอว่าใครทำอะไร
+    const log = db.prepare(`SELECT user_id FROM audit_logs WHERE record_id = ? AND action = 'document_dispatched' LIMIT 1`).get(doc.id);
+    assert.ok(log, 'ต้องบันทึกไว้ว่าใครบันทึกการส่ง');
+  });
+
+  test('หนังสือรับไม่มีการส่งออก และครูทั่วไปบันทึกแทนธุรการไม่ได้', async () => {
+    const incoming = makeDoc({ title: 'หนังสือรับที่ไม่ควรมีบันทึกการส่ง' });
+    const bad = await dispatchPost(reg(), `/documents/${incoming.id}/dispatch`, { sentDate: '2026-10-05', method: 'by_hand' });
+    assert.equal(bad.status, 400, 'หนังสือรับต้องบันทึกการส่งไม่ได้');
+
+    const doc = outDoc();
+    const denied = await dispatchPost(teacher(), `/documents/${doc.id}/dispatch`, { sentDate: '2026-10-05', method: 'by_hand' });
+    assert.equal(denied.status, 403, 'ทะเบียนหนังสือส่งเป็นสมุดของธุรการ');
+    assert.equal(row(doc.id).sent_at, null);
+  });
+
+  test('ค่าที่ใช้ไม่ได้ต้องถูกปฏิเสธ ไม่ใช่บันทึกขยะลงทะเบียน', async () => {
+    const doc = outDoc();
+    for (const [label, body] of [
+      ['ไม่ได้เลือกวิธีส่ง', { sentDate: '2026-10-05' }],
+      ['วิธีส่งที่ไม่มีอยู่จริง', { sentDate: '2026-10-05', method: 'ส่งนกพิราบ' }],
+      ['วันที่มั่ว', { sentDate: '9999-99-99', method: 'by_hand' }],
+      ['หมายเหตุยาวเกิน', { sentDate: '2026-10-05', method: 'by_hand', note: 'ก'.repeat(500) }],
+    ]) {
+      const res = await dispatchPost(reg(), `/documents/${doc.id}/dispatch`, body);
+      assert.ok(res.status >= 400 && res.status < 500, `${label} ควรถูกปฏิเสธ — ได้ ${res.status}`);
+    }
+    assert.equal(row(doc.id).sent_at, null, 'ไม่มีอะไรถูกบันทึกลงไปเลย');
+  });
+
+  test('บันทึกผิดฉบับต้องล้างออกได้ ทะเบียนจะได้ตรงความจริง', async () => {
+    const doc = outDoc();
+    await dispatchPost(reg(), `/documents/${doc.id}/dispatch`, { sentDate: '2026-10-05', method: 'by_hand' });
+    assert.ok(row(doc.id).sent_at);
+    const res = await dispatchPost(reg(), `/documents/${doc.id}/dispatch/clear`, {});
+    assert.equal(res.status, 200, res.body);
+    const after = row(doc.id);
+    assert.equal(after.sent_at, null);
+    assert.equal(after.sent_method, null);
+    assert.equal(after.sent_note, null);
+  });
+
+  test('ทะเบียนหนังสือส่ง (หน้าพิมพ์และ Excel) มีคอลัมน์การส่ง', async () => {
+    const sent = outDoc({ title: 'หนังสือส่งที่ส่งไปแล้วสำหรับทดสอบทะเบียน' });
+    await dispatchPost(reg(), `/documents/${sent.id}/dispatch`, { sentDate: '2026-10-05', method: 'post_registered', note: 'EX999' });
+    outDoc({ title: 'หนังสือส่งที่ยังไม่ได้ส่งสำหรับทดสอบทะเบียน' });
+
+    const print = await dispatchGet(reg(), '/documents/register', { direction: 'outgoing' });
+    assert.match(print.body, /<th>การส่ง<\/th>/, 'ทะเบียนหนังสือส่งต้องมีคอลัมน์การส่ง');
+    assert.match(print.body, /5 ต\.ค\. 2569 · ไปรษณีย์ลงทะเบียน \(EX999\)/, 'ต้องพิมพ์วันที่ วิธีส่ง และเลขพัสดุ');
+    assert.match(print.body, /ยังไม่ได้ส่ง/, 'ฉบับที่ยังไม่ได้ส่งต้องเห็นชัดในทะเบียน');
+    // ทะเบียนหนังสือรับไม่มีการส่งออก จึงต้องไม่มีคอลัมน์นี้
+    const incomingPrint = await dispatchGet(reg(), '/documents/register', { direction: 'incoming' });
+    assert.ok(!/<th>การส่ง<\/th>/.test(incomingPrint.body), 'ทะเบียนหนังสือรับต้องไม่มีคอลัมน์การส่ง');
+
+    const sheet = readWorkbook((await dispatchGet(reg(), '/documents/export.xlsx', { direction: 'outgoing' })).buffer)[0];
+    assert.ok(sheet.rows[0].includes('การส่ง'), `ไฟล์ Excel ต้องมีคอลัมน์การส่งด้วย — ได้ ${sheet.rows[0].join(', ')}`);
+  });
+
+  test('กรอง "ยังไม่ได้บันทึกการส่ง" ได้ และมีปุ่มลัดบอกจำนวน', async () => {
+    const unsent = outDoc({ title: 'หนังสือส่งที่ยังไม่ได้ส่งและต้องขึ้นในตัวกรอง' });
+    const sent = outDoc({ title: 'หนังสือส่งที่ส่งแล้วและต้องไม่ขึ้นในตัวกรอง' });
+    await dispatchPost(reg(), `/documents/${sent.id}/dispatch`, { sentDate: '2026-10-05', method: 'email' });
+
+    const filtered = await dispatchGet(reg(), '/documents', { direction: 'outgoing', unsent: '1' });
+    assert.ok(filtered.body.includes('หนังสือส่งที่ยังไม่ได้ส่งและต้องขึ้นในตัวกรอง'), 'ฉบับที่ยังไม่ได้ส่งต้องอยู่ในผลกรอง');
+    assert.ok(!filtered.body.includes('หนังสือส่งที่ส่งแล้วและต้องไม่ขึ้นในตัวกรอง'), 'ฉบับที่ส่งแล้วต้องหลุดออกจากผลกรอง');
+
+    const page = await dispatchGet(reg(), '/documents', { direction: 'outgoing' });
+    assert.match(page.body, /ยังไม่ได้บันทึกการส่ง \([\d,]+\)/, 'ต้องมีปุ่มลัดพร้อมจำนวนบนหน้าทะเบียนหนังสือส่ง');
+    // ครูทั่วไปบันทึกการส่งไม่ได้ จึงไม่ต้องมีปุ่มนี้มากวน
+    const teacherView = await dispatchGet(teacher(), '/documents', { direction: 'outgoing' });
+    assert.ok(!/ยังไม่ได้บันทึกการส่ง \(/.test(teacherView.body), 'ครูต้องไม่เห็นปุ่มลัดนี้');
+  });
+
+  test('หนังสือที่ยกเลิก/ทำลายแล้วต้องบันทึกการส่งไม่ได้ — ทะเบียนจะขัดกันเอง', async () => {
+    const doc = outDoc({ title: 'หนังสือส่งที่จะถูกยกเลิก' });
+    db.prepare("UPDATE documents SET status = 'voided' WHERE id = ?").run(doc.id);
+    const res = await dispatchPost(reg(), `/documents/${doc.id}/dispatch`, { sentDate: '2026-10-05', method: 'by_hand' });
+    assert.equal(res.status, 409);
+  });
+});
+
 describe('ส่งออกทะเบียนหนังสือ', () => {
   const reg = () => loadUserForTest(seed.userIds.reg001);
   const outsider = () => loadUserForTest(seed.userIds.teacher001);

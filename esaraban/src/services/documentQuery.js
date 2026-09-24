@@ -69,6 +69,9 @@ export function buildDocumentQuery(user, query = {}) {
     // "เฉพาะที่มีไฟล์แนบ" — ธุรการตามหา "ตัวไฟล์สแกน" ไม่ใช่แค่แถวในทะเบียน หนังสือที่ลงเลขไว้ก่อน
     // แล้วยังไม่ได้สแกนจึงเป็นสิ่งที่อยากกรองออก (หรือกรองเข้ามาเพื่อไล่ตามให้ครบ)
     hasFile: query.hasFile === '1',
+    // "ยังไม่ได้ส่ง" — ออกเลขทะเบียนแล้วไม่ได้แปลว่าส่งออกไปแล้ว นี่คือรายการที่ธุรการต้องตามเคลียร์
+    // (ดู services/dispatch.js) ใช้ได้กับทะเบียนหนังสือส่งเท่านั้น หนังสือรับไม่มีการส่งออก
+    unsent: query.unsent === '1',
   };
   if (f.year) { where.push('d.year_be = :yearBe'); params.yearBe = f.year; }
   if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
@@ -83,6 +86,9 @@ export function buildDocumentQuery(user, query = {}) {
   // ไม่นับไฟล์ที่ถูกทำลายตามระเบียบไปแล้ว — ตัวไฟล์ไม่มีอยู่จริงแล้ว ถ้ายังนับอยู่ ตัวกรอง "เฉพาะที่มีไฟล์แนบ"
   // จะพาไปเจอหนังสือที่เปิดไฟล์ไม่ได้ ซึ่งตรงข้ามกับที่ตัวกรองนี้มีไว้เพื่ออะไร
   if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id AND ax.destroyed_at IS NULL)');
+  if (f.unsent) {
+    where.push("d.direction = 'outgoing' AND d.sent_at IS NULL AND d.status NOT IN ('voided', 'destroyed')");
+  }
   if (f.overdue) {
     // "เลยกำหนด" ต้องนับจากวันนี้ตามเวลาไทย และนับเฉพาะเรื่องที่ยังไม่ปิด
     where.push(`d.due_date IS NOT NULL AND d.due_date < :today
@@ -185,6 +191,7 @@ export function describeFilters({ q, statusFilter, f }) {
   if (f.to) parts.push(`ถึง ${fmtThaiDateLong(f.to)}`);
   if (f.year) parts.push(`ปี พ.ศ. ${f.year}`);
   if (f.overdue) parts.push('เฉพาะที่เลยกำหนดและยังไม่ปิด');
+  if (f.unsent) parts.push('เฉพาะที่ยังไม่ได้บันทึกการส่ง');
   return parts.join(' · ');
 }
 

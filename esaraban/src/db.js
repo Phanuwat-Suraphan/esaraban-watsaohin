@@ -300,6 +300,12 @@ export function migrate() {
     due_date TEXT,
     created_by TEXT NOT NULL REFERENCES users(id),
     void_reason TEXT,
+    -- การส่งออกจริงของหนังสือส่ง: ออกเลขทะเบียนแล้วไม่ได้แปลว่าส่งออกไปแล้ว ธุรการต้องรู้ว่าฉบับไหน
+    -- ยังไม่ได้ส่ง และฉบับที่ส่งแล้วส่งด้วยวิธีใด (ไปรษณีย์ลงทะเบียนมีเลขพัสดุให้ตามได้ด้วย)
+    sent_at TEXT,          -- วันที่ส่งออกจริง (YYYY-MM-DD) NULL = ยังไม่ได้บันทึกการส่ง
+    sent_method TEXT,      -- วิธีส่ง (ดู DISPATCH_METHODS)
+    sent_note TEXT,        -- เลขพัสดุ/ผู้รับ/หมายเหตุการส่ง
+    sent_by TEXT REFERENCES users(id),
     -- อายุการเก็บ ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ หมวด 3
     retention_class TEXT NOT NULL DEFAULT 'normal_10y', -- normal_10y | permanent | routine_1y | financial_5y
     retention_until TEXT, -- วันครบกำหนดเก็บ (NULL = permanent เก็บตลอดไป)
@@ -809,6 +815,13 @@ export function migrate() {
   const documentCols = db.prepare("PRAGMA table_info(documents)").all().map((c) => c.name);
   if (!documentCols.includes('is_circular')) {
     db.exec('ALTER TABLE documents ADD COLUMN is_circular INTEGER NOT NULL DEFAULT 0');
+  }
+  // บันทึกการส่งออก — ฐานข้อมูลที่ deploy ไปแล้วยังไม่มีคอลัมน์ชุดนี้
+  if (!documentCols.includes('sent_at')) {
+    db.exec('ALTER TABLE documents ADD COLUMN sent_at TEXT');
+    db.exec('ALTER TABLE documents ADD COLUMN sent_method TEXT');
+    db.exec('ALTER TABLE documents ADD COLUMN sent_note TEXT');
+    db.exec('ALTER TABLE documents ADD COLUMN sent_by TEXT REFERENCES users(id)');
   }
   const outReqCols = db.prepare("PRAGMA table_info(outgoing_number_requests)").all().map((c) => c.name);
   if (outReqCols.length && !outReqCols.includes('is_circular')) {

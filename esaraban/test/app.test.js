@@ -1548,6 +1548,38 @@ describe('workflow: กรณีที่ทำให้เรื่องค้
       assert.throws(fn, /ถูกลบออกจากระบบไปแล้ว/, `ปุ่ม "${ชื่อ}" ยังไม่ได้จัดการกรณีเอกสารถูกลบ`);
     }
   });
+
+  // ผู้ใช้แจ้งเข้ามาเอง: "แอดมินลบแล้วงานของฉันยังอยู่" — ลบเอกสารเป็น soft-delete (ตั้ง deleted_at)
+  // แต่หน้า "งานของฉัน" กับตัวนับบนแดชบอร์ดนับจาก workflow_steps ตรงๆ โดยไม่ได้กรองเอกสารที่ถูกลบ
+  // ครูจึงยังเห็นงานค้างอยู่ กดเข้าไปก็เจอ "ไม่พบเอกสาร" แล้วเคลียร์ทิ้งเองก็ไม่ได้ ค้างอยู่อย่างนั้นถาวร
+  test('แอดมินลบเอกสารแล้ว งานนั้นต้องหายจาก "งานของฉัน" และตัวนับบนแดชบอร์ดด้วย', async () => {
+    const title = 'หนังสือที่แอดมินจะลบทิ้งระหว่างที่ยังค้างอยู่ที่ครู';
+    const doc = makeDoc({ title });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+
+    const teacher = () => loadUserForTest(seed.userIds.teacher001);
+    const countOnDash = async () => {
+      const body = (await dispatchGet(teacher(), '/', {})).body;
+      return Number((/<div class="kpi-value">(\d+)<\/div><div class="kpi-label">งานรอฉันดำเนินการ/.exec(body) || [, '0'])[1]);
+    };
+    const before = await countOnDash();
+    assert.ok((await dispatchGet(teacher(), '/tasks', {})).body.includes(title), 'ตั้งต้นต้องเห็นงานนี้ก่อน');
+    assert.ok(before >= 1, 'ตั้งต้นตัวนับต้องมีอย่างน้อยหนึ่ง');
+
+    await forceDeleteDocument({ documentId: doc.id, reason: 'ทดสอบว่าหายจากงานของฉันจริง', actorUser: adminUser });
+
+    const tasks = await dispatchGet(teacher(), '/tasks', {});
+    assert.ok(!tasks.body.includes(title), 'หน้างานของฉันต้องไม่เหลือเอกสารที่ถูกลบไปแล้ว');
+    const dash = await dispatchGet(teacher(), '/', {});
+    assert.ok(!dash.body.includes(title), 'การ์ด "งานของฉัน" บนแดชบอร์ดก็ต้องไม่เหลือ');
+    assert.equal(await countOnDash(), before - 1, 'ตัวนับ "งานรอฉันดำเนินการ" ต้องลดลงด้วย ไม่ใช่ค้างเลขเดิมไว้');
+
+    // การแจ้งเตือนเก่ายังอยู่ได้ (เป็นประวัติ) แต่ปุ่ม "เปิด" ต้องไม่พาไปหน้า "ไม่พบเอกสาร" เฉยๆ
+    const notif = await dispatchGet(teacher(), '/notifications', {});
+    assert.ok(!new RegExp(`href="/documents/${doc.id}"`).test(notif.body),
+      'ปุ่มเปิดของการแจ้งเตือนต้องไม่ลิงก์ไปเอกสารที่ถูกลบแล้ว');
+    assert.match(notif.body, /หนังสือถูกลบแล้ว/, 'ต้องบอกตรงๆ ว่าหนังสือถูกลบไปแล้ว');
+  });
 });
 
 describe('เซสชัน: เปลี่ยนรหัสผ่าน/ระงับบัญชี ต้องมีผลกับเครื่องที่เปิดค้างอยู่ทันที', () => {

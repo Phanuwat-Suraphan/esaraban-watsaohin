@@ -121,9 +121,12 @@ function myRequestsCard(rows) {
             <div class="text-muted" style="font-size:.78rem">เรียน ${esc(r.correspondent_name)}</div>
             ${r.status === 'rejected' && r.reject_reason ? `<div class="text-muted" style="font-size:.78rem">เหตุผล: ${esc(r.reject_reason)}</div>` : ''}</td>
           <td>${statusChip(r)}</td>
-          <td>${r.doc_number_display
-            ? `<a href="/documents/${esc(r.doc_id)}"><strong>${esc(r.doc_number_display)}</strong></a>`
-            : '<span class="text-muted">—</span>'}</td>
+          <td>${!r.doc_number_display ? '<span class="text-muted">—</span>'
+            : r.doc_deleted_at
+              // หนังสือถูกลบไปแล้ว ลิงก์จะพาไปหน้า "ไม่พบเอกสาร" เฉยๆ — บอกตรงๆ ดีกว่าให้ครูกดแล้วงง
+              ? `<strong>${esc(r.doc_number_display)}</strong>
+                 <div class="text-muted" style="font-size:.78rem">หนังสือถูกลบออกจากระบบแล้ว</div>`
+              : `<a href="/documents/${esc(r.doc_id)}"><strong>${esc(r.doc_number_display)}</strong></a>`}</td>
           <td class="text-muted" style="font-size:.82rem;white-space:nowrap">${esc(fmtDate(r.created_at))}</td>
           <td>${r.status === 'pending'
             ? `<button class="btn btn-outline btn-sm" type="button" onclick="cancelOutReq('${esc(r.id)}', this)">ถอน</button>` : ''}</td>
@@ -197,7 +200,8 @@ router.get('/outgoing-requests', requirePage((ctx) => {
       <h3 style="margin-top:1.5rem">ออกเลข/ตรวจไปแล้วล่าสุด</h3>
       <div class="card"><table class="table-plain">
         ${reviewed.map((r) => `<tr id="outreq-row-${esc(r.id)}">
-          <td>${r.doc_id ? rowLink(`/documents/${r.doc_id}`, esc(r.title)) : esc(r.title)}
+          <td>${r.doc_id && !r.doc_deleted_at ? rowLink(`/documents/${r.doc_id}`, esc(r.title)) : esc(r.title)}
+            ${r.doc_deleted_at ? '<span class="badge badge-muted">หนังสือถูกลบแล้ว</span>' : ''}
             <div class="text-muted" style="font-size:.78rem">${esc(fullName(r))}</div></td>
           <td>${r.status === 'issued'
             ? `<span class="badge badge-success" id="outnum-${esc(r.id)}">ออกเลข ${esc(r.doc_number_display || '')}</span>`
@@ -206,7 +210,7 @@ router.get('/outgoing-requests', requirePage((ctx) => {
           ${isAdmin ? `<td style="white-space:nowrap">
             <!-- เลขเดิมส่งผ่าน data- ไม่ใช่แปะเป็นสตริงกลาง onclick — เลขทะเบียนมีทั้งเครื่องหมาย
                  คำพูดและอักขระอื่นได้ ซึ่งทำให้ทั้ง attribute แตกแล้วสคริปต์ของหน้าตายทั้งก้อน -->
-            ${r.status === 'issued' && r.doc_id
+            ${r.status === 'issued' && r.doc_id && !r.doc_deleted_at
               ? `<button class="btn btn-outline btn-sm" type="button" data-num="${esc(r.doc_number_display || '')}"
                   onclick="editOutNum('${esc(r.id)}', this)">✏️ แก้เลข</button>` : ''}
             <button class="btn btn-outline btn-sm" type="button"

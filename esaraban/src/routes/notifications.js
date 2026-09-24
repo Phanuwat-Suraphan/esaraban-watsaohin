@@ -25,7 +25,13 @@ const PURGE_DAY_OPTIONS = [30, 90, 180, 365];
 const groupDigits = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 router.get('/notifications', requirePage((ctx) => {
-  const rows = db.prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100').all(ctx.user.id);
+  // ต้องรู้ด้วยว่าเอกสารที่อ้างถึงยังอยู่ไหม — การลบเอกสารเป็น soft-delete แถวแจ้งเตือนจึงยังอยู่
+  // ถ้าปล่อยปุ่ม "เปิด" ไว้ตามเดิม ครูกดแล้วเจอ "ไม่พบเอกสาร" โดยไม่รู้ว่าเกิดอะไรขึ้นกับเรื่องนั้น
+  const rows = db.prepare(`
+    SELECT n.*, d.deleted_at AS doc_deleted_at
+    FROM notifications n LEFT JOIN documents d ON d.id = n.document_id
+    WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 100
+  `).all(ctx.user.id);
   const readCount = db.prepare('SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND is_read = 1').get(ctx.user.id).c;
   const isAdmin = ctx.user.roleCodes.includes('admin');
   const systemTotal = isAdmin ? db.prepare('SELECT COUNT(*) c FROM notifications').get().c : 0;
@@ -50,7 +56,9 @@ router.get('/notifications', requirePage((ctx) => {
             ${
               // link_url ต้องเป็น path ภายในระบบเท่านั้น — ค่านี้มาจากโค้ดฝั่งเซิร์ฟเวอร์อยู่แล้ว แต่กันไว้
               // ไม่ให้กลายเป็นทางเปิด redirect ออกนอกเว็บถ้าวันหลังมีใครส่งค่าจากผู้ใช้เข้ามา
-              n.document_id ? `<a class="btn btn-sm btn-outline" href="/documents/${n.document_id}">เปิด</a>`
+              n.document_id && n.doc_deleted_at
+                ? '<span class="badge badge-muted">หนังสือถูกลบแล้ว</span>'
+                : n.document_id ? `<a class="btn btn-sm btn-outline" href="/documents/${n.document_id}">เปิด</a>`
                 : /^\/[A-Za-z0-9/_-]*$/.test(n.link_url || '') ? `<a class="btn btn-sm btn-outline" href="${esc(n.link_url)}">เปิด</a>` : ''
             }
             ${!n.is_read ? `<button class="btn btn-sm btn-outline" onclick="markRead('${esc(n.id)}', this)">อ่านแล้ว</button>` : ''}

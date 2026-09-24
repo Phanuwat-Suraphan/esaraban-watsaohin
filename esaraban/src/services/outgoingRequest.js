@@ -103,7 +103,9 @@ export function countPendingOutgoingRequests() {
 /** คำขอของคนคนหนึ่ง (ทุกสถานะ) — ครูต้องเห็นว่าของตัวเองถึงไหนแล้ว และได้เลขอะไรมา */
 export function listMyOutgoingRequests(userId, limit = 30) {
   return db.prepare(`
-    SELECT r.*, doc.doc_number_display, doc.id AS doc_id
+    -- doc_deleted_at: หนังสือถูกลบเป็น soft-delete แถวยังอยู่ ถ้าไม่ดูตรงนี้จะทำลิงก์พาไปหน้า
+    -- "ไม่พบเอกสาร" โดยที่ครูไม่รู้ว่าเกิดอะไรขึ้นกับหนังสือของตัวเอง
+    SELECT r.*, doc.doc_number_display, doc.id AS doc_id, doc.deleted_at AS doc_deleted_at
     FROM outgoing_number_requests r
     LEFT JOIN documents doc ON doc.id = r.document_id
     WHERE r.requester_id = ? ORDER BY r.created_at DESC LIMIT ?
@@ -112,7 +114,7 @@ export function listMyOutgoingRequests(userId, limit = 30) {
 
 export function recentReviewedOutgoingRequests(limit = 20) {
   return db.prepare(`
-    SELECT r.*, doc.doc_number_display, doc.id AS doc_id, doc.status AS doc_status,
+    SELECT r.*, doc.doc_number_display, doc.id AS doc_id, doc.status AS doc_status, doc.deleted_at AS doc_deleted_at,
       u.prefix AS requester_prefix, u.first_name AS requester_first, u.last_name AS requester_last,
       rv.first_name AS reviewer_first, rv.last_name AS reviewer_last
     FROM outgoing_number_requests r

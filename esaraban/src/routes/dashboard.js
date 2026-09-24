@@ -16,6 +16,14 @@ const MY_OR_DELEGATED_STEP_SQL = `(ws.assignee_id = :me OR ws.assignee_id IN (
   WHERE delegate_id = :me AND cancelled_at IS NULL AND start_date <= :today AND end_date >= :today
 ))`;
 
+// งานค้างของฉันต้องนับเฉพาะเอกสารที่ยังอยู่จริง — การลบเอกสารเป็น soft-delete (ตั้ง deleted_at ไว้
+// เพื่อไม่ให้ audit_logs/workflow_steps ที่อ้างถึงเสียหาย และไม่ให้เลขทะเบียนถูกนำไปใช้ซ้ำ) ขั้นตอน
+// ที่ค้างอยู่จึงยังอยู่ในตารางตามเดิม ถ้าไม่กรองตรงนี้ ครูจะยังเห็นงานค้างของเอกสารที่ถูกลบไปแล้ว
+// กดเข้าไปก็เจอ "ไม่พบเอกสาร" แล้วเคลียร์ทิ้งเองก็ไม่ได้ ค้างอยู่อย่างนั้นถาวร (ผู้ใช้แจ้งเข้ามาเอง)
+const LIVE_DOC_STEP_SQL = `ws.status = 'waiting' AND EXISTS (
+  SELECT 1 FROM documents d2 WHERE d2.id = ws.document_id AND d2.deleted_at IS NULL
+)`;
+
 // สีวงกลมไอคอนแต่ละใบสื่อความหมาย: primary=เข้า, secret=ออก(สีต่างให้แยกจากเข้าง่ายๆ), warning=รอดำเนินการ,
 // danger=เกินกำหนด, success=เสร็จสิ้น — ไม่ชนกับสีของ badge สถานะเอกสาร (แยกคนละระบบสีกัน)
 //
@@ -127,7 +135,7 @@ router.get('/', requirePage((ctx) => {
 
   const inToday = countVisible("d.direction = 'incoming' AND d.created_at >= :since", { since: todayIso });
   const outToday = countVisible("d.direction = 'outgoing' AND d.created_at >= :since", { since: todayIso });
-  const myTasks = db.prepare(`SELECT COUNT(*) c FROM workflow_steps ws WHERE ${MY_OR_DELEGATED_STEP_SQL} AND status = 'waiting'`).get(scope).c;
+  const myTasks = db.prepare(`SELECT COUNT(*) c FROM workflow_steps ws WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ${LIVE_DOC_STEP_SQL}`).get(scope).c;
   const overdue = countVisible(
     "d.due_date IS NOT NULL AND d.due_date < :today AND d.status NOT IN ('completed','archived','voided','rejected')",
     { today: todayInBangkok() },
@@ -137,7 +145,8 @@ router.get('/', requirePage((ctx) => {
   const myPending = db.prepare(`
     SELECT d.*, dt.name as type_name, ws.id as step_id, (ws.assignee_id != :me) as is_delegated FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
-    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC LIMIT 8
+    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' AND d.deleted_at IS NULL
+    ORDER BY d.priority DESC, ws.created_at ASC LIMIT 8
   `).all(scope);
 
   // กรองซ้ำด้วยตัวตรวจรายฉบับอีกชั้นเหมือนหน้าทะเบียน — การเปิดเผยหนังสือลับเป็นความผิดพลาด
@@ -340,7 +349,8 @@ router.get('/tasks', requirePage((ctx) => {
     SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != :me) as is_delegated
     FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
-    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' ORDER BY d.priority DESC, ws.created_at ASC
+    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' AND d.deleted_at IS NULL
+    ORDER BY d.priority DESC, ws.created_at ASC
     LIMIT ${MAX_TASK_ROWS + 1}
   `).all({ me: ctx.user.id, today: todayInBangkok() });
   // ดึงมาเกินหนึ่งแถวเพื่อรู้ว่าถูกตัดหรือเปล่า แล้วบอกผู้ใช้ตรงๆ — เหมือนหน้า "สรุปงานที่ต้องทำ"

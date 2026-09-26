@@ -1,7 +1,7 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, fmtAgo, fmtThaiDateLong, fmtThaiDateShort, daysUntil, dueCell, stampDateThai, stampTimeThai, priorityBadge, secretBadge, statusBadge, emptyState, fmtCount, LABELS, schoolName, rowAttrs, rowLink } from '../render.js';
 import { requirePage, requireApi } from '../middleware.js';
-import { db, uuid, nowIso, audit, todayInBangkok, bangkokDateSql, RETENTION_LABEL } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok, bangkokDateSql, beYear, RETENTION_LABEL } from '../db.js';
 import {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS,
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, groupStepsByOrder, currentStep, currentStepFor,
@@ -32,6 +32,7 @@ import {
 } from '../services/documentQuery.js';
 import { buildXlsx } from '../services/xlsxWrite.js';
 import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, countUnsentOutgoing } from '../services/dispatch.js';
+import { auditRegister } from '../services/registerAudit.js';
 import {
   UPLOAD_DIR, FILE_KINDS, attachMimeScript, VIEWABLE_MIME, isImageMime, ALLOWED_MIME, ACCEPT_ATTR, ALLOWED_LABEL,
   STAMPABLE_MIME, MAX_FILE_BYTES, MAX_ATTACH_FILES, ATTACHMENT_ORDER, EMPTY_UPLOAD_MESSAGE,
@@ -326,6 +327,9 @@ router.get('/documents', requirePage((ctx) => {
       <span class="text-muted" style="font-size:.85rem">ส่งออก${filtering ? 'เฉพาะรายการที่กรองไว้' : 'ทั้งทะเบียน'}:</span>
       <a class="btn btn-outline btn-sm" href="${exportLink('/documents/export.xlsx')}">📊 Excel</a>
       <a class="btn btn-outline btn-sm" href="${exportLink('/documents/register')}" target="_blank" rel="noopener">🖨️ พิมพ์ทะเบียน / PDF</a>
+      ${direction !== 'all' && canRecordDispatch(ctx.user) ? `<a class="btn btn-outline btn-sm"
+        href="/documents/register-check?direction=${esc(direction)}${f.year ? `&year=${f.year}` : ''}"
+        title="ไล่เลขให้ว่าเล่มนี้ครบ 1 ถึง N หรือไม่ มีเลขขาด/เลขซ้ำตรงไหน">🔎 ตรวจความครบถ้วนของเล่ม</a>` : ''}
     </div>`;
 
   const canIssueOutgoing = canIssueOutgoingNumber(ctx.user);
@@ -1080,6 +1084,111 @@ router.get('/documents/export.xlsx', requirePage((ctx) => {
  * ทะเบียนใช้จริงตามระเบียบ (เลขรับเริ่มที่ 1 ใหม่ทุกปี ทะเบียนจึงเป็นเล่มต่อปี)
  */
 const MAX_REGISTER_PRINT_ROWS = 3000;
+
+/**
+ * ตรวจความครบถ้วนของทะเบียน — เลขขาด เลขซ้ำ และเลขที่หายเพราะเอกสารถูกลบ
+ *
+ * ทะเบียนหนังสือรับ/ส่งต้องยืนยันได้ว่า "เลข 1 ถึง N ครบถ้วน" ตอนตรวจสอบภายในหรือตอนส่งมอบงาน
+ * เดิมต้องพิมพ์ออกมาแล้วไล่นิ้วดูเองทีละแถว เล่มหนึ่งมีพันกว่าแถว = ในทางปฏิบัติไม่มีใครตรวจ
+ * จนกว่าจะมีคนมาถามแล้วตอบไม่ได้ (ดูเหตุผลเต็มใน services/registerAudit.js)
+ */
+router.get('/documents/register-check', requirePage((ctx) => {
+  if (!canRecordDispatch(ctx.user)) {
+    return html(ctx, 403, layout({
+      user: ctx.user, title: 'ตรวจทะเบียน', path: '/documents',
+      content: emptyState('🔎', 'ตรวจความครบถ้วนของทะเบียนได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น'),
+    }));
+  }
+  const direction = ctx.query.direction === 'outgoing' ? 'outgoing' : 'incoming';
+  const years = listRegisterYears(ctx.user, direction);
+  const year = /^\d{4}$/.test(ctx.query.year || '') ? Number(ctx.query.year) : (years[0] || beYear());
+  const result = auditRegister({ user: ctx.user, direction, year });
+  const kindLabel = direction === 'incoming' ? 'ทะเบียนหนังสือรับ' : 'ทะเบียนหนังสือส่ง';
+
+  const content = `
+    <div class="card-header">
+      <div>
+        <h2 class="mt-0">🔎 ตรวจความครบถ้วนของทะเบียน</h2>
+        <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
+          ใช้ตอนตรวจสอบภายใน ปิดเล่มสิ้นปี หรือส่งมอบงานสารบรรณ — ระบบไล่เลขให้ว่าครบ 1 ถึง ${fmtCount(result.highest)} หรือไม่
+        </p>
+      </div>
+      <a class="btn btn-outline btn-sm" href="/documents?direction=${esc(direction)}&year=${result.year}">← กลับทะเบียน</a>
+    </div>
+    <form class="card" method="get" action="/documents/register-check">
+      <div class="form-grid cols-3">
+        <div class="field"><label for="rcDirection">เล่ม</label>
+          <select id="rcDirection" name="direction">
+            <option value="incoming"${direction === 'incoming' ? ' selected' : ''}>ทะเบียนหนังสือรับ</option>
+            <option value="outgoing"${direction === 'outgoing' ? ' selected' : ''}>ทะเบียนหนังสือส่ง</option>
+          </select></div>
+        <div class="field"><label for="rcYear">ปี พ.ศ.</label>
+          <select id="rcYear" name="year">
+            ${years.map((y) => `<option value="${y}"${y === result.year ? ' selected' : ''}>${y}</option>`).join('')}
+          </select></div>
+        <div class="field">
+          <label aria-hidden="true" class="label-spacer">&nbsp;</label>
+          <button class="btn btn-primary" type="submit">ตรวจเล่มนี้</button>
+        </div>
+      </div>
+    </form>
+
+    <div class="card">
+      ${result.complete ? `<div class="alert alert-success" style="margin:0">
+        ✅ <strong>${esc(kindLabel)} ปี ${result.year} ครบถ้วน</strong> — เลข 1 ถึง ${fmtCount(result.highest)}
+        รวม ${fmtCount(result.total)} ฉบับ ไม่มีเลขขาดและไม่มีเลขซ้ำ
+      </div>` : `<div class="alert alert-warning" style="margin:0">
+        ⚠️ <strong>${esc(kindLabel)} ปี ${result.year} มีจุดที่ต้องอธิบาย</strong> —
+        ${result.missing.length ? `เลขขาด ${fmtCount(result.missing.length)} เลข` : ''}
+        ${result.missing.length && result.duplicates.length ? ' · ' : ''}
+        ${result.duplicates.length ? `เลขซ้ำ ${fmtCount(result.duplicates.length)} เลข` : ''}
+      </div>`}
+      <div class="kpi-grid" style="margin-top:1rem">
+        <div class="kpi-card"><div class="kpi-icon kpi-icon-primary">📚</div>
+          <div><div class="kpi-value">${fmtCount(result.total)}</div><div class="kpi-label">ฉบับในเล่ม</div></div></div>
+        <div class="kpi-card"><div class="kpi-icon kpi-icon-${result.missing.length ? 'danger' : 'success'}">🕳️</div>
+          <div><div class="kpi-value">${fmtCount(result.missing.length)}</div><div class="kpi-label">เลขขาด</div></div></div>
+        <div class="kpi-card"><div class="kpi-icon kpi-icon-${result.duplicates.length ? 'warning' : 'success'}">👯</div>
+          <div><div class="kpi-value">${fmtCount(result.duplicates.length)}</div><div class="kpi-label">เลขซ้ำ</div></div></div>
+        <div class="kpi-card"><div class="kpi-icon kpi-icon-secret">🚫</div>
+          <div><div class="kpi-value">${fmtCount(result.voided.length)}</div><div class="kpi-label">ยกเลิก (เลขยังอยู่ในเล่ม)</div></div></div>
+      </div>
+    </div>
+
+    ${result.missing.length ? `<div class="card">
+      <h3 class="mt-0">🕳️ เลขที่ขาดไป (${fmtCount(result.missing.length)})</h3>
+      <p class="text-muted" style="margin-top:-.4rem;font-size:.85rem">
+        เลขที่หายเพราะ<strong>เอกสารถูกลบถาวร</strong>ยังอธิบายได้ ระบบเก็บไว้ว่าใครลบ เมื่อไร เพราะอะไร —
+        ส่วนเลขที่ <strong>“ไม่พบร่องรอย”</strong> คือจุดที่ต้องไปตรวจกับเล่มกระดาษ
+      </p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>เลขลำดับ</th><th>สาเหตุ</th><th>รายละเอียด</th></tr></thead>
+        <tbody>${result.missing.map((m) => `<tr>
+          <td><strong>${m.number}</strong></td>
+          <td>${m.reason === 'deleted'
+            ? '<span class="badge badge-warning">เอกสารถูกลบถาวร</span>'
+            : '<span class="badge badge-danger">ไม่พบร่องรอย</span>'}</td>
+          <td>${m.reason === 'deleted'
+            ? `${esc(m.docNumberDisplay || '')} ${esc(m.title || '')}
+               <div class="text-muted" style="font-size:.8rem">ลบเมื่อ ${esc(fmtDate(m.deletedAt))}${m.deletedByName ? ` โดย ${esc(m.deletedByName)}` : ''}${m.deleteReason ? ` · เหตุผล: ${esc(m.deleteReason)}` : ''}</div>`
+            : '<span class="text-muted">ไม่มีเอกสารที่เคยใช้เลขนี้อยู่ในระบบ — ตรวจกับเล่มกระดาษว่าเคยออกเลขนี้ไปหรือไม่</span>'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>` : ''}
+
+    ${result.duplicates.length ? `<div class="card">
+      <h3 class="mt-0">👯 เลขที่ซ้ำกัน (${fmtCount(result.duplicates.length)})</h3>
+      <p class="text-muted" style="margin-top:-.4rem;font-size:.85rem">
+        เลขเดียวกันถูกใช้กับหนังสือมากกว่าหนึ่งฉบับ — เกิดได้จากการพิมพ์เลขเองให้ตรงกับเล่มกระดาษ
+        ถ้าไม่ได้ตั้งใจ ให้แก้ที่หน้าหนังสือ (แก้เลขทะเบียน)
+      </p>
+      ${result.duplicates.map((d) => `<div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+        <strong>${esc(d.number)}</strong>
+        ${d.docs.map((x) => `<div style="font-size:.88rem">• ${rowLink(`/documents/${x.id}`, esc(x.title))}</div>`).join('')}
+      </div>`).join('')}
+    </div>` : ''}`;
+  html(ctx, 200, layout({ user: ctx.user, title: 'ตรวจความครบถ้วนของทะเบียน', path: '/documents', content }));
+}));
 
 router.get('/documents/register', requirePage((ctx) => {
   const query = buildDocumentQuery(ctx.user, ctx.query);

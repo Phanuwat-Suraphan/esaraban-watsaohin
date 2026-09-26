@@ -7645,6 +7645,92 @@ describe('รายงาน CSV: คอลัมน์วันที่ต้�
 
 // "ออกเลขทะเบียนแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" — หนังสืออาจยังรอ ผอ. ลงนาม รอซอง รอไปรษณีย์รอบบ่าย
 // เดิมไม่มีที่ไหนในระบบบอกได้ว่าฉบับไหนส่งไปแล้ว ธุรการต้องจำเอง และตอบปลายทางที่โทรมาถามไม่ได้
+// ทะเบียนหนังสือรับ/ส่งต้องยืนยันได้ว่า "เลข 1 ถึง N ครบถ้วน" ตอนตรวจสอบภายในหรือส่งมอบงานสารบรรณ
+// เดิมต้องพิมพ์ออกมาไล่นิ้วดูเองทีละแถว เล่มหนึ่งมีพันกว่าแถว = ไม่มีใครตรวจจนกว่าจะมีคนถามแล้วตอบไม่ได้
+describe('ตรวจความครบถ้วนของทะเบียน', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  let audit_;
+  before(async () => { ({ auditRegister: audit_ } = await import('../src/services/registerAudit.js')); });
+
+  // ใช้ปีที่ไม่มีใครใช้ เพื่อให้เล่มนี้เป็นของเทสต์นี้ล้วนๆ ไม่ปนกับหนังสือของเทสต์อื่น
+  const YEAR = beYear() + 51;
+  const put = (n, over = {}) => {
+    const doc = makeDoc({ title: `หนังสือตรวจเล่ม ลำดับ ${n}`, ...over });
+    db.prepare('UPDATE documents SET year_be = ?, running_number = ?, doc_number_display = ? WHERE id = ?')
+      .run(YEAR, n, `${String(n).padStart(4, '0')}/${YEAR}`, doc.id);
+    return doc;
+  };
+
+  test('เล่มที่เลขครบต้องบอกว่าครบ และหน้าเว็บขึ้นว่าตรวจแล้วผ่าน', async () => {
+    for (const n of [1, 2, 3]) put(n);
+    const res = audit_({ user: reg(), direction: 'incoming', year: YEAR });
+    assert.equal(res.total, 3);
+    assert.equal(res.highest, 3);
+    assert.deepEqual(res.missing, []);
+    assert.deepEqual(res.duplicates, []);
+    assert.equal(res.complete, true);
+
+    const page = await dispatchGet(reg(), '/documents/register-check', { direction: 'incoming', year: String(YEAR) });
+    assert.equal(page.status, 200);
+    assert.match(page.body, /ครบถ้วน/);
+  });
+
+  // ความต่างที่สำคัญที่สุดของหน้านี้: เลขที่ "ยกเลิก" ยังอยู่ในเล่มตามระเบียบ ไม่ใช่เลขขาด
+  test('เลขที่ยกเลิกแล้วไม่นับเป็นเลขขาด เพราะเลขยังคงอยู่ในลำดับตามระเบียบ', () => {
+    const doc = put(4);
+    db.prepare("UPDATE documents SET status = 'voided', void_reason = 'พิมพ์ผิดทั้งฉบับ' WHERE id = ?").run(doc.id);
+    const res = audit_({ user: reg(), direction: 'incoming', year: YEAR });
+    assert.deepEqual(res.missing, [], 'ฉบับที่ยกเลิกยังอยู่ในเล่ม ต้องไม่ถูกนับเป็นเลขขาด');
+    assert.equal(res.voided.length, 1, 'แต่ต้องรายงานแยกให้เห็นว่ามีกี่ฉบับที่ยกเลิก');
+  });
+
+  test('เลขที่หายเพราะเอกสารถูกลบ ต้องอธิบายได้ว่าใครลบ เมื่อไร เพราะอะไร', async () => {
+    const doc = put(5, { title: 'หนังสือที่จะถูกลบถาวรระหว่างตรวจเล่ม' });
+    await forceDeleteDocument({ documentId: doc.id, reason: 'ลงทะเบียนซ้ำจากการกดสองครั้ง', actorUser: adminUser });
+
+    const res = audit_({ user: reg(), direction: 'incoming', year: YEAR });
+    const gap = res.missing.find((m) => m.number === 5);
+    assert.ok(gap, 'เลขของเอกสารที่ถูกลบต้องขึ้นเป็นเลขขาด');
+    assert.equal(gap.reason, 'deleted');
+    assert.equal(gap.deleteReason, 'ลงทะเบียนซ้ำจากการกดสองครั้ง', 'ต้องดึงเหตุผลจากประวัติการใช้งานมาได้');
+    assert.ok(gap.deletedByName, 'ต้องบอกได้ว่าใครเป็นคนลบ');
+    assert.equal(res.complete, false);
+
+    const page = await dispatchGet(reg(), '/documents/register-check', { direction: 'incoming', year: String(YEAR) });
+    assert.match(page.body, /เอกสารถูกลบถาวร/);
+    assert.match(page.body, /ลงทะเบียนซ้ำจากการกดสองครั้ง/, 'หน้าเว็บต้องบอกเหตุผลที่ลบ ไม่ใช่แค่ว่าเลขหาย');
+  });
+
+  test('เลขที่ไม่มีร่องรอยอะไรเลย ต้องแยกออกจากเลขที่ลบไป — ตอบผู้ตรวจคนละแบบ', () => {
+    put(8); // ข้าม 6, 7 ไปเลย เหมือนเล่มที่เลขหายโดยไม่มีใครรู้
+    const res = audit_({ user: reg(), direction: 'incoming', year: YEAR });
+    const unknown = res.missing.filter((m) => m.reason === 'unknown').map((m) => m.number);
+    assert.deepEqual(unknown, [6, 7]);
+  });
+
+  test('เลขซ้ำต้องถูกจับได้ พร้อมบอกว่าเป็นหนังสือฉบับไหนบ้าง', () => {
+    const a = put(9, { title: 'หนังสือเลขซ้ำใบแรก' });
+    const b = put(10, { title: 'หนังสือเลขซ้ำใบสอง' });
+    db.prepare('UPDATE documents SET doc_number_display = ? WHERE id = ?')
+      .run(`0009/${YEAR}`, b.id);
+    const res = audit_({ user: reg(), direction: 'incoming', year: YEAR });
+    const dup = res.duplicates.find((d) => d.number === `0009/${YEAR}`);
+    assert.ok(dup, 'ต้องจับเลขซ้ำได้');
+    assert.equal(dup.docs.length, 2);
+    assert.ok(dup.docs.some((d) => d.id === a.id) && dup.docs.some((d) => d.id === b.id));
+    assert.equal(res.complete, false);
+  });
+
+  test('ครูทั่วไปเปิดหน้าตรวจทะเบียนไม่ได้ และไม่เห็นปุ่มเข้าหน้านี้', async () => {
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    assert.equal((await dispatchGet(teacher, '/documents/register-check', { direction: 'incoming' })).status, 403);
+    const list = await dispatchGet(teacher, '/documents', { direction: 'incoming' });
+    assert.ok(!/ตรวจความครบถ้วนของเล่ม/.test(list.body), 'ครูต้องไม่เห็นปุ่มนี้');
+    const regList = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+    assert.match(regList.body, /ตรวจความครบถ้วนของเล่ม/, 'ธุรการต้องเห็นปุ่มเข้าหน้าตรวจ');
+  });
+});
+
 // การแจ้งเตือนทุกอย่างในระบบเดิมเกิดตอน "มีเหตุการณ์" เท่านั้น ถ้าครูพลาดครั้งนั้นไปก็ไม่มีอะไรมาบอกอีกเลย
 // เรื่องค้างเงียบๆ จนเลยกำหนด — ธุรการต้องคอยไล่ตามเองทุกครั้ง
 describe('เตือนงานค้างประจำวัน', () => {

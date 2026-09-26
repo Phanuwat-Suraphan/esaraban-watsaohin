@@ -7645,6 +7645,98 @@ describe('รายงาน CSV: คอลัมน์วันที่ต้�
 
 // "ออกเลขทะเบียนแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" — หนังสืออาจยังรอ ผอ. ลงนาม รอซอง รอไปรษณีย์รอบบ่าย
 // เดิมไม่มีที่ไหนในระบบบอกได้ว่าฉบับไหนส่งไปแล้ว ธุรการต้องจำเอง และตอบปลายทางที่โทรมาถามไม่ได้
+// การแจ้งเตือนทุกอย่างในระบบเดิมเกิดตอน "มีเหตุการณ์" เท่านั้น ถ้าครูพลาดครั้งนั้นไปก็ไม่มีอะไรมาบอกอีกเลย
+// เรื่องค้างเงียบๆ จนเลยกำหนด — ธุรการต้องคอยไล่ตามเองทุกครั้ง
+describe('เตือนงานค้างประจำวัน', () => {
+  let rem;
+  before(async () => { rem = await import('../src/services/dailyReminder.js'); });
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const at = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  const notifCount = (uid) => db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND link_url = '/tasks'").get(uid).c;
+  const clearLog = () => db.prepare('DELETE FROM daily_reminder_log WHERE user_id = ?').run(seed.userIds.teacher001);
+
+  const assignWithDue = (title, dueDate) => {
+    const doc = makeDoc({ title, dueDate });
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    return doc;
+  };
+
+  test('สรุปงานเลยกำหนด/ครบวันนี้/ใกล้ครบ เป็นข้อความเดียวต่อคน ไม่ใช่ต่อฉบับ', () => {
+    assignWithDue('หนังสือเลยกำหนดสำหรับทดสอบการเตือน', at(-3));
+    assignWithDue('หนังสือครบกำหนดวันนี้สำหรับทดสอบการเตือน', at(0));
+    assignWithDue('หนังสือใกล้ครบกำหนดสำหรับทดสอบการเตือน', at(2));
+    // เลยช่วง "ใกล้ครบกำหนด" ไปแล้ว ยังไม่ต้องเตือน ไม่งั้นข้อความจะเหมือนเดิมทุกวันจนไม่มีใครอ่าน
+    assignWithDue('หนังสือครบกำหนดอีกนานสำหรับทดสอบการเตือน', at(30));
+
+    const target = rem.reminderTargets().find((t) => t.userId === seed.userIds.teacher001);
+    assert.ok(target, 'ครูที่มีงานใกล้ครบกำหนดต้องอยู่ในรายชื่อที่ต้องเตือน');
+    assert.ok(target.overdue.length >= 1 && target.today.length >= 1 && target.soon.length >= 1);
+    assert.ok(!JSON.stringify(target).includes('อีกนานสำหรับทดสอบ'), 'ของที่ยังอีกนานต้องไม่ถูกเตือน');
+
+    const msg = rem.reminderMessage(target);
+    assert.match(msg, /เลยกำหนดแล้ว \d+ เรื่อง/);
+    assert.match(msg, /ครบกำหนดวันนี้ \d+ เรื่อง/);
+    assert.ok(msg.split('\n').length <= 5, `ข้อความต้องสั้นพออ่านจบในแจ้งเตือน — ได้\n${msg}`);
+  });
+
+  test('ส่งแล้ววันละครั้ง เรียกซ้ำกี่รอบก็ไม่ส่งซ้ำ (เซิร์ฟเวอร์ถูกรีสตาร์ทระหว่างวันได้)', () => {
+    clearLog();
+    assignWithDue('หนังสือสำหรับทดสอบกันส่งซ้ำ', at(-1));
+    const before = notifCount(seed.userIds.teacher001);
+    const first = rem.sendDailyReminders({ force: true });
+    assert.ok(first.sent >= 1, 'รอบแรกต้องส่ง');
+    assert.equal(notifCount(seed.userIds.teacher001), before + 1, 'ได้ข้อความเดียว ไม่ใช่ข้อความต่อฉบับ');
+
+    rem.sendDailyReminders({ force: true });
+    rem.sendDailyReminders({ force: true });
+    assert.equal(notifCount(seed.userIds.teacher001), before + 1, 'เรียกซ้ำต้องไม่ส่งซ้ำ');
+  });
+
+  test('วันหยุดไม่เตือน — ใช้ปฏิทินวันหยุดของโรงเรียน', () => {
+    const sunday = '2026-10-04'; // อาทิตย์
+    const monday = '2026-10-05';
+    assert.equal(rem.isWorkingDay(sunday), false, 'วันอาทิตย์ไม่ใช่วันทำการ');
+    assert.equal(rem.isWorkingDay(monday), true, 'วันจันทร์ปกติต้องเป็นวันทำการ');
+
+    db.prepare('INSERT OR REPLACE INTO holidays (holiday_date, name, created_at) VALUES (?, ?, ?)')
+      .run(monday, 'วันหยุดทดสอบ', nowIso());
+    assert.equal(rem.isWorkingDay(monday), false, 'วันหยุดที่ผู้ดูแลตั้งไว้ต้องไม่เตือน');
+    db.prepare('DELETE FROM holidays WHERE holiday_date = ?').run(monday);
+
+    const res = rem.sendDailyReminders({ today: sunday });
+    assert.equal(res.sent, 0);
+    assert.equal(res.skipped, 'วันหยุด');
+  });
+
+  test('ปิดการเตือนได้จากหน้าตั้งค่า และเวลาที่ตั้งไว้ต้องถูกใช้จริง', async () => {
+    const admin = loadUserForTest(seed.userIds.admin);
+    const save = (body) => dispatchPost(admin, '/admin/settings', { school_name: schoolName(), ...body });
+
+    assert.equal((await save({ daily_reminder_time: '25:99' })).status, 400, 'เวลาที่ใช้ไม่ได้ต้องไม่ถูกบันทึก');
+    assert.equal((await save({ daily_reminder_time: '06:15' })).status, 200);
+    assert.deepEqual(rem.reminderTime(), { hour: 6, minute: 15 });
+
+    assert.equal((await save({ daily_reminder_enabled: 'off' })).status, 200);
+    assert.equal(rem.reminderEnabled(), false);
+    clearLog();
+    assert.equal(rem.sendDailyReminders({}).skipped, 'ปิดการเตือนไว้', 'ปิดแล้วต้องไม่ส่ง');
+
+    await save({ daily_reminder_enabled: 'on', daily_reminder_time: '07:30' });
+    assert.equal(rem.reminderEnabled(), true);
+    const page = await dispatchGet(admin, '/admin/settings', {});
+    assert.match(page.body, /id="daily_reminder_time" value="07:30"/, 'หน้าตั้งค่าต้องโชว์เวลาที่ตั้งไว้');
+  });
+
+  test('ไม่เตือนถึงเอกสารที่ถูกลบ/ปิดไปแล้ว — กดเข้าไปแล้วต้องเจอของจริงเสมอ', async () => {
+    clearLog();
+    const doc = assignWithDue('หนังสือที่จะถูกลบก่อนถึงเวลาเตือน', at(-1));
+    await forceDeleteDocument({ documentId: doc.id, reason: 'ทดสอบ', actorUser: adminUser });
+    const targets = rem.reminderTargets();
+    assert.ok(!JSON.stringify(targets).includes('หนังสือที่จะถูกลบก่อนถึงเวลาเตือน'),
+      'เอกสารที่ถูกลบต้องไม่ถูกเอามาเตือน');
+  });
+});
+
 describe('บันทึกการส่งหนังสือออก', () => {
   const reg = () => loadUserForTest(seed.userIds.reg001);
   const teacher = () => loadUserForTest(seed.userIds.teacher001);

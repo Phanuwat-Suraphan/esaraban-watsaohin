@@ -153,4 +153,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   // ตัวส่งแจ้งเตือนเข้าไลน์ — เงียบไปเองถ้ายังไม่ได้ตั้งค่า LINE (ดู src/services/lineNotify.js)
   const { startLineOutboxFlusher } = await import('./src/services/lineNotify.js');
   if (startLineOutboxFlusher()) console.log('[line] เปิดการแจ้งเตือนเข้าไลน์แล้ว');
+  // เตือนงานค้างประจำวันเช้าวันทำการ — ตัวเดียวในระบบที่บอกครูเองโดยไม่ต้องมีใครกดตาม
+  const { startDailyReminder } = await import('./src/services/dailyReminder.js');
+  if (startDailyReminder()) console.log('[reminder] เปิดการเตือนงานค้างประจำวันแล้ว');
 });

@@ -24,6 +24,10 @@ const ENV_FALLBACK = {
 // ย้ายโรงเรียนหรือติดตั้งให้ที่ใหม่: แก้ที่หน้า "ตั้งค่าโรงเรียน" (ถ้าข้อมูลอยู่ถาวรแล้ว) หรือตั้ง env var
 // SCHOOL_NAME ซึ่งอยู่รอดการล้างดิสก์เหมือนกัน — ไม่ต้องแก้โค้ด ทั้งสองทางชนะค่าตั้งต้นนี้เสมอ
 const DEFAULTS = {
+  // เตือนงานค้างประจำวัน — เปิดไว้ตั้งแต่ต้นโดยตั้งใจ เพราะเป็นทางเดียวที่ระบบจะบอกครูเองว่ามีงานค้าง
+  // โดยไม่ต้องมีใครกดตาม (ดู services/dailyReminder.js) เวลา 07:30 คือก่อนเข้าแถวของโรงเรียน
+  daily_reminder_enabled: 'on',
+  daily_reminder_time: '07:30',
   school_name: 'โรงเรียนวัดเสาหิน',
   school_short_name: '',
   school_initials: '',
@@ -41,6 +45,7 @@ const DEFAULTS = {
 
 export const MAX_SETTING_LENGTH = {
   school_name: 200, school_short_name: 100, school_initials: 8, outgoing_number_prefix: 40,
+  daily_reminder_time: 5, daily_reminder_enabled: 3,
 };
 
 /** รหัสหนังสือที่นำหน้าเลขทะเบียนส่ง — ค่าว่างแปลว่ายังไม่ได้ตั้ง ให้ออกเลขแบบเดิม */

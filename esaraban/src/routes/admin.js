@@ -8,6 +8,7 @@ import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
 import { asText, asTextOrNull, normalizeEmployeeCode, MAX_EMPLOYEE_CODE } from '../services/validate.js';
 import { getSetting, setSetting, MAX_SETTING_LENGTH } from '../services/settings.js';
+import { reminderTime, sendTestReminder } from '../services/dailyReminder.js';
 import { previewNextNumber } from '../numbering.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
@@ -92,6 +93,26 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
             เลขหนังสือส่งฉบับถัดไปจะเป็น: <strong id="numPreview">${esc(previewNextNumber('outgoing'))}</strong>
           </div>
         </div>
+        <!-- การเตือนงานค้างประจำวันเป็นทางเดียวที่ระบบบอกครูเองว่ามีงานค้าง โดยไม่ต้องมีใครกดตาม
+             จึงเปิดไว้ตั้งแต่ต้น และให้ปรับเวลาได้ตามเวลาเข้าแถวของแต่ละโรงเรียน -->
+        <div class="field">
+          <label>เตือนงานค้างให้ครูทุกเช้าวันทำการ</label>
+          <div class="flex gap-2 flex-wrap items-center">
+            <label class="check-inline">
+              <input type="checkbox" id="daily_reminder_enabled" ${getSetting('daily_reminder_enabled') === 'off' ? '' : 'checked'} />
+              <span>เปิดการเตือน</span>
+            </label>
+            <input type="time" id="daily_reminder_time" value="${esc(reminderTime().hour.toString().padStart(2, '0'))}:${esc(reminderTime().minute.toString().padStart(2, '0'))}" style="max-width:8rem" />
+          </div>
+          <div class="help-text">
+            ระบบจะสรุป<strong>งานที่เลยกำหนด/ครบกำหนดวันนี้/ใกล้ครบกำหนด</strong>ส่งให้เจ้าตัวเป็นข้อความเดียวต่อวัน
+            (เข้าทั้งกระดิ่งในระบบและไลน์ของคนที่ผูกบัญชีไว้) — ไม่เตือนวันเสาร์-อาทิตย์และวันหยุดที่ตั้งไว้ใน
+            <a href="/admin/holidays">ปฏิทินวันหยุด</a>
+          </div>
+          <div class="chip-row" style="margin-top:.4rem">
+            <button class="btn btn-outline btn-sm" type="button" onclick="testReminder(this)">🔔 ส่งตัวอย่างให้ตัวเองดูเดี๋ยวนี้</button>
+          </div>
+        </div>
         <button class="btn btn-primary" type="submit">บันทึก</button>
       </form>
     </div>
@@ -118,6 +139,16 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
       }
       window.updateNumberPreview = updateNumberPreview;
 
+      // ของจริงส่งเช้าวันทำการวันละครั้ง ถ้าไม่มีปุ่มนี้ กว่าจะรู้ว่าตั้งค่าถูกไหมก็ต้องรอถึงพรุ่งนี้
+      window.testReminder = function (btn) {
+        window.setBtnLoading(btn, 'กำลังส่ง...');
+        window.postJson('/admin/settings/test-reminder', {}).then(function (d) {
+          if (d === null) { window.restoreBtn(btn); return; }
+          window.restoreBtn(btn);
+          window.toast('ส่งตัวอย่างแล้ว — ดูที่กระดิ่งแจ้งเตือน (และไลน์ ถ้าผูกบัญชีไว้)', 'success');
+        }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+      };
+
       document.getElementById('schoolForm').addEventListener('submit', function(e){
         e.preventDefault();
         var btn = this.querySelector('button[type=submit]');
@@ -126,6 +157,8 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           school_short_name: document.getElementById('school_short_name').value,
           school_initials: document.getElementById('school_initials').value,
           outgoing_number_prefix: document.getElementById('outgoing_number_prefix').value,
+          daily_reminder_enabled: document.getElementById('daily_reminder_enabled').checked ? 'on' : 'off',
+          daily_reminder_time: document.getElementById('daily_reminder_time').value,
         };
         window.setBtnLoading(btn, 'กำลังบันทึก...');
         fetch('/admin/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
@@ -141,10 +174,22 @@ router.post('/admin/settings', requireApi(async (ctx) => {
   if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
   // ชื่อเต็มเว้นว่างไม่ได้ ไม่งั้นเอกสารราชการจะขึ้นหัวเป็นค่าตั้งต้น "โรงเรียน (ยังไม่ได้ตั้งชื่อ)"
   if (!asText(ctx.body.school_name)) return json(ctx, 400, { error: 'กรุณากรอกชื่อโรงเรียน' });
-  for (const key of ['school_name', 'school_short_name', 'school_initials', 'outgoing_number_prefix']) {
+  // เวลาที่ใช้ไม่ได้ต้องไม่ถูกบันทึกลงไป ไม่งั้นตัวเตือนจะถอยไปใช้ค่าเริ่มต้นเงียบๆ โดยที่หน้าเว็บ
+  // ยังโชว์ค่าที่กรอกผิดไว้ ผู้ดูแลจะเข้าใจว่าตั้งเวลานั้นไว้จริง
+  if (ctx.body.daily_reminder_time !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(ctx.body.daily_reminder_time))) {
+    return json(ctx, 400, { error: 'เวลาเตือนต้องอยู่ในรูปแบบ HH:MM เช่น 07:30' });
+  }
+  for (const key of ['school_name', 'school_short_name', 'school_initials', 'outgoing_number_prefix',
+    'daily_reminder_enabled', 'daily_reminder_time']) {
+    if (ctx.body[key] === undefined) continue;
     setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
   }
   json(ctx, 200, { ok: true });
+}));
+
+router.post('/admin/settings/test-reminder', requireApi((ctx) => {
+  if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+  json(ctx, 200, sendTestReminder(ctx.user));
 }));
 
 router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {

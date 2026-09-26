@@ -612,6 +612,15 @@ export function migrate() {
   -- อยู่ได้ไม่นาน (จนกว่าธุรการจะกดออกเลข/ปฏิเสธ) แต่บนโฮสต์ที่ดิสก์ถูกล้างทุกครั้งที่ deploy
   -- ไฟล์บนดิสก์จะหายไปเงียบๆ ระหว่างรอ ส่วนฐานข้อมูลถูกสำรองขึ้น Google Drive อยู่แล้ว
   -- พอออกเลขให้ ไฟล์จะถูกย้ายเข้าไฟล์แนบของหนังสือด้วยเส้นทางปกติ แล้วลบแถวนี้ทิ้ง
+  -- กันเตือนงานค้างซ้ำในวันเดียวกัน — ต้องอยู่ในฐานข้อมูล ไม่ใช่ตัวแปรในหน่วยความจำ เพราะเซิร์ฟเวอร์
+  -- ถูก deploy/รีสตาร์ทระหว่างวันได้เสมอ และข้อความที่ส่งไปแล้วเรียกคืนไม่ได้ (ไปโผล่ในไลน์ครูแล้ว)
+  CREATE TABLE IF NOT EXISTS daily_reminder_log (
+    user_id TEXT NOT NULL REFERENCES users(id),
+    sent_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, sent_date)
+  );
+
   CREATE TABLE IF NOT EXISTS outgoing_request_files (
     id TEXT PRIMARY KEY,
     request_id TEXT NOT NULL REFERENCES outgoing_number_requests(id),

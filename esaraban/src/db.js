@@ -306,6 +306,10 @@ export function migrate() {
     sent_method TEXT,      -- วิธีส่ง (ดู DISPATCH_METHODS)
     sent_note TEXT,        -- เลขพัสดุ/ผู้รับ/หมายเหตุการส่ง
     sent_by TEXT REFERENCES users(id),
+    -- การตอบหนังสือ: หนังสือเข้าหลายฉบับต้องทำหนังสือตอบกลับ ระบบต้องตอบได้ว่า "ฉบับนี้ตอบหรือยัง"
+    -- needs_reply อยู่ที่หนังสือเข้า (ธุรการติ๊กตอนลงรับ) ส่วน reply_to_id อยู่ที่หนังสือส่งที่เป็นตัวตอบ
+    needs_reply INTEGER NOT NULL DEFAULT 0,
+    reply_to_id TEXT REFERENCES documents(id),
     -- อายุการเก็บ ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ หมวด 3
     retention_class TEXT NOT NULL DEFAULT 'normal_10y', -- normal_10y | permanent | routine_1y | financial_5y
     retention_until TEXT, -- วันครบกำหนดเก็บ (NULL = permanent เก็บตลอดไป)
@@ -824,6 +828,11 @@ export function migrate() {
   const documentCols = db.prepare("PRAGMA table_info(documents)").all().map((c) => c.name);
   if (!documentCols.includes('is_circular')) {
     db.exec('ALTER TABLE documents ADD COLUMN is_circular INTEGER NOT NULL DEFAULT 0');
+  }
+  // การตอบหนังสือ — ฐานข้อมูลที่ deploy ไปแล้วยังไม่มีคอลัมน์ชุดนี้
+  if (!documentCols.includes('needs_reply')) {
+    db.exec('ALTER TABLE documents ADD COLUMN needs_reply INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE documents ADD COLUMN reply_to_id TEXT REFERENCES documents(id)');
   }
   // บันทึกการส่งออก — ฐานข้อมูลที่ deploy ไปแล้วยังไม่มีคอลัมน์ชุดนี้
   if (!documentCols.includes('sent_at')) {

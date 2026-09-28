@@ -6,6 +6,7 @@
 import { db, todayInBangkok, beYear, arabicDigits, bangkokDateSql } from '../db.js';
 import { LABELS, fmtThaiDateLong } from '../render.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
+import { awaitingReplySql } from './replyLink.js';
 
 // สถานะที่ถือว่า "ปิดเรื่องแล้ว" — เรื่องพวกนี้ไม่นับว่าเลยกำหนดอีก ต้องตรงกับตัวเลขบนแดชบอร์ด
 export const CLOSED_STATUSES = ['completed', 'archived', 'voided', 'destroyed', 'rejected'];
@@ -72,6 +73,8 @@ export function buildDocumentQuery(user, query = {}) {
     // "ยังไม่ได้ส่ง" — ออกเลขทะเบียนแล้วไม่ได้แปลว่าส่งออกไปแล้ว นี่คือรายการที่ธุรการต้องตามเคลียร์
     // (ดู services/dispatch.js) ใช้ได้กับทะเบียนหนังสือส่งเท่านั้น หนังสือรับไม่มีการส่งออก
     unsent: query.unsent === '1',
+    // "รอทำหนังสือตอบ" — หนังสือเข้าที่ธุรการติ๊กว่าต้องตอบ แต่ยังไม่มีหนังสือส่งผูกไว้ว่าเป็นตัวตอบ
+    awaitingReply: query.awaitingReply === '1',
   };
   if (f.year) { where.push('d.year_be = :yearBe'); params.yearBe = f.year; }
   if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
@@ -86,6 +89,7 @@ export function buildDocumentQuery(user, query = {}) {
   // ไม่นับไฟล์ที่ถูกทำลายตามระเบียบไปแล้ว — ตัวไฟล์ไม่มีอยู่จริงแล้ว ถ้ายังนับอยู่ ตัวกรอง "เฉพาะที่มีไฟล์แนบ"
   // จะพาไปเจอหนังสือที่เปิดไฟล์ไม่ได้ ซึ่งตรงข้ามกับที่ตัวกรองนี้มีไว้เพื่ออะไร
   if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id AND ax.destroyed_at IS NULL)');
+  if (f.awaitingReply) where.push(awaitingReplySql());
   if (f.unsent) {
     where.push("d.direction = 'outgoing' AND d.sent_at IS NULL AND d.status NOT IN ('voided', 'destroyed')");
   }
@@ -192,6 +196,7 @@ export function describeFilters({ q, statusFilter, f }) {
   if (f.year) parts.push(`ปี พ.ศ. ${f.year}`);
   if (f.overdue) parts.push('เฉพาะที่เลยกำหนดและยังไม่ปิด');
   if (f.unsent) parts.push('เฉพาะที่ยังไม่ได้บันทึกการส่ง');
+  if (f.awaitingReply) parts.push('เฉพาะที่ต้องทำหนังสือตอบและยังไม่ได้ตอบ');
   return parts.join(' · ');
 }
 

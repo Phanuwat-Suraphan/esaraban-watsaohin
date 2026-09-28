@@ -34,6 +34,9 @@ import { buildXlsx } from '../services/xlsxWrite.js';
 import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, countUnsentOutgoing } from '../services/dispatch.js';
 import { auditRegister } from '../services/registerAudit.js';
 import {
+  canLinkReply, setNeedsReply, setReplyTarget, repliesOf, replyTargetOf, replyCandidates, countAwaitingReply,
+} from '../services/replyLink.js';
+import {
   UPLOAD_DIR, FILE_KINDS, attachMimeScript, VIEWABLE_MIME, isImageMime, ALLOWED_MIME, ACCEPT_ATTR, ALLOWED_LABEL,
   STAMPABLE_MIME, MAX_FILE_BYTES, MAX_ATTACH_FILES, ATTACHMENT_ORDER, EMPTY_UPLOAD_MESSAGE,
   fileKindOf, fallbackFilename, isEmptyUpload, saveAttachment,
@@ -318,6 +321,10 @@ router.get('/documents', requirePage((ctx) => {
               <input type="checkbox" name="unsent" value="1" ${f.unsent ? 'checked' : ''} />
               เฉพาะที่ยังไม่ได้บันทึกการส่ง
             </label>` : ''}
+            ${direction === 'incoming' ? `<label class="check-inline">
+              <input type="checkbox" name="awaitingReply" value="1" ${f.awaitingReply ? 'checked' : ''} />
+              เฉพาะที่ต้องทำหนังสือตอบและยังไม่ได้ตอบ
+            </label>` : ''}
           </div>
         </div>
         <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
@@ -336,6 +343,9 @@ router.get('/documents', requirePage((ctx) => {
   // "ออกเลขแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" — ฉบับที่ยังไม่ได้บันทึกการส่งคือกองที่ธุรการต้องตามเคลียร์
   const unsentCount = direction === 'outgoing' && canRecordDispatch(ctx.user)
     ? countUnsentOutgoing(visibleDocumentsSqlFilter(ctx.user).sql, visibleDocumentsSqlFilter(ctx.user).params) : 0;
+  // หนังสือเข้าที่ต้องตอบแต่ยังไม่ได้ตอบ — กองเดียวกันกับ "ยังไม่ได้ส่ง" แต่อยู่คนละเล่ม
+  const awaitingReplyCount = direction === 'incoming' && canLinkReply(ctx.user)
+    ? countAwaitingReply(visibleDocumentsSqlFilter(ctx.user).sql, visibleDocumentsSqlFilter(ctx.user).params) : 0;
 
   // หนังสือเข้าที่ลงทะเบียนวันนี้ — ใช้ทำปุ่ม "ส่งสรุปวันนี้เข้าไลน์" ข้อความเดียวจบ แทนการแชร์ทีละฉบับ
   // ซึ่งวันที่มีหนังสือเข้าหกฉบับจะกลายเป็นยิงเข้ากลุ่มหกข้อความติดกัน จนคนในกลุ่มเลื่อนผ่าน
@@ -383,6 +393,8 @@ router.get('/documents', requirePage((ctx) => {
           copyLabel: `📋 คัดลอกสรุปหนังสือเข้าวันนี้ (${todayIncoming.length})`,
           title: 'สรุปหนังสือเข้าของวันนี้เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
         }) : ''}
+        ${direction === 'incoming' && awaitingReplyCount && !f.awaitingReply ? `<a class="btn btn-outline" href="/documents?direction=incoming&awaitingReply=1"
+          title="หนังสือเข้าที่ธุรการติ๊กไว้ว่าต้องทำหนังสือตอบ แต่ยังไม่มีหนังสือส่งผูกไว้ว่าเป็นตัวตอบ">↩️ รอทำหนังสือตอบ (${fmtCount(awaitingReplyCount)})</a>` : ''}
         ${direction === 'outgoing' && unsentCount && !f.unsent ? `<a class="btn btn-outline" href="/documents?direction=outgoing&unsent=1"
           title="หนังสือส่งที่ออกเลขทะเบียนแล้วแต่ยังไม่ได้บันทึกว่าส่งออกไปเมื่อไร ด้วยวิธีใด">📮 ยังไม่ได้บันทึกการส่ง (${fmtCount(unsentCount)})</a>` : ''}
         <a class="btn btn-outline" href="/documents/bulk?direction=${direction}">📎 ลงหลายฉบับรวดเดียว</a>
@@ -2128,6 +2140,82 @@ router.get('/documents/:id', requirePage((ctx) => {
           </script>` : ''}
         </div>`;
 
+  // ---------------- การตอบหนังสือ ----------------
+  //
+  // หนังสือเข้าจากเขตพื้นที่จำนวนมากต้องทำหนังสือตอบกลับภายในกำหนด แต่หนังสือเข้ากับหนังสือส่งเดิม
+  // เป็นคนละเล่มที่ไม่รู้จักกันเลย เวลาปลายทางทวงว่ายังไม่ได้รับหนังสือตอบ หรือผู้ตรวจถามว่าเรื่องนี้
+  // ตอบไปว่าอย่างไร ธุรการต้องค้นชื่อเรื่องในทะเบียนหนังสือส่งเอาเองแล้วเดาว่าฉบับไหนคือตัวตอบ
+  const canReplyLink = canLinkReply(ctx.user) && !['destroyed'].includes(doc.status);
+  const replies = doc.direction === 'incoming' ? repliesOf(doc.id) : [];
+  const replyTarget = replyTargetOf(doc);
+  const replyCard = doc.direction === 'incoming' ? `
+        <div class="card" id="replyCard">
+          <div class="card-header"><h3 class="mt-0">📤 การตอบกลับ</h3>
+            ${replies.length
+              ? `<span class="badge badge-success">ตอบแล้ว ${fmtCount(replies.length)} ฉบับ</span>`
+              : (doc.needs_reply ? '<span class="badge badge-warning">ต้องตอบ — ยังไม่ได้ตอบ</span>' : '')}</div>
+          ${replies.length ? `<div>${replies.map((r) => `<div style="padding:.35rem 0;border-bottom:1px solid var(--border)">
+            📄 ${rowLink(`/documents/${r.id}`, `<strong>${esc(r.doc_number_display)}</strong> ${esc(r.title)}`)}
+            <div class="text-muted" style="font-size:.8rem">
+              ${r.sent_at ? `ส่งออกแล้ว ${esc(fmtThaiDateShort(r.sent_at))}` : 'ยังไม่ได้บันทึกการส่ง'}
+            </div>
+          </div>`).join('')}</div>` : `<p class="text-muted" style="margin:.2rem 0 0;font-size:.88rem">
+            ${doc.needs_reply
+              ? 'ยังไม่มีหนังสือส่งฉบับไหนผูกไว้ว่าเป็นตัวตอบของเรื่องนี้ — ผูกได้ที่หน้าหนังสือส่งฉบับที่ตอบ'
+              : 'เรื่องนี้ยังไม่ได้ระบุว่าต้องทำหนังสือตอบ'}
+          </p>`}
+          ${canReplyLink ? `
+          <label class="check-inline" style="margin-top:.6rem">
+            <input type="checkbox" id="needsReply" ${doc.needs_reply ? 'checked' : ''} onchange="saveNeedsReply(this)" />
+            <span>เรื่องนี้<strong>ต้องทำหนังสือตอบ</strong> — ให้ขึ้นในรายการ “รอทำหนังสือตอบ” จนกว่าจะมีหนังสือส่งผูกไว้</span>
+          </label>
+          <div class="help-text">หนังสือเข้าส่วนใหญ่เป็นเรื่องแจ้งให้ทราบที่ไม่ต้องตอบ จึงให้ธุรการเป็นคนชี้เฉพาะฉบับที่ต้องตอบจริง</div>
+          <script>
+            window.saveNeedsReply = function (box) {
+              box.disabled = true;
+              window.postJson('/documents/${doc.id}/needs-reply', { needsReply: box.checked })
+                .then(function (d) {
+                  if (d === null) { box.checked = !box.checked; box.disabled = false; return; }
+                  window.toast(box.checked ? 'บันทึกว่าต้องทำหนังสือตอบแล้ว' : 'ยกเลิกธงต้องตอบแล้ว', 'success');
+                  setTimeout(function () { location.reload(); }, 600);
+                })
+                .catch(function (e) { window.toast(e.message, 'danger'); box.checked = !box.checked; box.disabled = false; });
+            };
+          </script>` : ''}
+        </div>` : `
+        <div class="card" id="replyCard">
+          <div class="card-header"><h3 class="mt-0">↩️ หนังสือฉบับนี้ตอบเรื่องอะไร</h3>
+            ${replyTarget ? '<span class="badge badge-info">เป็นหนังสือตอบ</span>' : ''}</div>
+          ${replyTarget ? `<p style="margin:.2rem 0">
+            ตอบหนังสือเข้า ${rowLink(`/documents/${replyTarget.id}`, `<strong>${esc(replyTarget.doc_number_display)}</strong> ${esc(replyTarget.title)}`)}
+          </p>` : `<p class="text-muted" style="margin:.2rem 0 0;font-size:.88rem">
+            ถ้าหนังสือฉบับนี้เป็นการตอบหนังสือเข้า ให้ผูกไว้ — หน้าหนังสือเข้าฉบับนั้นจะขึ้นว่าตอบแล้วด้วยฉบับนี้
+            และหลุดออกจากรายการ “รอทำหนังสือตอบ” ทันที
+          </p>`}
+          ${canReplyLink ? `
+          <div class="field" style="margin-top:.6rem">
+            <label for="replyTo">ตอบหนังสือเข้าเลขที่</label>
+            <select id="replyTo" onchange="saveReplyTarget(this)">
+              <option value="">— ไม่ใช่หนังสือตอบ —</option>
+              ${replyCandidates(50, doc.reply_to_id).map((c) => `<option value="${esc(c.id)}"${c.id === doc.reply_to_id ? ' selected' : ''}>
+                ${esc(c.doc_number_display)} — ${esc(c.title.length > 60 ? `${c.title.slice(0, 59)}…` : c.title)}</option>`).join('')}
+            </select>
+            <div class="help-text">รายการนี้แสดงหนังสือเข้าที่ธุรการติ๊กไว้ว่า “ต้องทำหนังสือตอบ” และยังไม่มีใครตอบ</div>
+          </div>
+          <script>
+            window.saveReplyTarget = function (sel) {
+              sel.disabled = true;
+              window.postJson('/documents/${doc.id}/reply-to', { replyToId: sel.value || null })
+                .then(function (d) {
+                  if (d === null) { sel.disabled = false; return; }
+                  window.toast(sel.value ? 'ผูกเป็นหนังสือตอบแล้ว' : 'ยกเลิกการผูกแล้ว', 'success');
+                  setTimeout(function () { location.reload(); }, 600);
+                })
+                .catch(function (e) { window.toast(e.message, 'danger'); sel.disabled = false; });
+            };
+          </script>` : ''}
+        </div>`;
+
   const content = `
     ${ctx.query.created ? (canShareToLine(doc) ? `<div class="alert alert-success">
       <p style="margin:0 0 .5rem"><strong>✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</strong></p>
@@ -2267,6 +2355,8 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
 
         ${dispatchCard}
+
+        ${replyCard}
 
         <div class="card">
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
@@ -3311,6 +3401,19 @@ router.post('/documents/:id/register-info', requireApi((ctx) => {
     detail: { before: Object.fromEntries(Object.keys(patch).map((k) => [k, before[k]])), after: patch },
   });
   json(ctx, 200, { ok: true, changed: true });
+}));
+
+// ธง "ต้องทำหนังสือตอบ" ของหนังสือเข้า และการผูกหนังสือส่งว่าเป็นตัวตอบ (ดู services/replyLink.js)
+router.post('/documents/:id/needs-reply', requireApi((ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  json(ctx, 200, setNeedsReply({ documentId: doc.id, needsReply: ctx.body?.needsReply === true, actorUser: ctx.user }));
+}));
+
+router.post('/documents/:id/reply-to', requireApi((ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  json(ctx, 200, setReplyTarget({ documentId: doc.id, replyToId: ctx.body?.replyToId || null, actorUser: ctx.user }));
 }));
 
 // บันทึก/แก้ไขการส่งออกจริงของหนังสือส่ง (ดูเหตุผลใน services/dispatch.js)

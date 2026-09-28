@@ -7645,6 +7645,102 @@ describe('รายงาน CSV: คอลัมน์วันที่ต้�
 
 // "ออกเลขทะเบียนแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" — หนังสืออาจยังรอ ผอ. ลงนาม รอซอง รอไปรษณีย์รอบบ่าย
 // เดิมไม่มีที่ไหนในระบบบอกได้ว่าฉบับไหนส่งไปแล้ว ธุรการต้องจำเอง และตอบปลายทางที่โทรมาถามไม่ได้
+// หนังสือเข้าจากเขตพื้นที่จำนวนมากต้องทำหนังสือตอบกลับภายในกำหนด แต่หนังสือเข้ากับหนังสือส่งเดิมเป็น
+// คนละเล่มที่ไม่รู้จักกันเลย — ปลายทางทวงว่ายังไม่ได้รับหนังสือตอบ ธุรการต้องค้นเองแล้วเดาว่าฉบับไหนคือตัวตอบ
+describe('การตอบหนังสือ: เรื่องนี้ตอบหรือยัง ตอบด้วยฉบับไหน', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const row = (id) => db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+  // หน้าทะเบียนหนังสือเข้ามีข้อความ "สรุปหนังสือเข้าวันนี้" ฝังอยู่ในปุ่มคัดลอกด้วย ซึ่งมีชื่อเรื่องของ
+  // ทุกฉบับที่ลงวันนี้โดยไม่สนตัวกรอง — ต้องดูที่ "แถวในตาราง" เท่านั้น ไม่ใช่ทั้งหน้า
+  const inRows = (body, id) => body.includes(`href="/documents/${id}"`);
+
+  test('ธุรการติ๊กว่าต้องตอบ แล้วผูกหนังสือส่งที่เป็นตัวตอบได้ เห็นจากทั้งสองฝั่ง', async () => {
+    const incoming = makeDoc({ title: 'ขอข้อมูลจำนวนนักเรียนรายชั้น ภายใน 30 ก.ย.' });
+    const outgoing = makeDoc({ direction: 'outgoing', title: 'รายงานข้อมูลจำนวนนักเรียนรายชั้น' });
+
+    assert.equal((await dispatchPost(reg(), `/documents/${incoming.id}/needs-reply`, { needsReply: true })).status, 200);
+    assert.equal(row(incoming.id).needs_reply, 1);
+
+    const link = await dispatchPost(reg(), `/documents/${outgoing.id}/reply-to`, { replyToId: incoming.id });
+    assert.equal(link.status, 200, link.body);
+    assert.equal(row(outgoing.id).reply_to_id, incoming.id);
+
+    // ฝั่งหนังสือเข้า: ต้องเห็นว่าตอบแล้วด้วยฉบับไหน
+    const inPage = await dispatchGet(reg(), `/documents/${incoming.id}`);
+    assert.match(inPage.body, /ตอบแล้ว 1 ฉบับ/);
+    assert.ok(inPage.body.includes('รายงานข้อมูลจำนวนนักเรียนรายชั้น'), 'ต้องลิงก์ไปหนังสือตอบ');
+    // ฝั่งหนังสือส่ง: ต้องเห็นว่าตอบเรื่องอะไรอยู่
+    const outPage = await dispatchGet(reg(), `/documents/${outgoing.id}`);
+    assert.match(outPage.body, /หนังสือฉบับนี้ตอบเรื่องอะไร/);
+    assert.ok(outPage.body.includes('ขอข้อมูลจำนวนนักเรียนรายชั้น'), 'ต้องลิงก์กลับไปหนังสือเข้า');
+  });
+
+  test('รายการ "รอทำหนังสือตอบ" ต้องหลุดออกทันทีที่ผูกหนังสือตอบ', async () => {
+    const a = makeDoc({ title: 'หนังสือเข้าที่ต้องตอบและยังไม่ได้ตอบ' });
+    const b = makeDoc({ title: 'หนังสือเข้าที่ต้องตอบและตอบไปแล้ว' });
+    for (const d of [a, b]) await dispatchPost(reg(), `/documents/${d.id}/needs-reply`, { needsReply: true });
+    const reply = makeDoc({ direction: 'outgoing', title: 'หนังสือตอบของฉบับที่สอง' });
+    await dispatchPost(reg(), `/documents/${reply.id}/reply-to`, { replyToId: b.id });
+
+    const list = await dispatchGet(reg(), '/documents', { direction: 'incoming', awaitingReply: '1' });
+    assert.ok(inRows(list.body, a.id), 'ฉบับที่ยังไม่ได้ตอบต้องอยู่ในรายการ');
+    assert.ok(!inRows(list.body, b.id), 'ฉบับที่ตอบแล้วต้องหลุดออก');
+    // ทะเบียนที่พิมพ์ออกมาต้องบอกด้วยว่ากรองอะไรไว้ ไม่งั้นกระดาษที่เก็บเข้าแฟ้มจะดูเหมือนทะเบียนทั้งเล่ม
+    const printed = await dispatchGet(reg(), '/documents/register', { direction: 'incoming', awaitingReply: '1' });
+    assert.match(printed.body, /เงื่อนไข:[^<]*ต้องทำหนังสือตอบ/, 'หน้าพิมพ์ต้องบอกเงื่อนไขที่กรองไว้');
+
+    const page = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+    assert.match(page.body, /รอทำหนังสือตอบ \([\d,]+\)/, 'ต้องมีปุ่มลัดพร้อมจำนวน');
+  });
+
+  test('หนังสือเข้าที่ไม่ได้ติ๊กว่าต้องตอบ ต้องไม่ไปกองอยู่ในรายการรอตอบ', async () => {
+    const plain = makeDoc({ title: 'หนังสือเข้าแจ้งให้ทราบเฉยๆ ไม่ต้องตอบ' });
+    const list = await dispatchGet(reg(), '/documents', { direction: 'incoming', awaitingReply: '1' });
+    assert.ok(!inRows(list.body, plain.id),
+      'ถ้าถือว่าทุกฉบับต้องตอบ รายการนี้จะไร้ประโยชน์ทันที');
+  });
+
+  test('ผูกผิดทิศไม่ได้ และครูทั่วไปผูกแทนธุรการไม่ได้', async () => {
+    const incoming = makeDoc({ title: 'หนังสือเข้าสำหรับทดสอบทิศทางการผูก' });
+    const outgoing = makeDoc({ direction: 'outgoing', title: 'หนังสือส่งสำหรับทดสอบทิศทางการผูก' });
+
+    // ตัวตอบต้องเป็นหนังสือส่ง และเป้าหมายต้องเป็นหนังสือเข้า
+    assert.equal((await dispatchPost(reg(), `/documents/${incoming.id}/reply-to`, { replyToId: outgoing.id })).status, 400);
+    assert.equal((await dispatchPost(reg(), `/documents/${outgoing.id}/reply-to`, { replyToId: outgoing.id })).status, 400);
+    assert.equal((await dispatchPost(reg(), `/documents/${outgoing.id}/needs-reply`, { needsReply: true })).status, 400,
+      'ธงต้องตอบใช้กับหนังสือเข้าเท่านั้น');
+
+    assert.equal((await dispatchPost(teacher(), `/documents/${incoming.id}/needs-reply`, { needsReply: true })).status, 403);
+    assert.equal((await dispatchPost(teacher(), `/documents/${outgoing.id}/reply-to`, { replyToId: incoming.id })).status, 403);
+  });
+
+  test('ยกเลิกการผูกได้ และหนังสือเข้ากลับไปอยู่ในรายการรอตอบ', async () => {
+    const incoming = makeDoc({ title: 'หนังสือเข้าที่จะถูกยกเลิกการผูก' });
+    const reply = makeDoc({ direction: 'outgoing', title: 'หนังสือตอบที่จะถูกยกเลิกการผูก' });
+    await dispatchPost(reg(), `/documents/${incoming.id}/needs-reply`, { needsReply: true });
+    await dispatchPost(reg(), `/documents/${reply.id}/reply-to`, { replyToId: incoming.id });
+    assert.ok(!inRows((await dispatchGet(reg(), '/documents', { direction: 'incoming', awaitingReply: '1' })).body, incoming.id));
+
+    assert.equal((await dispatchPost(reg(), `/documents/${reply.id}/reply-to`, { replyToId: null })).status, 200);
+    assert.equal(row(reply.id).reply_to_id, null);
+    assert.ok(inRows((await dispatchGet(reg(), '/documents', { direction: 'incoming', awaitingReply: '1' })).body, incoming.id),
+      'ยกเลิกการผูกแล้วต้องกลับมารอตอบ');
+  });
+
+  test('หนังสือตอบที่ถูกลบไปแล้ว ต้องไม่นับว่าตอบแล้ว', async () => {
+    const incoming = makeDoc({ title: 'หนังสือเข้าที่หนังสือตอบถูกลบทีหลัง' });
+    const reply = makeDoc({ direction: 'outgoing', title: 'หนังสือตอบที่จะถูกลบทีหลัง' });
+    await dispatchPost(reg(), `/documents/${incoming.id}/needs-reply`, { needsReply: true });
+    await dispatchPost(reg(), `/documents/${reply.id}/reply-to`, { replyToId: incoming.id });
+    await forceDeleteDocument({ documentId: reply.id, reason: 'ลงผิดฉบับ', actorUser: adminUser });
+
+    const list = await dispatchGet(reg(), '/documents', { direction: 'incoming', awaitingReply: '1' });
+    assert.ok(inRows(list.body, incoming.id),
+      'ตัวตอบหายไปแล้ว เรื่องนี้ต้องกลับมาอยู่ในรายการรอตอบ ไม่ใช่ถือว่าตอบแล้วตลอดไป');
+  });
+});
+
 // ทะเบียนหนังสือรับ/ส่งต้องยืนยันได้ว่า "เลข 1 ถึง N ครบถ้วน" ตอนตรวจสอบภายในหรือส่งมอบงานสารบรรณ
 // เดิมต้องพิมพ์ออกมาไล่นิ้วดูเองทีละแถว เล่มหนึ่งมีพันกว่าแถว = ไม่มีใครตรวจจนกว่าจะมีคนถามแล้วตอบไม่ได้
 describe('ตรวจความครบถ้วนของทะเบียน', () => {

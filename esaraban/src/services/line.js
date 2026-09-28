@@ -208,3 +208,23 @@ export function incomingDigestText(docs, dateLabel) {
   lines.push(absoluteUrl('/documents?direction=incoming'));
   return lines.join('\n');
 }
+
+/**
+ * ข้อความแจ้งคำสั่ง/ประกาศของโรงเรียนเข้ากลุ่มไลน์
+ *
+ * ทำไมต้องมีแยก: คำสั่งแต่งตั้งเป็นเอกสารที่ "คนที่ชื่ออยู่ในนั้นต้องรู้" แต่ช่องทางที่ครูเห็นจริงคือกลุ่มไลน์
+ * ไม่ใช่บอร์ดหน้าห้องธุรการ — ธุรการจึงต้องพิมพ์บอกในกลุ่มเองทุกครั้ง ซึ่งพิมพ์เลขคำสั่งผิดบ่อยที่สุด
+ * เพราะเลขคำสั่งกับเลขหนังสือส่งหน้าตาเหมือนกัน (45/2569) แต่เป็นคนละเล่มทะเบียน
+ *
+ * ไม่ใส่ชื่อผู้ที่ถูกแต่งตั้งลงในข้อความ ทั้งที่ระบบรู้ว่าใคร — รายชื่อครูเป็นข้อมูลส่วนบุคคล และกลุ่มไลน์
+ * ไม่ผ่านการตรวจสิทธิ์ใดๆ ทั้งสิ้น คนที่ถูกแต่งตั้งได้รับแจ้งเตือนถึงตัวอยู่แล้วต่างหาก
+ */
+export function orderShareText({ noun, numberDisplay, subject, signedDate, orderId }) {
+  const lines = [`${noun === 'ประกาศ' ? '📣' : '📜'} ${noun}ที่ ${numberDisplay}`];
+  lines.push(`เรื่อง ${clip(subject, MAX_TITLE_IN_SHARE)}`);
+  if (signedDate) lines.push(`ลงวันที่ ${fmtThaiDateShort(signedDate)}`);
+  lines.push('');
+  lines.push(`เปิดอ่านในระบบสารบรรณ (ต้องเข้าสู่ระบบก่อน):`);
+  lines.push(absoluteUrl(`/orders/${orderId}`));
+  return lines.join('\n');
+}

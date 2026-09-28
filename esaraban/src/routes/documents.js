@@ -223,11 +223,14 @@ router.get('/documents', requirePage((ctx) => {
     const n = stillOpen(d) ? daysUntil(d.due_date) : null;
     return `
     <tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
-      ${canBulkAssign ? `<td style="text-align:center">
-        <!-- ตัวจัดการคลิกทั้งแถว (public/app.js) เว้น input ให้อยู่แล้ว ติ๊กช่องนี้จึงไม่เด้งออกจากหน้า -->
-        <input type="checkbox" class="bulkPick" value="${esc(d.id)}" aria-label="เลือก ${esc(d.doc_number_display)}"
-          ${assignableIds.has(d.id) ? '' : 'disabled title="ฉบับนี้เสนอขึ้นไปแล้ว หรือปิดเรื่องแล้ว จึงมอบหมายใหม่เป็นชุดไม่ได้"'} />
-      </td>` : ''}
+      ${canBulkAssign ? `<td style="text-align:center">${assignableIds.has(d.id)
+        // ตัวจัดการคลิกทั้งแถว (public/app.js) เว้น input ให้อยู่แล้ว ติ๊กช่องนี้จึงไม่เด้งออกจากหน้า
+        ? `<input type="checkbox" class="bulkPick" value="${esc(d.id)}" aria-label="เลือก ${esc(d.doc_number_display)}" />`
+        // ฉบับที่เลือกไม่ได้ใส่แค่ขีด ไม่ใช่ช่องติ๊กที่กดไม่ได้พร้อมคำอธิบายรายแถว: คำอธิบายเดียวกัน
+        // ซ้ำ 50 แถวหนักเกือบ 10 KB ต่อการเปิดหน้าหนึ่งครั้ง และไม่มีใครเห็นด้วยซ้ำ เพราะครูเปิดจาก
+        // มือถือซึ่งไม่มีการชี้เมาส์ให้ tooltip โผล่ — เหตุผลอยู่ที่หัวคอลัมน์ และคอลัมน์สถานะข้างๆ
+        // ก็บอกอยู่แล้วว่าฉบับนั้นเสนอขึ้นไปแล้ว
+        : '<span class="text-muted">–</span>'}</td>` : ''}
       <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}
         ${d.is_circular ? '<div><span class="badge badge-info" style="font-size:.7rem">ว เวียน</span></div>' : ''}</td>
       ${direction === 'all' ? `<td style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
@@ -443,7 +446,7 @@ router.get('/documents', requirePage((ctx) => {
     <div class="card">
       ${filterForm}
       ${rows.length ? `${bulkBar}<div class="table-wrap"><table>
-        <thead><tr>${canBulkAssign ? '<th style="text-align:center"><input type="checkbox" id="bulkAll" aria-label="เลือกทั้งหน้า" onclick="toggleAllPicks(this)" /></th>' : ''}<th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th class="clip-col" title="ไฟล์แนบ">📎</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
+        <thead><tr>${canBulkAssign ? '<th style="text-align:center" title="ติ๊กเพื่อเลือกหลายฉบับแล้วมอบหมายรวดเดียว — ฉบับที่ขึ้นขีด (–) คือฉบับที่เสนอขึ้นไปแล้วหรือปิดเรื่องแล้ว จึงมอบหมายใหม่เป็นชุดไม่ได้"><input type="checkbox" id="bulkAll" aria-label="เลือกทั้งหน้า" onclick="toggleAllPicks(this)" /></th>' : ''}<th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th class="clip-col" title="ไฟล์แนบ">📎</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>${pager}
       ${canBulkAssign ? `<script>
         function picked() { return [...document.querySelectorAll('.bulkPick:checked')].map(function (x) { return x.value; }); }
@@ -453,7 +456,8 @@ router.get('/documents', requirePage((ctx) => {
           document.getElementById('bulkCount').textContent = 'เลือกไว้ ' + n + ' ฉบับ';
         }
         window.toggleAllPicks = function (box) {
-          document.querySelectorAll('.bulkPick:not([disabled])').forEach(function (x) { x.checked = box.checked; });
+          // ช่องติ๊กมีอยู่เฉพาะแถวที่มอบหมายได้อยู่แล้ว (แถวอื่นขึ้นขีด) "เลือกทั้งหน้า" จึงไม่ลามไปไหน
+          document.querySelectorAll('.bulkPick').forEach(function (x) { x.checked = box.checked; });
           refreshBulkBar();
         };
         window.clearPicks = function () {

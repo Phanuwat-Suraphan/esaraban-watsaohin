@@ -18,3 +18,4 @@ import './manifest.js';
 import './line.js';
 import './registration.js';
 import './outgoingRequest.js';
+import './schoolOrders.js';

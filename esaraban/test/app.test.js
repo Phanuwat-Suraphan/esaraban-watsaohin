@@ -11568,14 +11568,28 @@ describe('มอบหมายหลายฉบับให้คนเดี�
       assert.ok(res.body.includes('id="bulkAssignee"') && res.body.includes('id="bulkInstruction"'));
     });
 
-    test('ฉบับที่เสนอขึ้นไปแล้ว ช่องติ๊กต้องกดไม่ได้และบอกเหตุผล', async () => {
+    // คำอธิบายอยู่ที่หัวคอลัมน์ครั้งเดียว ไม่ใช่ซ้ำทุกแถวที่เลือกไม่ได้ — ซ้ำ 50 แถวหนักเกือบ 10 KB
+    // ต่อการเปิดหน้าหนึ่งครั้ง (วัดแล้ว) และไม่มีใครเห็น เพราะครูเปิดจากมือถือซึ่งไม่มีการชี้เมาส์
+    test('ฉบับที่เสนอขึ้นไปแล้วต้องไม่มีช่องติ๊ก และหัวคอลัมน์ต้องบอกเหตุผลไว้', async () => {
       const [doc] = batch(1);
       assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
       const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/documents', { direction: 'incoming' });
-      const box = pickBox(res.body, doc.id);
-      assert.ok(box, 'แถวยังต้องแสดงอยู่');
-      assert.ok(box.includes('disabled'), 'ฉบับที่เสนอไปแล้วต้องติ๊กไม่ได้');
-      assert.match(box, /title="[^"]*เสนอขึ้นไปแล้ว/);
+      assert.ok(res.body.includes(`href="/documents/${doc.id}"`), 'แถวยังต้องแสดงอยู่');
+      assert.equal(pickBox(res.body, doc.id), null, 'ฉบับที่เสนอไปแล้วต้องไม่มีช่องติ๊ก');
+      assert.match(res.body, /<th[^>]*title="[^"]*เสนอขึ้นไปแล้ว[^"]*"><input type="checkbox" id="bulkAll"/,
+        'หัวคอลัมน์ต้องอธิบายว่าแถวที่ขึ้นขีดคืออะไร');
+    });
+
+    // ค่าคงที่ต่อแถวของฟีเจอร์นี้ต้องเล็ก เพราะหน้าทะเบียนเป็นหน้าที่เปิดบ่อยที่สุดในระบบ และเว็บนี้
+    // ไม่ได้บีบอัดคำตอบ (ไม่มี gzip) ขนาดที่เห็นคือขนาดที่วิ่งผ่านเน็ตมือถือของครูจริงๆ
+    test('ช่องติ๊กต้องไม่ทำให้หน้าทะเบียนอ้วนขึ้นเกิน 6 KB ต่อ 50 แถว', async () => {
+      const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/documents', { direction: 'incoming' });
+      const boxes = res.body.match(/<input type="checkbox" class="bulkPick"[^>]*>/g) || [];
+      const dashes = res.body.match(/<td style="text-align:center"><span class="text-muted">–<\/span><\/td>/g) || [];
+      const cells = boxes.length + dashes.length;
+      assert.ok(cells > 0, 'เทสต์นี้ต้องมีแถวให้วัดจริง');
+      const bytes = [...boxes, ...dashes].reduce((n, x) => n + Buffer.byteLength(x), 0);
+      assert.ok(bytes / cells < 120, `ต่อแถวหนัก ${(bytes / cells).toFixed(0)} ไบต์ (${cells} แถว) — เกินงบ 120 ไบต์/แถว`);
     });
 
     test('ครูทั่วไปต้องไม่ได้ช่องติ๊กที่กดได้ของหนังสือที่ธุรการเป็นผู้บันทึก', async () => {
@@ -11587,6 +11601,346 @@ describe('มอบหมายหลายฉบับให้คนเดี�
       assert.ok(res.body.includes(`href="/documents/${doc.id}"`), 'ครูต้องเห็นแถวนี้จริง');
       const box = pickBox(res.body, doc.id);
       assert.ok(box === null || box.includes('disabled'), 'ครูต้องติ๊กหนังสือของธุรการไม่ได้');
+    });
+  });
+});
+
+// โรงเรียนหนึ่งออกคำสั่งเดือนละหลายฉบับ (แต่งตั้งกรรมการ เวรรักษาการณ์ มอบหมายงาน ไปราชการ)
+// เดิมเล่มทะเบียนคำสั่งเป็นสมุดเขียนมือที่ใครหยิบไปก็ได้ — เลขซ้ำกันสองฉบับใช้อ้างอิงไม่ได้เลย
+// และครูที่ชื่ออยู่ในคำสั่งก็ไม่รู้ตัว เพราะคำสั่งอยู่ในแฟ้มห้องธุรการ
+describe('ทะเบียนคำสั่งและประกาศของโรงเรียน', () => {
+  let SO;
+  before(async () => { SO = await import('../src/services/schoolOrder.js'); });
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const pdf = (tag) => Buffer.from(`%PDF-1.4\n% ${tag}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1');
+  const pdfPayload = (tag, name = 'order.pdf') =>
+    ({ fileName: name, fileType: 'application/pdf', fileDataBase64: pdf(tag).toString('base64') });
+  let n = 0;
+  const mk = (over = {}) => SO.createSchoolOrder({
+    kind: 'order', subject: `แต่งตั้งคณะกรรมการชุดทดสอบที่ ${++n} ${Math.random().toString(36).slice(2, 8)}`,
+    signedDate: todayInBangkok(), actorUser: reg(), ...over,
+  });
+  const rowOf = (id) => db.prepare('SELECT * FROM school_orders WHERE id = ?').get(id);
+  const noteCount = (uid) => db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND title LIKE '%มีชื่อท่านอยู่ในเอกสารนี้'").get(uid).c;
+
+  describe('เลขทะเบียน', () => {
+    test('เดินหน้าทีละหนึ่ง และคำสั่งกับประกาศเป็นคนละเล่ม ต่างมีเลขของตัวเองได้', () => {
+      const a = mk();
+      const b = mk();
+      assert.equal(rowOf(b.id).running_number, rowOf(a.id).running_number + 1);
+
+      const notice = mk({ kind: 'notice', subject: 'ประกาศรับสมัครลูกจ้างชั่วคราว ตำแหน่งครูอัตราจ้าง' });
+      const firstNoticeNo = rowOf(notice.id).running_number;
+      const notice2 = mk({ kind: 'notice', subject: 'ประกาศผลการคัดเลือกลูกจ้างชั่วคราว' });
+      assert.equal(rowOf(notice2.id).running_number, firstNoticeNo + 1, 'เล่มประกาศต้องนับของตัวเอง');
+      // คนละเล่มจริง: เลขของประกาศไม่ได้วิ่งต่อจากเลขคำสั่ง
+      assert.ok(firstNoticeNo < rowOf(a.id).running_number || firstNoticeNo === 1,
+        `เล่มประกาศต้องไม่นับต่อจากเล่มคำสั่ง (ได้ ${firstNoticeNo})`);
+    });
+
+    test('ไม่กินเลขทะเบียนหนังสือส่ง — คนละสมุดกันคนละเล่ม', () => {
+      const before = nextRunningNumber({ direction: 'outgoing' }).runningNumber;
+      mk();
+      mk({ kind: 'notice', subject: 'ประกาศเรื่องที่ไม่ควรไปแตะเลขหนังสือส่ง' });
+      const after = nextRunningNumber({ direction: 'outgoing' }).runningNumber;
+      assert.equal(after, before + 1, 'ออกคำสั่ง/ประกาศแล้วเลขหนังสือส่งต้องไม่ขยับเกินที่เราขอเอง');
+    });
+
+    test('รูปแบบเลขเป็น 45/2569 ไม่เติมศูนย์นำหน้า (ตรงกับที่เขียนบนหัวคำสั่งจริง)', () => {
+      const o = mk();
+      const row = rowOf(o.id);
+      assert.equal(row.number_display, `${row.running_number}/${row.year_be}`);
+      assert.doesNotMatch(row.number_display, /^0/);
+      assert.equal(o.numberDisplay, row.number_display);
+    });
+
+    test('เลขตัวอย่างในฟอร์มต้องไม่แตะตัวนับจริง', () => {
+      const preview = SO.previewOrderNumber('order');
+      assert.equal(SO.previewOrderNumber('order'), preview, 'ดูตัวอย่างซ้ำต้องได้เลขเดิม');
+      assert.equal(mk().numberDisplay, preview, 'ออกเลขจริงต้องได้เลขที่โชว์ไว้');
+    });
+
+    test('ไฟล์แนบผิดชนิดต้องไม่กินเลขคำสั่งทิ้ง', () => {
+      const before = SO.previewOrderNumber('order');
+      assert.throws(() => mk({ file: { fileName: 'x.pdf', fileType: 'application/pdf', fileDataBase64: Buffer.from('ไม่ใช่พีดีเอฟ').toString('base64') } }),
+        /ลายเซ็นไฟล์/);
+      assert.throws(() => mk({ file: { fileName: 'x.exe', fileType: 'application/x-msdownload', fileDataBase64: 'AAAA' } }),
+        /แนบไม่ได้/);
+      assert.equal(SO.previewOrderNumber('order'), before,
+        'เลขต้องยังเป็นเลขเดิม ไม่งั้นทะเบียนจะมีเลขขาดโดยไม่มีคำสั่งฉบับนั้นอยู่จริง');
+    });
+  });
+
+  describe('ผู้ที่ต้องทราบ', () => {
+    test('ทุกคนที่ระบุได้รับแจ้งเตือนถึงตัว พร้อมลิงก์มาที่คำสั่งฉบับนั้น', () => {
+      const before = noteCount(seed.userIds.teacher001);
+      const o = mk({ recipientIds: [seed.userIds.teacher001, seed.userIds.director01] });
+      assert.equal(noteCount(seed.userIds.teacher001), before + 1);
+      const note = db.prepare(`SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+        .get(seed.userIds.teacher001);
+      assert.equal(note.link_url, `/orders/${o.id}`);
+      assert.match(note.title, new RegExp(`^คำสั่งที่ ${o.numberDisplay} — มีชื่อท่านอยู่ในเอกสารนี้$`));
+      assert.equal(SO.orderRecipients(o.id).length, 2);
+    });
+
+    test('คนที่ออกเลขเองไม่ต้องแจ้งตัวเอง แต่ยังนับเป็นผู้ที่ต้องทราบ', () => {
+      const before = noteCount(seed.userIds.reg001);
+      const o = mk({ recipientIds: [seed.userIds.reg001, seed.userIds.teacher001] });
+      assert.equal(noteCount(seed.userIds.reg001), before, 'ต้องไม่แจ้งเตือนตัวผู้กด');
+      assert.equal(SO.orderRecipients(o.id).length, 2);
+    });
+
+    test('เปิดหน้าคำสั่งแล้วถูกบันทึกว่าอ่านแล้ว และไม่ทับเวลาครั้งแรก', async () => {
+      const o = mk({ recipientIds: [seed.userIds.teacher001] });
+      const openedOf = () => db.prepare('SELECT opened_at FROM school_order_recipients WHERE order_id = ? AND user_id = ?')
+        .get(o.id, seed.userIds.teacher001).opened_at;
+      assert.equal(openedOf(), null, 'แจ้งไปแล้วยังไม่เท่ากับอ่านแล้ว');
+      await dispatchGet(teacher(), `/orders/${o.id}`);
+      const first = openedOf();
+      assert.ok(first, 'เปิดหน้าแล้วต้องบันทึกว่าอ่านแล้ว');
+      await dispatchGet(teacher(), `/orders/${o.id}`);
+      assert.equal(openedOf(), first, 'เปิดซ้ำต้องไม่ทับเวลาครั้งแรก — ที่ต้องตอบได้คือรู้เรื่องตั้งแต่เมื่อไร');
+    });
+
+    test('คนที่ไม่ได้อยู่ในรายชื่อ เปิดดูได้แต่ไม่ถูกนับเป็นผู้อ่าน', async () => {
+      const o = mk({ recipientIds: [seed.userIds.teacher001] });
+      const res = await dispatchGet(admin(), `/orders/${o.id}`);
+      assert.equal(res.status, 200);
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM school_order_recipients WHERE order_id = ?').get(o.id).c, 1);
+    });
+
+    test('เพิ่มผู้ที่ต้องทราบภายหลังได้ และคนที่มีชื่ออยู่แล้วต้องไม่ถูกแจ้งซ้ำ', () => {
+      const o = mk({ recipientIds: [seed.userIds.teacher001] });
+      const before = noteCount(seed.userIds.teacher001);
+      const res = SO.addOrderRecipients({
+        orderId: o.id, userIds: [seed.userIds.teacher001, seed.userIds.head_acad], actorUser: reg(),
+      });
+      assert.deepEqual({ added: res.added, skipped: res.skipped }, { added: 1, skipped: 1 });
+      assert.equal(noteCount(seed.userIds.teacher001), before, 'คนที่มีชื่ออยู่แล้วต้องไม่ได้แจ้งซ้ำ');
+      assert.equal(noteCount(seed.userIds.head_acad) > 0, true);
+      assert.equal(SO.orderRecipients(o.id).length, 2);
+    });
+
+    test('ตัวเลขข้างเมนูนับเฉพาะคำสั่งที่ยังไม่อ่านและยังไม่ถูกลบ', () => {
+      const before = SO.unreadOrderCount(seed.userIds.teacher001);
+      const keep = mk({ recipientIds: [seed.userIds.teacher001] });
+      const gone = mk({ recipientIds: [seed.userIds.teacher001] });
+      assert.equal(SO.unreadOrderCount(seed.userIds.teacher001), before + 2);
+      SO.deleteSchoolOrder({ orderId: gone.id, reason: 'ออกเลขซ้ำ', actorUser: admin() });
+      assert.equal(SO.unreadOrderCount(seed.userIds.teacher001), before + 1, 'ฉบับที่ถูกลบต้องไม่ค้างเป็นงานให้ครูอีก');
+      SO.markOrderOpened(keep.id, seed.userIds.teacher001);
+      assert.equal(SO.unreadOrderCount(seed.userIds.teacher001), before);
+    });
+
+    test('ระบุผู้รับที่ไม่มีตัวตน หรือเกินเพดาน ต้องถูกปฏิเสธ', () => {
+      assert.throws(() => mk({ recipientIds: [uuid()] }), /ไม่พบในระบบ/);
+      assert.throws(() => mk({ recipientIds: Array.from({ length: SO.MAX_ORDER_RECIPIENTS + 1 }, () => uuid()) }),
+        new RegExp(`ไม่เกิน ${SO.MAX_ORDER_RECIPIENTS} คน`));
+    });
+  });
+
+  describe('สิทธิ์', () => {
+    test('ครูทั่วไปออกเลขคำสั่งเองไม่ได้', () => {
+      assert.throws(() => mk({ actorUser: teacher() }), /ธุรการและผู้บริหาร/);
+    });
+
+    test('ครูทั่วไปยิง API ออกเลข/แก้ไข/แนบไฟล์ ไม่ได้', async () => {
+      const created = await dispatchPost(teacher(), '/orders', { kind: 'order', subject: 'คำสั่งที่ครูพยายามออกเอง' });
+      assert.equal(created.status, 403);
+      const o = mk();
+      assert.equal((await dispatchPost(teacher(), `/orders/${o.id}`, { subject: 'แก้เอง' })).status, 403);
+      assert.equal((await dispatchPost(teacher(), `/orders/${o.id}/files`, { file: pdfPayload('ครูแนบเอง') })).status, 403);
+      assert.equal((await dispatchPost(teacher(), `/orders/${o.id}/recipients`, { userIds: [seed.userIds.admin] })).status, 403);
+      assert.equal(rowOf(o.id).subject, o.subject ?? rowOf(o.id).subject);
+    });
+
+    test('ลบได้เฉพาะผู้ดูแลระบบ และต้องระบุเหตุผล', () => {
+      const o = mk();
+      assert.throws(() => SO.deleteSchoolOrder({ orderId: o.id, reason: 'ก', actorUser: reg() }), /ผู้ดูแลระบบ/);
+      assert.throws(() => SO.deleteSchoolOrder({ orderId: o.id, reason: '  ', actorUser: admin() }), /เหตุผล/);
+      assert.ok(SO.getSchoolOrder(o.id), 'ยังต้องอยู่');
+      SO.deleteSchoolOrder({ orderId: o.id, reason: 'ออกเลขซ้ำกับฉบับก่อนหน้า', actorUser: admin() });
+      assert.equal(SO.getSchoolOrder(o.id), undefined);
+    });
+
+    test('ลบแล้วเลขไม่ถูกนำกลับมาใช้ซ้ำ', () => {
+      const o = mk();
+      const num = rowOf(o.id).running_number;
+      SO.deleteSchoolOrder({ orderId: o.id, reason: 'พิมพ์ผิดทั้งฉบับ', actorUser: admin() });
+      const next = mk();
+      assert.equal(rowOf(next.id).running_number, num + 1, 'ตัวนับต้องไม่ถอยกลับมาใช้เลขที่แจกไปแล้ว');
+    });
+  });
+
+  describe('ไฟล์คำสั่งที่ลงนามแล้ว', () => {
+    test('แนบตอนออกเลข และแนบเพิ่มภายหลังได้', () => {
+      const o = mk({ file: pdfPayload('คำสั่งที่ลงนามแล้ว') });
+      assert.equal(SO.orderFiles(o.id).length, 1);
+      SO.addOrderFile({ orderId: o.id, file: pdfPayload('ฉบับแก้ไข', 'แก้ไข.pdf'), actorUser: reg() });
+      const files = SO.orderFiles(o.id);
+      assert.equal(files.length, 2);
+      assert.deepEqual(files.map((f) => f.filename), ['order.pdf', 'แก้ไข.pdf'], 'ต้องเรียงตามเวลาที่แนบ');
+    });
+
+    test('ดาวน์โหลดได้จริง และ Word/Excel ต้องถูกบังคับดาวน์โหลด ไม่เปิดในแท็บ', async () => {
+      const o = mk({ file: pdfPayload('เปิดดูได้') });
+      const [f] = SO.orderFiles(o.id);
+      const view = await dispatchGet(teacher(), `/orders/${o.id}/files/${f.id}`);
+      assert.equal(view.status, 200);
+      assert.equal(view.headers['Content-Type'], 'application/pdf');
+      assert.match(view.headers['Content-Disposition'], /^inline/);
+      assert.ok(view.buffer.toString('latin1').startsWith('%PDF-'), 'ต้องได้เนื้อไฟล์จริง');
+
+      const dl = await dispatchGet(teacher(), `/orders/${o.id}/files/${f.id}`, { download: '1' });
+      assert.match(dl.headers['Content-Disposition'], /^attachment/);
+
+      const xlsx = { fileName: 'บัญชีแนบท้ายคำสั่ง.xlsx', fileType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', fileDataBase64: makeXlsx([['ก']]).toString('base64') };
+      const o2 = mk({ file: xlsx });
+      const [xf] = SO.orderFiles(o2.id);
+      const xres = await dispatchGet(teacher(), `/orders/${o2.id}/files/${xf.id}`);
+      assert.match(xres.headers['Content-Disposition'], /^attachment/,
+        'Excel ต้องดาวน์โหลด ไม่ใช่เปิดในแท็บแล้วได้หน้าขาว');
+    });
+
+    test('ดึงไฟล์ของคำสั่งฉบับอื่นด้วยเส้นทางของฉบับนี้ไม่ได้', async () => {
+      const mine = mk({ file: pdfPayload('ของฉบับนี้') });
+      const other = mk({ file: pdfPayload('ของฉบับอื่น') });
+      const [otherFile] = SO.orderFiles(other.id);
+      const res = await dispatchGet(teacher(), `/orders/${mine.id}/files/${otherFile.id}`);
+      assert.equal(res.status, 404, 'ต้องไม่ยอมให้ :id เป็นแค่ของประดับ');
+    });
+  });
+
+  describe('แก้ไขรายละเอียด', () => {
+    test('แก้เรื่อง/วันลงนาม/ผู้ลงนาม/หมายเหตุได้ แต่เลขไม่เปลี่ยน', () => {
+      const o = mk();
+      const before = rowOf(o.id);
+      SO.updateSchoolOrder({
+        orderId: o.id, subject: 'แต่งตั้งคณะกรรมการ (ฉบับแก้ไขคำผิด)',
+        signedDate: '2026-09-01', signerId: seed.userIds.director01, note: 'แก้คำผิดจากฉบับเดิม', actorUser: reg(),
+      });
+      const after = rowOf(o.id);
+      assert.equal(after.subject, 'แต่งตั้งคณะกรรมการ (ฉบับแก้ไขคำผิด)');
+      assert.equal(after.signed_date, '2026-09-01');
+      assert.equal(after.signer_id, seed.userIds.director01);
+      assert.equal(after.number_display, before.number_display, 'เลขที่ต้องแก้ไม่ได้');
+      assert.equal(after.running_number, before.running_number);
+    });
+
+    test('วันที่ลงนามที่ไม่ใช่วันที่ ต้องถูกปฏิเสธ', () => {
+      assert.throws(() => mk({ signedDate: '1 กันยายน 2569' }), /วันที่ลงนาม/);
+    });
+
+    test('เรื่องว่างเปล่าต้องถูกปฏิเสธ', () => {
+      assert.throws(() => mk({ subject: '   ' }), /กรอกเรื่อง/);
+    });
+  });
+
+  describe('ตรวจความครบถ้วนของเล่มทะเบียน', () => {
+    test('เลขที่หายไปเพราะถูกลบ ต้องบอกได้ว่าใครลบและเพราะอะไร', () => {
+      const year = beYear();
+      const o = mk();
+      const num = rowOf(o.id).running_number;
+      SO.deleteSchoolOrder({ orderId: o.id, reason: 'ยกเลิกคำสั่งทั้งฉบับตามที่ ผอ. สั่ง', actorUser: admin() });
+      mk(); // ให้มีเลขที่สูงกว่า เลขที่ลบจึงกลายเป็น "ช่องว่าง" ในเล่ม
+      const result = SO.auditOrderRegister({ kind: 'order', year });
+      const hole = result.missing.find((m) => m.number === num);
+      assert.ok(hole, `เลข ${num} ต้องขึ้นเป็นเลขที่หายไป`);
+      assert.equal(hole.reason, 'deleted');
+      assert.equal(hole.deleteReason, 'ยกเลิกคำสั่งทั้งฉบับตามที่ ผอ. สั่ง');
+      assert.match(hole.deletedByName, /\S/, 'ต้องบอกชื่อคนที่ลบ');
+      assert.equal(result.complete, false);
+    });
+
+    test('เล่มที่ไม่มีเลขขาดต้องรายงานว่าเรียบร้อย', () => {
+      const year = 2500; // ปีที่ไม่มีใครใช้ จะได้เป็นเล่มเปล่าที่ควบคุมได้
+      const result = SO.auditOrderRegister({ kind: 'order', year });
+      assert.deepEqual({ total: result.total, missing: result.missing.length, complete: result.complete },
+        { total: 0, missing: 0, complete: true });
+    });
+  });
+
+  describe('หน้าเว็บ', () => {
+    test('หน้าทะเบียนแสดงรายการ ค้นหาได้ และมีแท็บคำสั่ง/ประกาศ', async () => {
+      const subject = `คำสั่งที่ใช้ทดสอบการค้นหา ${Math.random().toString(36).slice(2, 8)}`;
+      const o = mk({ subject });
+      const page = await dispatchGet(reg(), '/orders', { kind: 'order' });
+      assert.equal(page.status, 200);
+      assert.ok(page.body.includes(`href="/orders/${o.id}"`), 'ต้องเห็นฉบับที่เพิ่งออกเลข');
+      assert.ok(page.body.includes('ประกาศโรงเรียน'), 'ต้องมีแท็บประกาศ');
+
+      const found = await dispatchGet(reg(), '/orders', { kind: 'order', q: subject });
+      assert.ok(found.body.includes(`href="/orders/${o.id}"`));
+      const notFound = await dispatchGet(reg(), '/orders', { kind: 'order', q: 'คำค้นที่ไม่มีทางตรงกับอะไรเลยจริงๆ' });
+      assert.ok(!notFound.body.includes(`href="/orders/${o.id}"`));
+    });
+
+    test('ตัวกรอง "เฉพาะที่มีชื่อท่าน" แสดงเฉพาะฉบับที่ครูถูกแต่งตั้ง', async () => {
+      const mineOne = mk({ recipientIds: [seed.userIds.teacher001] });
+      const notMine = mk();
+      const res = await dispatchGet(teacher(), '/orders', { kind: 'order', mine: '1' });
+      assert.ok(res.body.includes(`href="/orders/${mineOne.id}"`), 'ต้องเห็นฉบับที่มีชื่อตัวเอง');
+      assert.ok(!res.body.includes(`href="/orders/${notMine.id}"`), 'ต้องไม่เห็นฉบับที่ไม่มีชื่อตัวเอง');
+    });
+
+    test('ครูทั่วไปเปิดทะเบียนดูได้ แต่ไม่มีฟอร์มออกเลข', async () => {
+      const res = await dispatchGet(teacher(), '/orders', { kind: 'order' });
+      assert.equal(res.status, 200);
+      assert.ok(!res.body.includes('id="orderForm"'), 'ครูต้องไม่เห็นฟอร์มออกเลข');
+      const mine = await dispatchGet(reg(), '/orders', { kind: 'order' });
+      assert.ok(mine.body.includes('id="orderForm"'), 'ธุรการต้องเห็นฟอร์มออกเลข');
+    });
+
+    test('หน้ารายละเอียดบอกเลข เรื่อง ผู้ลงนาม และมีข้อความให้คัดลอกส่งเข้าไลน์', async () => {
+      const subject = 'แต่งตั้งครูปฏิบัติหน้าที่เวรรักษาการณ์ ประจำเดือนตุลาคม';
+      const o = mk({ subject, signerId: seed.userIds.director01, recipientIds: [seed.userIds.teacher001] });
+      const res = await dispatchGet(reg(), `/orders/${o.id}`);
+      assert.equal(res.status, 200);
+      assert.ok(res.body.includes(subject), 'ต้องมีชื่อเรื่อง');
+      assert.ok(res.body.includes(`คำสั่งโรงเรียนที่ ${o.numberDisplay}`), 'ต้องขึ้นเลขที่ให้เห็นชัด');
+      assert.ok(res.body.includes('window.copyShareText'), 'ต้องมีปุ่มคัดลอกข้อความ');
+      assert.ok(res.body.includes(`/orders/${o.id}`), 'ข้อความต้องมีลิงก์กลับมาที่ฉบับนี้');
+      assert.ok(res.body.includes('ยังไม่เปิดอ่าน'), 'ต้องบอกว่าผู้ที่ต้องทราบยังไม่เปิดอ่าน');
+      assert.ok(res.body.includes('ผู้อำนวยการ') || res.body.includes('ผู้ลงนาม'), 'ต้องบอกผู้ลงนาม');
+    });
+
+    test('เปิดฉบับที่ถูกลบไปแล้วต้องได้หน้าบอกว่าไม่พบ ไม่ใช่ระบบพัง', async () => {
+      const o = mk();
+      SO.deleteSchoolOrder({ orderId: o.id, reason: 'ทดสอบการลบ', actorUser: admin() });
+      const res = await dispatchGet(reg(), `/orders/${o.id}`);
+      assert.equal(res.status, 404);
+      assert.match(res.body, /ไม่พบคำสั่ง/);
+    });
+
+    test('หน้าพิมพ์ทะเบียนเป็น A4 แนวตั้ง และเรียงเลขน้อยไปมากเหมือนสมุดทะเบียน', async () => {
+      const a = mk();
+      const b = mk();
+      const res = await dispatchGet(reg(), '/orders/register', { kind: 'order', year: String(beYear()) });
+      assert.equal(res.status, 200);
+      assert.match(res.body, /@page \{ size: A4 portrait;/);
+      assert.match(res.body, /width: 210mm; min-height: 297mm;/);
+      assert.ok(res.body.includes('transform: none !important'), 'เวลาพิมพ์ต้องไม่ติดการย่อให้พอดีจอ');
+      const iA = res.body.indexOf(a.numberDisplay);
+      const iB = res.body.indexOf(b.numberDisplay);
+      assert.ok(iA > -1 && iB > -1 && iA < iB, 'เลขน้อยต้องอยู่ก่อนเลขมาก');
+    });
+
+    test('"register" ต้องเป็นหน้าพิมพ์ ไม่ใช่ถูกจับเป็นรหัสของคำสั่งฉบับหนึ่ง', async () => {
+      const res = await dispatchGet(reg(), '/orders/register', { kind: 'order' });
+      assert.equal(res.status, 200);
+      assert.match(res.body, /ทะเบียนคำสั่งโรงเรียน/);
+      assert.ok(!res.body.includes('ไม่พบคำสั่ง'), 'ต้องไม่ตกไปเข้าเส้นทาง /orders/:id');
+    });
+
+    test('เมนูขึ้นตัวเลขคำสั่งที่ยังไม่ได้อ่านของคนนั้น', async () => {
+      const o = mk({ recipientIds: [seed.userIds.teacher001] });
+      const page = await dispatchGet(teacher(), '/');
+      const badge = /คำสั่ง\/ประกาศโรงเรียน<\/span><span class="nav-count">(\d+)</.exec(page.body);
+      assert.ok(badge, 'เมนูต้องขึ้นตัวเลขงานค้างอ่าน');
+      assert.ok(Number(badge[1]) >= 1, `ได้ ${badge && badge[1]}`);
+      SO.markOrderOpened(o.id, seed.userIds.teacher001);
     });
   });
 });

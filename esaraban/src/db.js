@@ -636,6 +636,71 @@ export function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_outreq_file ON outgoing_request_files(request_id);
 
+  -- ---------------- คำสั่งและประกาศของโรงเรียน ----------------
+  --
+  -- คนละเรื่องกับหนังสือเข้า/หนังสือส่ง และคนละเล่มทะเบียน: คำสั่งโรงเรียนเป็นหนังสือสั่งการที่โรงเรียน
+  -- ออกเอง ("คำสั่งโรงเรียน...ที่ 45/2569 เรื่อง แต่งตั้งคณะกรรมการ...") มีเลขของตัวเองเรียง 1 ไปจน
+  -- สิ้นปีปฏิทิน ไม่กินเลขทะเบียนหนังสือส่ง ประกาศโรงเรียนก็เป็นอีกเล่มหนึ่งแยกจากคำสั่ง
+  --
+  -- ไม่ยัดลงตาราง documents เพราะวงจรชีวิตต่างกันทั้งหมด: คำสั่งไม่มีผู้ส่ง/ผู้รับภายนอก ไม่มีวันที่รับ
+  -- ไม่มีสายการเสนอ-ลงนามทีละขั้น (ผอ. ลงนามฉบับเดียวจบ) และไม่ต้องตอบกลับ — ที่ต้องมีคือเลขไม่ซ้ำ
+  -- ไม่ข้าม ค้นย้อนหลังได้ และ "คนที่ถูกแต่งตั้งรู้ตัวว่ามีคำสั่งถึงตัวเอง" ซึ่งเป็นจุดที่พลาดกันจริง
+  -- (คำสั่งติดบอร์ดไว้แล้วครูที่ชื่ออยู่ในคำสั่งไม่เคยเดินไปอ่าน)
+  CREATE TABLE IF NOT EXISTS school_orders (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,                 -- order = คำสั่ง | notice = ประกาศ (คนละเล่มทะเบียน)
+    running_number INTEGER NOT NULL,
+    year_be INTEGER NOT NULL,
+    number_display TEXT NOT NULL,       -- เช่น "45/2569"
+    subject TEXT NOT NULL,              -- เรื่อง
+    signed_date TEXT,                   -- วันที่ลงนาม (ISO yyyy-mm-dd)
+    signer_id TEXT REFERENCES users(id),-- ผู้ลงนาม (ปกติคือ ผอ.)
+    note TEXT,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    -- ลบแบบซ่อน เหมือนหนังสือ — เลขที่ออกไปแล้วต้องไม่ถูกนำกลับมาใช้ซ้ำ และต้องยังตอบได้ว่า
+    -- เลขที่หายไปจากทะเบียนนั้นใครลบและเพราะอะไร (ดู registerAudit ของหนังสือเป็นตัวอย่าง)
+    deleted_at TEXT,
+    deleted_by TEXT REFERENCES users(id),
+    delete_reason TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_school_orders_list
+    ON school_orders(kind, year_be, running_number DESC) WHERE deleted_at IS NULL;
+
+  -- ตัวนับเลขคำสั่ง/ประกาศ แยกเล่มตาม kind และแยกปีตามปีปฏิทิน พ.ศ. เหมือน document_number_counters
+  CREATE TABLE IF NOT EXISTS school_order_counters (
+    year_be INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    running_number INTEGER NOT NULL,
+    PRIMARY KEY (year_be, kind)
+  );
+
+  -- ไฟล์คำสั่งที่ลงนามแล้ว — เก็บในฐานข้อมูลเหมือนร่างหนังสือของคำขอเลข ไม่ใช่ลงดิสก์ เพราะบนโฮสต์ที่
+  -- ดิสก์ถูกล้างทุกครั้งที่ deploy ไฟล์บนดิสก์จะหายเงียบๆ ส่วนฐานข้อมูลถูกสำรองขึ้น Google Drive อยู่แล้ว
+  -- และคำสั่งเป็นเอกสารที่ต้องเก็บถาวร จะหายไม่ได้เลย
+  CREATE TABLE IF NOT EXISTS school_order_files (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES school_orders(id),
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    filesize INTEGER NOT NULL,
+    content BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_school_order_file ON school_order_files(order_id);
+
+  -- ผู้ที่ถูกแต่งตั้ง/ผู้ที่ต้องทราบคำสั่งฉบับนั้น พร้อมเวลาที่เปิดอ่านจริง
+  -- (เหตุผลเดียวกับ workflow_steps.opened_at ของหนังสือ: "แจ้งไปแล้ว" ไม่เท่ากับ "อ่านแล้ว")
+  CREATE TABLE IF NOT EXISTS school_order_recipients (
+    order_id TEXT NOT NULL REFERENCES school_orders(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    opened_at TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (order_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_school_order_recip_user ON school_order_recipients(user_id);
+
   -- สรุปงานรายวันที่ธุรการอัปโหลดมาเป็นไฟล์ Excel แล้วระบบแตกออกมาเก็บเป็นรายการ เพื่อให้แก้ไขต่อในระบบได้
   -- และรวมดูข้ามวันได้ — แยกเก็บทีละวัน (summary_date) เพื่อให้ย้อนหาเอกสารของวันนั้นๆ ได้ง่าย
   CREATE TABLE IF NOT EXISTS daily_summaries (

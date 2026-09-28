@@ -216,6 +216,22 @@ function pendingOutgoingRequests() {
   }
 }
 
+/**
+ * คำสั่ง/ประกาศที่มีชื่อผู้ใช้คนนี้อยู่และยังไม่เปิดอ่าน
+ *
+ * ใช้ตัวเลขข้างเมนูเพราะเป็นของที่ "ค้างรอคนนี้อ่าน" จริง — คำสั่งแต่งตั้งที่ผู้ได้รับแต่งตั้งไม่เคยเห็น
+ * คือปัญหาที่ทะเบียนคำสั่งมีขึ้นมาเพื่อแก้ (ดู services/schoolOrder.js)
+ */
+function unreadOrders(userId) {
+  try {
+    return db.prepare(`SELECT COUNT(*) c FROM school_order_recipients r
+      JOIN school_orders o ON o.id = r.order_id
+      WHERE r.user_id = ? AND r.opened_at IS NULL AND o.deleted_at IS NULL`).get(userId).c;
+  } catch {
+    return 0; // ฐานข้อมูลที่ยังไม่ได้ migrate ตารางนี้ — ไม่ใช่เหตุให้ทั้งหน้าพัง
+  }
+}
+
 function navItem(href, icon, label, currentPath, count = 0) {
   const active = currentPath === href || (href !== '/' && currentPath.startsWith(href));
   // ป้ายตัวเลขบนเมนู — ใช้กับของที่ "ค้างรอคนทำ" เท่านั้น ไม่ใช่ทุกเมนู ไม่งั้นจะกลายเป็นสิ่งที่ทุกคน
@@ -305,6 +321,8 @@ function renderAppShell({ user, currentPath, content, flash, avatar }) {
     ${user.roleCodes.some((r) => ['admin', 'registrar'].includes(r))
       ? navItem('/outgoing-requests', '🔢', 'คำขอเลขหนังสือส่ง', currentPath, pendingOutgoingRequests())
       : navItem('/outgoing-requests/mine', '🔢', 'ขอเลขหนังสือส่ง', currentPath)}
+    <!-- คำสั่ง/ประกาศเป็นเล่มทะเบียนของตัวเอง ไม่ใช่หนังสือเข้า/ออก (ดู services/schoolOrder.js) -->
+    ${navItem('/orders', '📜', 'คำสั่ง/ประกาศโรงเรียน', currentPath, unreadOrders(user.id))}
     ${navItem('/summary', '🗒️', 'สรุปงานที่ต้องทำ', currentPath)}
     ${navItem('/daily-summary', '📅', 'สรุปงานรายวัน', currentPath)}
 

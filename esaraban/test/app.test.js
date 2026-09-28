@@ -3194,6 +3194,143 @@ describe('ไฟล์แนบเป็น Word/Excel ได้ ไม่ใช
 // ซึ่งเป็นคนละเรื่องกัน กว่าธุรการจะรู้ว่าหนังสือฉบับนั้นไม่มีไฟล์สแกนก็ตอนต้องหยิบมาใช้
 // แนบรูปภาพได้ — ครูถ่ายรูปหนังสือด้วยมือถือแล้วแนบเข้ามาตรงๆ เป็นเรื่องปกติที่สุดของโรงเรียน
 // (เร็วกว่าเดินไปสแกนมาก) เดิมต้องไปหาแอปแปลงเป็น PDF ก่อน ซึ่งบนมือถือทำไม่ได้ง่ายๆ
+// ตราประทับทุกชนิดทำงานด้วยการซ้อนหน้า PDF — หนังสือที่ครูถ่ายรูปมาจึงประทับตรารับ ตราธุรการ และ
+// ตราความเห็น ผอ. ไม่ได้เลยสักอัน หน้าเอกสารขึ้นเตือนไว้ว่า "ยังไม่มีไฟล์ PDF" แต่เดิมไม่มีทางออกให้
+describe('รวมรูปถ่ายเป็นไฟล์ PDF เพื่อให้ประทับตราได้', () => {
+  let toPdf;
+  before(async () => { ({ imagesToPdf: toPdf } = await import('../src/services/imagesToPdf.js')); });
+
+  // PNG จริงที่ถอดรหัสได้ (IHDR + IDAT ที่บีบอัดจริง + IEND) — ตัวถอดรหัสของเราต้องอ่านไฟล์นี้ออก
+  const realPng = (w, h, rgb) => {
+    const crcTable = [];
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+    const crc = (buf) => {
+      let c = 0xffffffff;
+      for (const byte of buf) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const chunk = (type, data) => {
+      const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+      const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+      const c = Buffer.alloc(4); c.writeUInt32BE(crc(body));
+      return Buffer.concat([len, body, c]);
+    };
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+    ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0; // 8 บิต RGB ไม่ interlace
+    const raw = Buffer.alloc(h * (1 + w * 3));
+    for (let y = 0; y < h; y++) {
+      raw[y * (1 + w * 3)] = 0; // filter = None
+      for (let x = 0; x < w; x++) {
+        const o = y * (1 + w * 3) + 1 + x * 3;
+        raw[o] = rgb[0]; raw[o + 1] = rgb[1]; raw[o + 2] = rgb[2];
+      }
+    }
+    return Buffer.concat([
+      Buffer.from('89504e470d0a1a0a', 'hex'),
+      chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+    ]);
+  };
+  // JPEG ที่มีส่วนหัวบอกขนาดถูกต้อง — พอสำหรับตรวจว่าโค้ดอ่านขนาดถูกและฝังไบต์เดิมลงไปตรงๆ
+  // (การเปิดดูด้วยโปรแกรมอ่าน PDF จริงทดสอบด้วยรูปถ่ายจริงในสคริปต์เบราว์เซอร์แยกต่างหาก)
+  const realJpegHeader = (w, h) => {
+    // SOI + SOF0 ที่ถูกต้องตามมาตรฐาน (ความยาว 8 + 3 ช่องสี × 3 ไบต์ = 17) + EOI
+    const sof = Buffer.alloc(19);
+    sof[0] = 0xff; sof[1] = 0xc0;
+    sof.writeUInt16BE(17, 2);
+    sof[4] = 8;                 // ความละเอียด 8 บิต
+    sof.writeUInt16BE(h, 5);
+    sof.writeUInt16BE(w, 7);
+    sof[9] = 3;                 // 3 ช่องสี
+    for (let c = 0; c < 3; c++) { sof[10 + c * 3] = c + 1; sof[11 + c * 3] = 0x11; sof[12 + c * 3] = c ? 1 : 0; }
+    return Buffer.concat([Buffer.from('ffd8', 'hex'), sof, Buffer.from('ffd9', 'hex')]);
+  };
+
+  test('ได้ไฟล์ PDF ที่โครงสร้างถูกต้อง หน้าละหนึ่งรูป ขนาด A4', () => {
+    const pdf = toPdf([
+      { buffer: realJpegHeader(1200, 1600), mime: 'image/jpeg' },
+      { buffer: realPng(20, 30, [200, 30, 30]), mime: 'image/png' },
+    ]);
+    const text = pdf.toString('latin1');
+    assert.ok(text.startsWith('%PDF-'), 'ต้องเป็นไฟล์ PDF จริง');
+    assert.match(text, /\/Count 2/, 'สองรูป = สองหน้า');
+    assert.equal((text.match(/\/Type\/Page[^s]/g) || []).length, 2);
+    assert.match(text, /MediaBox\[0 0 595\.28 841\.89\]/, 'หน้ากระดาษต้องเป็น A4 ทุกหน้า ไม่ใช่ขนาดตามรูป');
+    assert.match(text, /xref[\s\S]*trailer[\s\S]*startxref/, 'ต้องมีตาราง xref ครบ ไม่งั้นตัวประทับตราปฏิเสธไฟล์');
+    assert.match(text, /\/Filter \/DCTDecode/, 'JPEG ต้องฝังดิบๆ ไม่ถอดรหัส จะได้ไม่เสียคุณภาพ');
+  });
+
+  test('รูป JPEG ถูกฝังไบต์เดิมทั้งก้อน และอ่านขนาดจากไฟล์จริง', () => {
+    const jpeg = realJpegHeader(800, 600);
+    const pdf = toPdf([{ buffer: jpeg, mime: 'image/jpeg' }]);
+    assert.ok(pdf.includes(jpeg), 'ไบต์ของ JPEG ต้องอยู่ในไฟล์ PDF ครบทั้งก้อน');
+    assert.match(pdf.toString('latin1'), /\/Width 800\/Height 600/, 'ต้องอ่านขนาดจากส่วนหัวของไฟล์ ไม่ใช่เดา');
+  });
+
+  test('รูป PNG ถูกถอดรหัสเป็นพิกเซลจริง (PDF รับ PNG ทั้งไฟล์ไม่ได้)', () => {
+    const png = realPng(4, 2, [10, 20, 30]);
+    const pdf = toPdf([{ buffer: png, mime: 'image/png' }]);
+    const text = pdf.toString('latin1');
+    assert.match(text, /\/Width 4\/Height 2\/ColorSpace \/DeviceRGB\/BitsPerComponent 8\/Filter \/FlateDecode/);
+    // ดึงสตรีมออกมาคลายดู ต้องได้พิกเซลเดิมเป๊ะ ไม่ใช่ข้อมูลมั่วที่บังเอิญมีขนาดถูก
+    const start = pdf.indexOf(Buffer.from('stream\n')) + 7;
+    const end = pdf.indexOf(Buffer.from('\nendstream'), start);
+    const pixels = zlib.inflateSync(pdf.subarray(start, end));
+    assert.equal(pixels.length, 4 * 2 * 3);
+    assert.deepEqual([...pixels.subarray(0, 6)], [10, 20, 30, 10, 20, 30]);
+  });
+
+  test('ชนิดไฟล์ที่ไม่ใช่รูป และรูปที่เสียหาย ต้องถูกปฏิเสธพร้อมบอกเหตุผล', () => {
+    assert.throws(() => toPdf([]), /ไม่มีรูปให้รวม/);
+    assert.throws(() => toPdf([{ buffer: Buffer.from('%PDF-1.4'), mime: 'application/pdf' }]), /เฉพาะไฟล์รูปภาพ/);
+    assert.throws(() => toPdf([{ buffer: Buffer.from('ffd8ff', 'hex'), mime: 'image/jpeg' }]), /JPEG/);
+  });
+
+  test('ปุ่มรวมรูปขึ้นเฉพาะตอนที่หนังสือมีรูปแต่ยังไม่มี PDF และรวมแล้วประทับตราได้', async () => {
+    const doc = makeDoc({ title: 'หนังสือที่ครูถ่ายรูปมาสามหน้า' });
+    const attach = (name, type, buf) => dispatchPost(registrarUser, `/documents/${doc.id}/attachments`,
+      { fileName: name, fileType: type, fileDataBase64: buf.toString('base64') });
+    await attach('หน้า1.jpg', 'image/jpeg', realJpegHeader(1000, 1400));
+    await attach('หน้า2.png', 'image/png', realPng(30, 40, [0, 0, 0]));
+
+    const before = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+    assert.match(before.body, /ยังไม่มีไฟล์ PDF/, 'ตั้งต้นต้องเตือนว่าประทับตราไม่ได้');
+    assert.match(before.body, /รวมรูปที่แนบไว้เป็นไฟล์ PDF \(2 รูป\)/, 'ต้องมีปุ่มรวมรูปพร้อมจำนวน');
+
+    const res = await dispatchPost(registrarUser, `/documents/${doc.id}/attachments/merge-images`, {});
+    assert.equal(res.status, 200, res.body);
+    assert.equal(res.json.pages, 2);
+
+    const pdfRow = db.prepare("SELECT * FROM attachments WHERE document_id = ? AND mime_type = 'application/pdf'").get(doc.id);
+    assert.ok(pdfRow, 'ต้องได้ไฟล์ PDF เพิ่มเข้ามาในหนังสือ');
+    assert.match(pdfRow.filename, /รวมจากรูปถ่าย\.pdf$/);
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ?').get(doc.id).c, 3,
+      'รูปเดิมต้องยังอยู่ครบ เป็นหลักฐานต้นฉบับที่ถ่ายมา');
+
+    const after = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+    assert.ok(!/ยังไม่มีไฟล์ PDF/.test(after.body), 'มี PDF แล้วต้องไม่เตือนอีก');
+    assert.ok(after.body.includes(`var isStampTarget = "${pdfRow.id}"`), 'ตราประทับต้องเล็งไฟล์ PDF ที่เพิ่งรวมได้');
+  });
+
+  test('หนังสือที่ไม่มีรูป หรือถูกยกเลิก/ทำลายแล้ว รวมไม่ได้', async () => {
+    const noImages = makeDoc({ title: 'หนังสือที่ไม่มีรูปแนบเลย' });
+    const res = await dispatchPost(registrarUser, `/documents/${noImages.id}/attachments/merge-images`, {});
+    assert.equal(res.status, 400);
+    assert.match(res.json.error, /ไม่มีรูปภาพแนบ/);
+
+    const voided = makeDoc({ title: 'หนังสือที่ยกเลิกแล้วแต่มีรูปแนบ' });
+    await dispatchPost(registrarUser, `/documents/${voided.id}/attachments`,
+      { fileName: 'ก.jpg', fileType: 'image/jpeg', fileDataBase64: realJpegHeader(100, 100).toString('base64') });
+    db.prepare("UPDATE documents SET status = 'voided' WHERE id = ?").run(voided.id);
+    const res2 = await dispatchPost(registrarUser, `/documents/${voided.id}/attachments/merge-images`, {});
+    assert.equal(res2.status, 409, 'หนังสือที่ยกเลิกแล้วต้องไม่มีเนื้อหาใหม่งอกเพิ่ม');
+  });
+});
+
 describe('แนบไฟล์รูปภาพได้', () => {
   const JPEG = 'image/jpeg';
   const PNG = 'image/png';

@@ -33,6 +33,7 @@ import {
 import { buildXlsx } from '../services/xlsxWrite.js';
 import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, countUnsentOutgoing } from '../services/dispatch.js';
 import { auditRegister } from '../services/registerAudit.js';
+import { imagesToPdf } from '../services/imagesToPdf.js';
 import {
   canLinkReply, setNeedsReply, setReplyTarget, repliesOf, replyTargetOf, replyCandidates, countAwaitingReply,
 } from '../services/replyLink.js';
@@ -1527,6 +1528,8 @@ router.get('/documents/:id', requirePage((ctx) => {
   // ไฟล์ที่ยังเปิดได้จริง — ปุ่มทุกปุ่มที่พาไปเปิดไฟล์ต้องดูจากรายการนี้ ไม่ใช่ attachments ทั้งหมด
   // เพราะไฟล์ที่ถูกทำลายตามระเบียบยังมีแถวอยู่ (เก็บไว้เป็นหลักฐาน) แต่ตัวไฟล์ไม่มีแล้ว
   const liveAttachments = attachments.filter((a) => !a.destroyed_at);
+  // รูปถ่ายที่แนบไว้ — ใช้ทำปุ่ม "รวมรูปเป็น PDF" ซึ่งเป็นทางเดียวที่หนังสือที่ถ่ายรูปมาจะประทับตราได้
+  const imageAttachments = liveAttachments.filter((a) => isImageMime(a.mime_type));
   // ไฟล์ที่ตราประทับทุกชนิดจะไปลงจริง — ต้องเป็น PDF (ดู stampTargetAttachment) ทุกปุ่ม/ทุกช่องกรอก
   // ที่เกี่ยวกับตราประทับต้องดูตัวนี้ ไม่ใช่ "มีไฟล์แนบไหม" หรือ "ไฟล์แรกของรายการ" — หนังสือที่แนบมาแต่
   // Word/Excel ประทับไม่ได้เลย ถ้ายังโชว์ช่องให้กรอกความเห็นอยู่ ผู้ใช้จะพิมพ์จนเสร็จแล้วกดส่ง
@@ -2360,6 +2363,16 @@ router.get('/documents/:id', requirePage((ctx) => {
 
         <div class="card">
           <div class="card-header"><h3 class="mt-0">ไฟล์แนบ (${attachments.length})</h3></div>
+          ${imageAttachments.length ? `<script>
+            window.mergeImagesToPdf = function (btn) {
+              window.setBtnLoading(btn, 'กำลังรวมรูป...');
+              window.postJson('/documents/${doc.id}/attachments/merge-images', {}).then(function (d) {
+                if (d === null) { window.restoreBtn(btn); return; }
+                window.toast('รวมเป็นไฟล์ PDF แล้ว ' + d.pages + ' หน้า — ประทับตราได้เลย', 'success');
+                setTimeout(function () { location.reload(); }, 900);
+              }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+            };
+          </script>` : ''}
           ${liveAttachments.length && !stampAtt ? `
           <!-- หนังสือที่มีแต่ไฟล์ Word/Excel ประทับตราไม่ได้เลยสักขั้นตอน และช่องกรอกความเห็น/ตราประทับ
                ทั้งหมดจะไม่ขึ้นให้เห็น ถ้าไม่บอกตรงนี้ ธุรการจะนึกว่าระบบเสียหรือสิทธิ์ไม่พอ -->
@@ -2368,6 +2381,15 @@ router.get('/documents/:id', requirePage((ctx) => {
             ประทับลงได้เฉพาะไฟล์ PDF เท่านั้น ช่องกรอกความเห็น/ตราประทับจึงยังไม่ขึ้นให้ใช้
             <div style="margin-top:.3rem">แนบตัวหนังสือเป็นไฟล์ PDF เพิ่มเข้ามา แล้วช่องเหล่านั้นจะขึ้นเองทันที
               (ไฟล์ Word/Excel ที่แนบไว้แล้วยังอยู่ครบ ดาวน์โหลดได้ตามปกติ)</div>
+            <!-- ครูถ่ายรูปหนังสือด้วยมือถือเป็นวิธีที่ใช้จริงมากที่สุด แต่รูปประทับตราไม่ได้ —
+                 เดิมทางออกเดียวคือไปหาแอปแปลงไฟล์เอาเอง ซึ่งบนมือถือของครูส่วนใหญ่แปลว่าไม่ได้ทำ -->
+            ${imageAttachments.length ? `<div style="margin-top:.6rem">
+              <button class="btn btn-primary btn-sm" type="button" onclick="mergeImagesToPdf(this)">
+                📄 รวมรูปที่แนบไว้เป็นไฟล์ PDF (${imageAttachments.length} รูป)
+              </button>
+              <div class="help-text">ได้ไฟล์ PDF ขนาด A4 หน้าละหนึ่งรูป เรียงตามลำดับที่แนบ — รูปเดิมยังอยู่ครบ
+                และประทับตราได้ทันทีหลังรวมเสร็จ</div>
+            </div>` : ''}
           </div>` : ''}
           ${attachments.length ? attachments.map((a) => (a.destroyed_at ? `
             <div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
@@ -3401,6 +3423,38 @@ router.post('/documents/:id/register-info', requireApi((ctx) => {
     detail: { before: Object.fromEntries(Object.keys(patch).map((k) => [k, before[k]])), after: patch },
   });
   json(ctx, 200, { ok: true, changed: true });
+}));
+
+/**
+ * รวมรูปที่แนบไว้เป็นไฟล์ PDF ฉบับเดียว
+ *
+ * ตราประทับทุกชนิดทำงานด้วยการซ้อนหน้า PDF หนังสือที่ครูถ่ายรูปมาจึงประทับอะไรไม่ได้เลยสักอัน
+ * (ดู services/imagesToPdf.js) — ปุ่มนี้คือทางออกที่อยู่ในระบบ ไม่ต้องให้ครูไปหาแอปแปลงไฟล์เอง
+ * รูปเดิมยังอยู่ครบ เพราะเป็นหลักฐานต้นฉบับที่ถ่ายมา ไฟล์ PDF เป็นสำเนาที่สร้างเพิ่ม
+ */
+router.post('/documents/:id/attachments/merge-images', requireApi(async (ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  assertCanAttach(doc);
+  const rows = db.prepare(`SELECT * FROM attachments WHERE document_id = ? AND destroyed_at IS NULL ${ATTACHMENT_ORDER}`)
+    .all(doc.id).filter((a) => isImageMime(a.mime_type));
+  if (!rows.length) throw httpError(400, 'หนังสือฉบับนี้ไม่มีรูปภาพแนบอยู่');
+
+  const files = [];
+  for (const att of rows) files.push({ buffer: await readAttachmentBytes(att), mime: att.mime_type });
+  const pdf = imagesToPdf(files);
+  const saved = await saveAttachment({
+    documentId: doc.id,
+    fileName: `${doc.doc_number_display} รวมจากรูปถ่าย.pdf`,
+    fileType: 'application/pdf',
+    fileDataBase64: pdf.toString('base64'),
+    uploader: ctx.user,
+  });
+  audit({
+    userId: ctx.user.id, action: 'attachment_images_merged', tableName: 'documents', recordId: doc.id,
+    detail: { pages: files.length, attachmentId: saved?.id || null },
+  });
+  json(ctx, 200, { ok: true, pages: files.length, attachmentId: saved?.id || null });
 }));
 
 // ธง "ต้องทำหนังสือตอบ" ของหนังสือเข้า และการผูกหนังสือส่งว่าเป็นตัวตอบ (ดู services/replyLink.js)

@@ -1,5 +1,5 @@
 import { router, html } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour, rowAttrs, rowLink } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, fmtCount, statusBadge, priorityBadge, illustratedEmptyState, daysUntil, dueCell, bangkokHour, rowAttrs, rowLink } from '../render.js';
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
 import { setupChecklist } from '../services/setupChecklist.js';
@@ -7,6 +7,7 @@ import { canUserSeeDocument, visibleDocumentsSqlFilter } from '../services/workf
 import { getBackupStatus } from '../services/dbBackup.js';
 import { appShortName } from '../services/settings.js';
 import { pendingChaseGroups } from '../services/documentQuery.js';
+import { unassignedIncoming } from '../services/unassigned.js';
 import { pendingDigestText, lineShareBlock } from '../services/line.js';
 
 // รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
@@ -232,6 +233,34 @@ router.get('/', requirePage((ctx) => {
       </ul>
     </div>` : '';
 
+  /**
+   * หนังสือเข้าที่ลงทะเบียนแล้วแต่ยังไม่ได้เสนอใครเลย (ดูเหตุผลเต็มใน services/unassigned.js)
+   *
+   * ต้องอยู่บนแดชบอร์ด ไม่ใช่รออยู่ในหน้าทะเบียนเฉยๆ เพราะกองนี้ไม่มีใครถืออยู่ — ไม่มีใครได้รับ
+   * แจ้งเตือน ไม่โผล่ในงานของใคร และไม่มีอะไรทวง คนเดียวที่จะเจอคือคนที่บังเอิญเปิดทะเบียนไปเห็น
+   */
+  const unassigned = unassignedIncoming(user, visible);
+  const unassignedAlert = !unassigned.total ? '' : `
+    <div class="alert ${unassigned.lateCount ? 'alert-danger' : 'alert-warning'}" id="unassignedAlert">
+      <strong>📥 หนังสือเข้า ${fmtCount(unassigned.total)} ฉบับลงทะเบียนแล้วแต่ยังไม่ได้เสนอใคร</strong>
+      <div style="margin-top:.35rem;font-size:.9rem">
+        ${unassigned.lateCount
+    ? `ในนั้น <strong>${fmtCount(unassigned.lateCount)} ฉบับเกินกำหนดที่ควรเสนอแล้ว</strong> — `
+    : ''}ยังไม่มีขั้นตอนใดๆ จึงไม่ขึ้นในงานของใคร ไม่มีใครได้รับแจ้งเตือน และไม่มีอะไรตามให้
+      </div>
+      <ul style="margin:.4rem 0 0;padding-left:1.1rem;font-size:.9rem">
+        ${unassigned.docs.map((d) => `<li style="margin-bottom:.2rem">
+          <a href="/documents/${d.id}">${esc(d.number)} — ${esc(d.title)}</a>
+          ${d.priority !== 'normal' ? priorityBadge(d.priority) : ''}
+          <span class="text-muted">· ค้างมา ${d.workingDays} วันทำการ${d.late ? ` (ควรเสนอภายใน ${d.allowed} วันทำการ)` : ''}</span>
+        </li>`).join('')}
+        ${unassigned.hiddenCount ? `<li class="text-muted">และอีก ${fmtCount(unassigned.hiddenCount)} ฉบับ</li>` : ''}
+      </ul>
+      <div style="margin-top:.5rem">
+        <a class="btn btn-primary btn-sm" href="/documents?direction=incoming&unassigned=1">เปิดทะเบียนเพื่อเสนอทั้งกอง →</a>
+      </div>
+    </div>`;
+
   // รายการตั้งค่าที่ยังไม่เสร็จ — เฉพาะแอดมิน เพราะเป็นคนเดียวที่กดทำได้จริง และหายไปเองเมื่อครบทุกข้อ
   const checklist = user.roleCodes.includes('admin') ? setupChecklist() : null;
   const checklistHtml = !checklist || !checklist.items.length ? '' : `
@@ -255,6 +284,7 @@ router.get('/', requirePage((ctx) => {
   const content = `
     ${backupAlert}
     ${stampAlert}
+    ${unassignedAlert}
     ${checklistHtml}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div id="installHint" class="card" hidden style="border-color:var(--primary)">

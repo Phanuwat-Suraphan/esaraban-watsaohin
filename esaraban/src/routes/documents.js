@@ -33,6 +33,7 @@ import {
 import { buildXlsx } from '../services/xlsxWrite.js';
 import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, countUnsentOutgoing } from '../services/dispatch.js';
 import { auditRegister } from '../services/registerAudit.js';
+import { unassignedIncoming, canSeeUnassigned } from '../services/unassigned.js';
 import { imagesToPdf } from '../services/imagesToPdf.js';
 import {
   canLinkReply, setNeedsReply, setReplyTarget, repliesOf, replyTargetOf, replyCandidates, countAwaitingReply,
@@ -345,6 +346,10 @@ router.get('/documents', requirePage((ctx) => {
               <input type="checkbox" name="awaitingReply" value="1" ${f.awaitingReply ? 'checked' : ''} />
               เฉพาะที่ต้องทำหนังสือตอบและยังไม่ได้ตอบ
             </label>` : ''}
+            ${direction === 'incoming' && canSeeUnassigned(ctx.user) ? `<label class="check-inline">
+              <input type="checkbox" name="unassigned" value="1" ${f.unassigned ? 'checked' : ''} />
+              เฉพาะที่ยังไม่ได้เสนอใคร
+            </label>` : ''}
           </div>
         </div>
         <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
@@ -366,6 +371,11 @@ router.get('/documents', requirePage((ctx) => {
   // หนังสือเข้าที่ต้องตอบแต่ยังไม่ได้ตอบ — กองเดียวกันกับ "ยังไม่ได้ส่ง" แต่อยู่คนละเล่ม
   const awaitingReplyCount = direction === 'incoming' && canLinkReply(ctx.user)
     ? countAwaitingReply(visibleDocumentsSqlFilter(ctx.user).sql, visibleDocumentsSqlFilter(ctx.user).params) : 0;
+
+  // หนังสือเข้าที่ยังไม่ได้เสนอใครเลย — กองที่ไม่มีใครถืออยู่ จึงไม่โผล่ที่ไหนเลย (ดู services/unassigned.js)
+  const unassigned = direction === 'incoming'
+    ? unassignedIncoming(ctx.user, visibleDocumentsSqlFilter(ctx.user))
+    : { total: 0, lateCount: 0, docs: [], hiddenCount: 0 };
 
   // หนังสือเข้าที่ลงทะเบียนวันนี้ — ใช้ทำปุ่ม "ส่งสรุปวันนี้เข้าไลน์" ข้อความเดียวจบ แทนการแชร์ทีละฉบับ
   // ซึ่งวันที่มีหนังสือเข้าหกฉบับจะกลายเป็นยิงเข้ากลุ่มหกข้อความติดกัน จนคนในกลุ่มเลื่อนผ่าน
@@ -428,6 +438,8 @@ router.get('/documents', requirePage((ctx) => {
           copyLabel: `📋 คัดลอกสรุปหนังสือเข้าวันนี้ (${todayIncoming.length})`,
           title: 'สรุปหนังสือเข้าของวันนี้เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
         }) : ''}
+        ${unassigned.total && !f.unassigned ? `<a class="btn ${unassigned.lateCount ? 'btn-danger' : 'btn-outline'}" href="/documents?direction=incoming&unassigned=1"
+          title="ลงทะเบียนรับไว้แล้วแต่ยังไม่มีขั้นตอนใดๆ เลย — ไม่มีใครถืออยู่ จึงไม่โผล่ในงานของใครและไม่มีอะไรเตือน">📥 ยังไม่ได้เสนอใคร (${fmtCount(unassigned.total)})${unassigned.lateCount ? ` · เกินกำหนดควรเสนอ ${fmtCount(unassigned.lateCount)}` : ''}</a>` : ''}
         ${direction === 'incoming' && awaitingReplyCount && !f.awaitingReply ? `<a class="btn btn-outline" href="/documents?direction=incoming&awaitingReply=1"
           title="หนังสือเข้าที่ธุรการติ๊กไว้ว่าต้องทำหนังสือตอบ แต่ยังไม่มีหนังสือส่งผูกไว้ว่าเป็นตัวตอบ">↩️ รอทำหนังสือตอบ (${fmtCount(awaitingReplyCount)})</a>` : ''}
         ${direction === 'outgoing' && unsentCount && !f.unsent ? `<a class="btn btn-outline" href="/documents?direction=outgoing&unsent=1"

@@ -11,6 +11,19 @@ import { awaitingReplySql } from './replyLink.js';
 // สถานะที่ถือว่า "ปิดเรื่องแล้ว" — เรื่องพวกนี้ไม่นับว่าเลยกำหนดอีก ต้องตรงกับตัวเลขบนแดชบอร์ด
 export const CLOSED_STATUSES = ['completed', 'archived', 'voided', 'destroyed', 'rejected'];
 
+/**
+ * "ยังไม่ได้เสนอใคร" — หนังสือเข้าที่ลงทะเบียนแล้วแต่ยังไม่มีขั้นตอนใดๆ เลยสักขั้น
+ *
+ * ดูเหตุผลเต็มว่าทำไมกองนี้อันตรายที่สุดใน services/unassigned.js (สรุป: ไม่มีใครถืออยู่ จึงไม่โผล่
+ * ใน "งานของฉัน" ปุ่มตามงานค้าง ตัวเลขบนแดชบอร์ด หรือเตือนประจำวัน — เงียบสนิทจนมีคนโทรมาทวง)
+ *
+ * เช็คจาก "ไม่มีขั้นตอนเลย" ไม่ใช่เช็คสถานะ — เรื่องที่เคยเสนอแล้วถูกตีกลับ (status = 'returned')
+ * ยังมีขั้นตอนเดิมติดอยู่และมีคนเคยถือ ธุรการเห็นมันจากช่องทางอื่นอยู่แล้ว
+ */
+export const unassignedSql = () => `d.direction = 'incoming'
+  AND d.status NOT IN (${CLOSED_STATUSES.map((s) => `'${s}'`).join(', ')})
+  AND NOT EXISTS (SELECT 1 FROM workflow_steps ws WHERE ws.document_id = d.id)`;
+
 // ค่าที่ไม่รู้จักให้ตกเป็นค่าว่าง (= ไม่กรอง) แทนที่จะยิงเข้า SQL ตรงๆ — พิมพ์ ?priority=xxx มั่วๆ
 // แล้วต้องได้ "ทุกความเร็ว" ไม่ใช่ตารางว่างเปล่าที่ชวนให้เข้าใจผิดว่าไม่มีหนังสือ
 const pick = (value, allowed) => (allowed.includes(value) ? value : '');
@@ -75,6 +88,8 @@ export function buildDocumentQuery(user, query = {}) {
     unsent: query.unsent === '1',
     // "รอทำหนังสือตอบ" — หนังสือเข้าที่ธุรการติ๊กว่าต้องตอบ แต่ยังไม่มีหนังสือส่งผูกไว้ว่าเป็นตัวตอบ
     awaitingReply: query.awaitingReply === '1',
+    // "ยังไม่ได้เสนอใคร" — กองที่ไม่มีใครถืออยู่ จึงไม่โผล่ที่ไหนเลยก่อนหน้านี้ (ดู unassignedSql)
+    unassigned: query.unassigned === '1',
   };
   if (f.year) { where.push('d.year_be = :yearBe'); params.yearBe = f.year; }
   if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
@@ -90,6 +105,7 @@ export function buildDocumentQuery(user, query = {}) {
   // จะพาไปเจอหนังสือที่เปิดไฟล์ไม่ได้ ซึ่งตรงข้ามกับที่ตัวกรองนี้มีไว้เพื่ออะไร
   if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id AND ax.destroyed_at IS NULL)');
   if (f.awaitingReply) where.push(awaitingReplySql());
+  if (f.unassigned) where.push(unassignedSql());
   if (f.unsent) {
     where.push("d.direction = 'outgoing' AND d.sent_at IS NULL AND d.status NOT IN ('voided', 'destroyed')");
   }
@@ -197,6 +213,7 @@ export function describeFilters({ q, statusFilter, f }) {
   if (f.overdue) parts.push('เฉพาะที่เลยกำหนดและยังไม่ปิด');
   if (f.unsent) parts.push('เฉพาะที่ยังไม่ได้บันทึกการส่ง');
   if (f.awaitingReply) parts.push('เฉพาะที่ต้องทำหนังสือตอบและยังไม่ได้ตอบ');
+  if (f.unassigned) parts.push('เฉพาะที่ยังไม่ได้เสนอใคร');
   return parts.join(' · ');
 }
 

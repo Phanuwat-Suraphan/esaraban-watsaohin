@@ -16,6 +16,8 @@ import { db, todayInBangkok, nowIso, audit } from '../db.js';
 import { notifyUser } from './notify.js';
 import { holidaySetBetween } from './holidays.js';
 import { getSetting } from './settings.js';
+import { visibleDocumentsSqlFilter } from './workflow.js';
+import { unassignedIncoming, unassignedReminderLine, canSeeUnassigned } from './unassigned.js';
 
 /** อีกกี่วันถึงจะนับว่า "ใกล้ครบกำหนด" — สั้นพอให้ยังทำทัน และไม่ยาวจนเตือนทุกวันเป็นสัปดาห์ */
 const SOON_DAYS = 3;
@@ -82,12 +84,44 @@ export function reminderTargets(today = todayInBangkok()) {
   `).all({ soon: soonDate });
 
   const byUser = new Map();
+  const entry = (userId) => {
+    if (!byUser.has(userId)) byUser.set(userId, { userId, overdue: [], today: [], soon: [], unassigned: null });
+    return byUser.get(userId);
+  };
   for (const r of rows) {
-    if (!byUser.has(r.assignee_id)) byUser.set(r.assignee_id, { userId: r.assignee_id, overdue: [], today: [], soon: [] });
     const bucket = r.due_date < today ? 'overdue' : r.due_date === today ? 'today' : 'soon';
-    byUser.get(r.assignee_id)[bucket].push(r);
+    entry(r.assignee_id)[bucket].push(r);
+  }
+
+  // กองหนังสือเข้าที่ยังไม่ได้เสนอใคร ต้องถูกเตือนด้วย เพราะเป็นกองเดียวที่ไม่มีเจ้าของ จึงไม่มีทาง
+  // ถูกเตือนผ่านกลไกข้างบน (ซึ่งไล่จากขั้นตอนที่มีคนถืออยู่) — ดู services/unassigned.js
+  //
+  // ผนวกเข้ากับข้อความเดิมของคนนั้น ไม่ส่งแยกอีกฉบับ ธุรการที่มีงานของตัวเองค้างด้วยจะได้ข้อความเดียว
+  // ตามหลักการข้อ 1 ของไฟล์นี้ (วันละครั้งต่อคน ไม่ใช่ต่อเรื่อง)
+  for (const u of assignReminderUsers()) {
+    const summary = unassignedIncoming(u, visibleDocumentsSqlFilter(u), { limit: 3 });
+    if (summary.total) entry(u.id).unassigned = summary;
   }
   return [...byUser.values()];
+}
+
+/**
+ * ใครควรถูกเตือนเรื่อง "ยังไม่ได้เสนอใคร" — คนที่กดเสนอได้จริงเท่านั้น
+ *
+ * ธุรการกับผู้ดูแลระบบ ไม่รวม ผอ./รอง ผอ. ทั้งที่ทั้งคู่เห็นกองนี้บนแดชบอร์ดได้ — ผู้บริหารไม่ใช่คนที่
+ * ลงมือเสนอ การส่งไลน์ให้ทุกเช้าจึงเป็นเสียงรบกวนที่สุดท้ายทำให้ปิดการแจ้งเตือนทิ้งทั้งหมด
+ */
+const ASSIGN_REMINDER_ROLES = ['registrar', 'admin'];
+function assignReminderUsers() {
+  return db.prepare(`
+    SELECT u.*, GROUP_CONCAT(r.name) AS role_code_list FROM users u
+    JOIN user_roles ur ON ur.user_id = u.id
+    JOIN roles r ON r.id = ur.role_id
+    WHERE u.deleted_at IS NULL AND u.status = 'active'
+    GROUP BY u.id
+  `).all()
+    .map((u) => ({ ...u, roleCodes: String(u.role_code_list || '').split(',').filter(Boolean) }))
+    .filter((u) => canSeeUnassigned(u) && u.roleCodes.some((r) => ASSIGN_REMINDER_ROLES.includes(r)));
 }
 
 /** ข้อความเตือนของคนหนึ่งคน — สั้นพอให้อ่านจบในแจ้งเตือนของไลน์โดยไม่ต้องกดเข้ามา */
@@ -102,7 +136,17 @@ export function reminderMessage(target) {
     .map((d) => `• ${d.doc_number_display || ''} ${d.title}`.trim());
   const more = target.overdue.length + target.today.length + target.soon.length - first.length;
   if (more > 0) first.push(`• และอีก ${more} เรื่อง`);
-  return `${head}\n${first.join('\n')}`;
+  const own = head ? `${head}\n${first.join('\n')}` : '';
+
+  // กอง "ยังไม่ได้เสนอใคร" ต่อท้ายเป็นย่อหน้าของตัวเอง ไม่ปนกับงานของตัวเอง เพราะเป็นคนละเรื่องกัน:
+  // อันบนคือ "งานที่ท่านต้องทำ" อันล่างคือ "หนังสือที่ยังไม่มีใครต้องทำ" ซึ่งต้องลงมือคนละแบบ
+  if (!target.unassigned) return own;
+  const u = target.unassigned;
+  const lines = [unassignedReminderLine(u)];
+  for (const d of u.docs) lines.push(`• ${d.number} ${d.title}`.trim());
+  if (u.hiddenCount) lines.push(`• และอีก ${u.hiddenCount} ฉบับ`);
+  const block = lines.join('\n');
+  return own ? `${own}\n\n${block}` : block;
 }
 
 /** ส่งเตือนของวันนั้น — กันส่งซ้ำด้วยตารางบันทึกว่าใครได้ของวันไหนไปแล้ว */
@@ -120,12 +164,17 @@ export function sendDailyReminders({ today = todayInBangkok(), force = false } =
     if (already) continue;
     db.prepare('INSERT INTO daily_reminder_log (user_id, sent_date, created_at) VALUES (?, ?, ?)')
       .run(t.userId, today, nowIso());
+    // ธุรการที่ไม่มีงานของตัวเองค้างเลย แต่มีหนังสือรอเสนออยู่ ต้องถูกพาไปที่ทะเบียนที่กรองกองนั้นไว้
+    // แล้ว ไม่ใช่หน้า "งานของฉัน" ที่ว่างเปล่า ซึ่งอ่านเหมือนระบบเตือนผิด
+    const onlyUnassigned = t.unassigned && !t.overdue.length && !t.today.length && !t.soon.length;
+    const urgent = t.overdue.length > 0 || Boolean(t.unassigned?.lateCount);
     notifyUser({
       userId: t.userId,
-      linkUrl: '/tasks',
-      title: t.overdue.length ? '⏰ มีงานเลยกำหนดรอคุณอยู่' : '📌 งานที่ต้องทำวันนี้',
+      linkUrl: onlyUnassigned ? '/documents?direction=incoming&unassigned=1' : '/tasks',
+      title: t.overdue.length ? '⏰ มีงานเลยกำหนดรอคุณอยู่'
+        : onlyUnassigned ? '📥 มีหนังสือเข้ารอเสนอ' : '📌 งานที่ต้องทำวันนี้',
       message: reminderMessage(t),
-      priority: t.overdue.length ? 'urgent' : 'info',
+      priority: urgent ? 'urgent' : 'info',
     });
     sent++;
   }

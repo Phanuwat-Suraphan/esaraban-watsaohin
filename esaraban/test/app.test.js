@@ -11945,6 +11945,217 @@ describe('ทะเบียนคำสั่งและประกาศข�
   });
 });
 
+// กองที่หายเงียบที่สุดในระบบ: ลงทะเบียนรับแล้วแต่ยังไม่ได้เสนอใครเลย — ไม่มีขั้นตอนสักขั้น จึงไม่
+// โผล่ใน "งานของฉัน" ของใคร ไม่โผล่ในปุ่มตามงานค้าง ไม่อยู่ในตัวเลขงานค้างบนแดชบอร์ด และไม่มี
+// เตือนประจำวัน เพราะกลไกทั้งหมดนั้นไล่จาก "ขั้นตอนที่มีคนถืออยู่" ทั้งสิ้น
+describe('หนังสือเข้าที่ยังไม่ได้เสนอใคร', () => {
+  let UA;
+  let visibleOf;
+  before(async () => {
+    UA = await import('../src/services/unassigned.js');
+    const wf = await import('../src/services/workflow.js');
+    visibleOf = (u) => wf.visibleDocumentsSqlFilter(u);
+  });
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const summaryFor = (u, opts) => UA.unassignedIncoming(u, visibleOf(u), opts);
+  const at = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  let n = 0;
+  const mkIn = (over = {}) => makeDoc({
+    title: `หนังสือเข้าที่ยังไม่ได้เสนอ ฉบับที่ ${++n} ${Math.random().toString(36).slice(2, 8)}`, ...over,
+  });
+  const idsOf = (s) => s.docs.map((d) => d.id);
+  const inSummary = (u, id) => {
+    const s = summaryFor(u, { limit: 500 });
+    return s.docs.some((d) => d.id === id);
+  };
+
+  test('ฉบับที่เพิ่งลงทะเบียนอยู่ในกองนี้ พอเสนอแล้วหลุดออกไปทันที', () => {
+    const doc = mkIn();
+    assert.equal(inSummary(reg(), doc.id), true, 'ลงทะเบียนแล้วยังไม่เสนอ ต้องอยู่ในกอง');
+    assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    assert.equal(inSummary(reg(), doc.id), false, 'เสนอแล้วต้องหลุดออกจากกอง');
+  });
+
+  test('เรื่องที่ถูกตีกลับมาต้องไม่นับ — มีคนเคยถือ และเห็นได้จากช่องทางอื่นอยู่แล้ว', () => {
+    const doc = mkIn();
+    const stepId = assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    returnStep({ stepId, reason: 'ส่งคืนให้ธุรการแก้ไขก่อน', actorUser: loadUserForTest(seed.userIds.teacher001) });
+    assert.equal(getDocRow(doc.id).status, 'returned', 'ตั้งค่าเทสต์ผิดถ้าสถานะไม่ใช่ตีกลับ');
+    assert.equal(inSummary(reg(), doc.id), false, 'ยังมีขั้นตอนเดิมติดอยู่ จึงไม่ใช่กองที่ไม่มีใครถือ');
+  });
+
+  test('ปิดเรื่อง ยกเลิก หรือถูกลบ ต้องไม่ค้างอยู่ในกองนี้', () => {
+    const voided = mkIn();
+    voidDocument({ documentId: voided.id, reason: 'ลงซ้ำ', actorUser: registrarUser });
+    assert.equal(inSummary(reg(), voided.id), false, 'ยกเลิกแล้วต้องไม่นับ');
+
+    // เก็บเข้าแฟ้มได้เฉพาะเรื่องที่เสร็จสิ้นแล้ว ซึ่งก็แปลว่าเคยมีขั้นตอนมาก่อน — ตรวจสถานะ completed
+    // ตรงๆ แทน ซึ่งเป็นสถานะปิดเรื่องที่เกิดกับหนังสือที่ไม่เคยเสนอได้จริงถ้าธุรการปิดเองที่หน้าเอกสาร
+    const closed = mkIn();
+    db.prepare("UPDATE documents SET status = 'completed' WHERE id = ?").run(closed.id);
+    assert.equal(inSummary(reg(), closed.id), false, 'ปิดเรื่องแล้วต้องไม่นับ');
+
+    const deleted = mkIn();
+    forceDeleteDocument({ documentId: deleted.id, actorUser: adminUser, reason: 'ทดสอบ' });
+    assert.equal(inSummary(reg(), deleted.id), false, 'ลบแล้วต้องไม่นับ');
+  });
+
+  test('หนังสือส่งไม่เกี่ยว — กองนี้เป็นของทะเบียนหนังสือรับเท่านั้น', () => {
+    const out = makeDoc({ direction: 'outgoing', title: 'หนังสือส่งที่ยังไม่มีขั้นตอน' });
+    assert.equal(inSummary(reg(), out.id), false);
+  });
+
+  describe('อายุและเกณฑ์ว่าช้าเกินควรหรือยัง', () => {
+    test('นับเป็นวันทำการ ไม่ใช่วันปฏิทิน (เสาร์อาทิตย์กับวันหยุดราชการไม่นับ)', () => {
+      const doc = mkIn({ receivedDate: at(-30) });
+      const found = summaryFor(reg(), { limit: 500 }).docs.find((d) => d.id === doc.id);
+      assert.ok(found, 'ต้องเจอฉบับนี้ในกอง');
+      // 31 วันปฏิทินมีสุดสัปดาห์อย่างน้อยสี่วัน — ถ้านับเท่ากันแปลว่านับวันปฏิทินอยู่
+      assert.ok(found.workingDays < 31 - 4,
+        `ค้างมา 31 วันปฏิทิน แต่รายงาน ${found.workingDays} วันทำการ — ดูเหมือนไม่ได้ตัดวันหยุดออก`);
+      assert.ok(found.workingDays > 10, `${found.workingDays} วันทำการน้อยเกินจริงสำหรับ 31 วันปฏิทิน`);
+      assert.equal(found.late, true, 'ค้างเดือนหนึ่งต้องขึ้นว่าเกินกำหนดควรเสนอ');
+    });
+
+    test('นับจาก "วันที่รับ" ไม่ใช่วันที่กดบันทึก — ลงย้อนหลังต้องไม่ล้างอายุที่ค้างมาทิ้ง', () => {
+      const doc = mkIn({ receivedDate: at(-20) });
+      // บันทึกเข้าระบบวันนี้ (created_at เป็นวันนี้อยู่แล้ว) แต่หนังสือมาถึงตั้งแต่ 20 วันก่อน
+      const found = summaryFor(reg(), { limit: 500 }).docs.find((d) => d.id === doc.id);
+      assert.equal(found.sinceDate, at(-20));
+      assert.equal(found.late, true);
+      const sameDay = mkIn();
+      const fresh = summaryFor(reg(), { limit: 500 }).docs.find((d) => d.id === sameDay.id);
+      assert.equal(fresh.sinceDate, todayInBangkok());
+      assert.equal(fresh.late, false, 'ลงทะเบียนวันนี้ต้องยังไม่ช้า');
+    });
+
+    test('เกณฑ์ผูกกับชั้นความเร็วของหนังสือ ไม่ใช่ค่าเดียวกันหมด', () => {
+      assert.equal(UA.daysAllowedToAssign('most_urgent'), 1);
+      assert.equal(UA.daysAllowedToAssign('very_urgent'), 1);
+      assert.equal(UA.daysAllowedToAssign('urgent'), 1);
+      assert.equal(UA.daysAllowedToAssign('normal'), 2);
+      // ค่าที่ไม่รู้จักต้องตกไปใช้เกณฑ์ของหนังสือปกติ ไม่ใช่ undefined แล้วเทียบพลาดจนไม่มีอะไรขึ้นแดงเลย
+      assert.equal(UA.daysAllowedToAssign('ค่าที่ไม่มีในระบบ'), 2);
+    });
+
+    test('เรียงให้ฉบับที่ต้องรีบที่สุดขึ้นก่อน (ช้าเกินควรก่อน แล้วค่อยตามชั้นความเร็ว)', () => {
+      const old = mkIn({ receivedDate: at(-15), priority: 'normal' });
+      const urgentToday = mkIn({ priority: 'most_urgent' });
+      const normalToday = mkIn({ priority: 'normal' });
+      const order = idsOf(summaryFor(reg(), { limit: 500 }));
+      assert.ok(order.indexOf(old.id) < order.indexOf(urgentToday.id), 'ฉบับที่ช้าเกินควรต้องขึ้นก่อน');
+      assert.ok(order.indexOf(urgentToday.id) < order.indexOf(normalToday.id),
+        'ในกลุ่มที่ยังไม่ช้า ด่วนที่สุดต้องขึ้นก่อนปกติ');
+    });
+
+    test('ตัดรายการที่ยกมาแสดง แต่ตัวเลขรวมต้องยังเป็นยอดจริง', () => {
+      for (let i = 0; i < 4; i++) mkIn();
+      const s = summaryFor(reg(), { limit: 2 });
+      assert.equal(s.docs.length, 2);
+      assert.ok(s.total > 2);
+      assert.equal(s.hiddenCount, s.total - 2, 'ต้องบอกด้วยว่าเหลืออีกกี่ฉบับที่ไม่ได้ยกมา');
+    });
+  });
+
+  describe('สิทธิ์', () => {
+    test('ครูทั่วไปไม่ต้องเห็นกองนี้ — เสนอหนังสือของฝ่ายอื่นไม่ได้อยู่แล้ว', () => {
+      mkIn();
+      assert.equal(UA.canSeeUnassigned(teacher()), false);
+      assert.deepEqual(summaryFor(teacher()), { total: 0, lateCount: 0, docs: [], hiddenCount: 0 });
+    });
+
+    test('ธุรการ/ผู้ดูแล/ผู้บริหารเห็น', () => {
+      for (const u of [reg(), loadUserForTest(seed.userIds.admin), loadUserForTest(seed.userIds.director01)]) {
+        assert.equal(UA.canSeeUnassigned(u), true, `${u.employee_code} ควรเห็นกองนี้`);
+      }
+    });
+  });
+
+  describe('หน้าเว็บ', () => {
+    test('ทะเบียนหนังสือเข้ามีปุ่มลัดพร้อมจำนวน และกดแล้วกรองเหลือเฉพาะกองนี้', async () => {
+      const waiting = mkIn();
+      const assigned = mkIn();
+      assignStep({ documentId: assigned.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+
+      const page = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+      assert.match(page.body, /ยังไม่ได้เสนอใคร \(/, 'ต้องมีปุ่มลัดพร้อมจำนวน');
+
+      const filtered = await dispatchGet(reg(), '/documents', { direction: 'incoming', unassigned: '1' });
+      assert.ok(filtered.body.includes(`href="/documents/${waiting.id}"`), 'ต้องเหลือฉบับที่ยังไม่ได้เสนอ');
+      assert.ok(!filtered.body.includes(`href="/documents/${assigned.id}"`), 'ฉบับที่เสนอแล้วต้องไม่อยู่');
+    });
+
+    test('ครูทั่วไปต้องไม่เห็นทั้งปุ่มลัดและช่องติ๊กตัวกรอง', async () => {
+      mkIn();
+      const page = await dispatchGet(teacher(), '/documents', { direction: 'incoming' });
+      assert.ok(!page.body.includes('ยังไม่ได้เสนอใคร'), 'ครูต้องไม่เห็นกองนี้');
+      assert.ok(!page.body.includes('name="unassigned"'));
+    });
+
+    test('แดชบอร์ดขึ้นการ์ดเตือนพร้อมรายชื่อ อายุ และทางไปเสนอทั้งกอง', async () => {
+      const doc = mkIn({ receivedDate: at(-15), priority: 'most_urgent' });
+      const page = await dispatchGet(reg(), '/');
+      assert.equal(page.status, 200);
+      assert.ok(page.body.includes('id="unassignedAlert"'), 'ต้องมีการ์ดเตือน');
+      assert.ok(page.body.includes(`href="/documents/${doc.id}"`), 'ต้องยกฉบับที่ค้างนานที่สุดมาให้เห็น');
+      assert.match(page.body, /ค้างมา \d+ วันทำการ/);
+      assert.ok(page.body.includes('/documents?direction=incoming&unassigned=1'), 'ต้องมีทางไปเสนอทั้งกอง');
+      assert.match(page.body, /เกินกำหนดที่ควรเสนอแล้ว/, 'มีฉบับที่ช้าเกินควรต้องบอกให้ชัด');
+    });
+
+    test('ครูทั่วไปเปิดแดชบอร์ดต้องไม่เจอการ์ดนี้', async () => {
+      mkIn();
+      const page = await dispatchGet(teacher(), '/');
+      assert.ok(!page.body.includes('id="unassignedAlert"'));
+    });
+
+    test('คำอธิบายเงื่อนไขบนหน้าพิมพ์ทะเบียนต้องบอกด้วยว่ากรองอะไรอยู่', () => {
+      const q = buildDocumentQuery(reg(), { direction: 'incoming', unassigned: '1' });
+      assert.match(describeFilters(q), /ยังไม่ได้เสนอใคร/);
+    });
+  });
+
+  describe('เตือนประจำวัน', () => {
+    test('ธุรการได้บรรทัดกองนี้รวมอยู่ในข้อความเดียวกับงานของตัวเอง ไม่ใช่อีกข้อความหนึ่ง', async () => {
+      const rem = await import('../src/services/dailyReminder.js');
+      const doc = mkIn({ receivedDate: at(-15) });
+      const targets = rem.reminderTargets(todayInBangkok());
+      const mine = targets.find((t) => t.userId === seed.userIds.reg001);
+      assert.ok(mine, 'ธุรการต้องอยู่ในรายชื่อที่ต้องเตือน');
+      assert.ok(mine.unassigned && mine.unassigned.total >= 1);
+      const msg = rem.reminderMessage(mine);
+      assert.match(msg, /ยังไม่ได้เสนอใคร \d+ ฉบับ/);
+      assert.ok(msg.includes(getDocRow(doc.id).doc_number_display) || /และอีก \d+ ฉบับ/.test(msg),
+        'ต้องยกตัวอย่างฉบับจริง หรือบอกว่าเหลืออีกกี่ฉบับ');
+      assert.equal(targets.filter((t) => t.userId === seed.userIds.reg001).length, 1,
+        'ต้องเป็นรายการเดียวต่อคน ไม่ใช่แยกอีกรายการ');
+    });
+
+    test('ครูทั่วไปต้องไม่ถูกเตือนเรื่องกองนี้', async () => {
+      const rem = await import('../src/services/dailyReminder.js');
+      mkIn();
+      const t = rem.reminderTargets(todayInBangkok()).find((x) => x.userId === seed.userIds.teacher001);
+      assert.ok(!t || !t.unassigned, 'ครูไม่ใช่คนที่กดเสนอได้ จึงไม่ต้องได้ข้อความนี้ทุกเช้า');
+    });
+
+    test('ข้อความของคนที่มีแต่กองนี้ ต้องพาไปทะเบียนที่กรองไว้แล้ว ไม่ใช่หน้างานของฉันที่ว่างเปล่า', async () => {
+      const rem = await import('../src/services/dailyReminder.js');
+      const only = { userId: seed.userIds.reg001, overdue: [], today: [], soon: [], unassigned: { total: 3, lateCount: 1, docs: [], hiddenCount: 0 } };
+      assert.match(rem.reminderMessage(only), /^📥 หนังสือเข้าที่ลงทะเบียนแล้วแต่ยังไม่ได้เสนอใคร 3 ฉบับ/);
+      db.prepare('DELETE FROM daily_reminder_log WHERE user_id = ?').run(seed.userIds.reg001);
+      const before = db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND link_url = '/documents?direction=incoming&unassigned=1'").get(seed.userIds.reg001).c;
+      mkIn();
+      rem.sendDailyReminders({ today: todayInBangkok(), force: true });
+      const note = db.prepare('SELECT title, link_url FROM notifications WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1')
+        .get(seed.userIds.reg001);
+      const after = db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND link_url = '/documents?direction=incoming&unassigned=1'").get(seed.userIds.reg001).c;
+      // ธุรการในชุดทดสอบอาจมีงานของตัวเองค้างด้วย ซึ่งกรณีนั้นลิงก์ยังเป็น /tasks ตามเดิมโดยตั้งใจ
+      assert.ok(after > before || note.link_url === '/tasks', `ได้ลิงก์ ${note.link_url}`);
+    });
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

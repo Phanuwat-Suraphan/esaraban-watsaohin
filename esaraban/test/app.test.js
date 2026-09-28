@@ -12156,6 +12156,206 @@ describe('หนังสือเข้าที่ยังไม่ได้�
   });
 });
 
+// วันที่ธุรการเสนอหนังสือขึ้นไปเป็นปึก วงจรเดิมของ ผอ. คือ กดเข้าฉบับที่ 1 → ตัดสินใจ → หน้าโหลด
+// กลับมาที่ฉบับเดิมซึ่งไม่มีอะไรให้ทำแล้ว → กด back → หาบรรทัดถัดไปในตารางที่เพิ่งเรียงใหม่ → วนใหม่
+describe('ไล่ดำเนินการทีละฉบับจนหมดกอง', () => {
+  let Q;
+  before(async () => { Q = await import('../src/services/myQueue.js'); });
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const at = (n) => new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  let n = 0;
+  // คืนคิวให้ว่างก่อนทุกครั้ง เพื่อให้ตัวเลข "ฉบับที่ X จาก Y" ในเทสต์เป็นค่าที่ควบคุมได้จริง
+  const clearQueue = () => db.prepare(`UPDATE workflow_steps SET status = 'acknowledged'
+    WHERE assignee_id = ? AND status = 'waiting'`).run(seed.userIds.teacher001);
+  const queueDoc = (over = {}) => {
+    const doc = makeDoc({ title: `หนังสือในกองที่รอดำเนินการ ฉบับที่ ${++n} ${Math.random().toString(36).slice(2, 8)}`, ...over });
+    const stepId = assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    return { ...doc, stepId };
+  };
+
+  test('ลำดับของคิวต้องเป็นชุดเดียวกับที่หน้า "งานของฉัน" แสดง', async () => {
+    clearQueue();
+    queueDoc({ dueDate: at(5) });
+    queueDoc({ dueDate: at(-2) });
+    queueDoc({});
+    const { rows } = Q.myWaitingTasks(teacher());
+    const page = await dispatchGet(teacher(), '/tasks');
+    // ลำดับที่หน้าเว็บพิมพ์ออกมาจริง ต้องตรงกับลำดับที่ฟังก์ชันคืน ไม่ใช่แค่มีครบเหมือนกัน
+    const onPage = [...page.body.matchAll(/href="\/documents\/([0-9a-f-]{36})"/g)].map((m) => m[1]);
+    const uniqueOnPage = [...new Set(onPage)].filter((id) => rows.some((r) => r.id === id));
+    assert.deepEqual(uniqueOnPage, rows.map((r) => r.id),
+      'ถ้าสองที่นี้เรียงไม่ตรงกัน ตัวเลข "ฉบับที่ X จาก Y" จะโกหก');
+    assert.equal(rows[0].due_date, at(-2), 'ฉบับที่เลยกำหนดต้องมาก่อน');
+    assert.equal(rows[rows.length - 1].due_date, null, 'ฉบับที่ไม่มีกำหนดต้องไปท้ายสุด');
+  });
+
+  test('บอกตำแหน่งในกองได้ถูก พร้อมฉบับก่อนหน้า/ถัดไป', () => {
+    clearQueue();
+    const a = queueDoc({ dueDate: at(1) });
+    const b = queueDoc({ dueDate: at(2) });
+    const c = queueDoc({ dueDate: at(3) });
+    const pos = Q.queuePosition(teacher(), b.id);
+    assert.deepEqual({ index: pos.index, total: pos.total, prevId: pos.prevId, nextId: pos.nextId },
+      { index: 2, total: 3, prevId: a.id, nextId: c.id });
+    assert.equal(Q.queuePosition(teacher(), a.id).prevId, null, 'ฉบับแรกต้องไม่มีฉบับก่อนหน้า');
+    assert.equal(Q.queuePosition(teacher(), c.id).nextId, null, 'ฉบับสุดท้ายต้องไม่มีฉบับถัดไป');
+  });
+
+  test('เอกสารที่ไม่ได้อยู่ในกองของเรา ต้องไม่มีตำแหน่ง', () => {
+    clearQueue();
+    const mine = queueDoc({});
+    const notMine = makeDoc({ title: 'หนังสือที่ไม่ได้มอบให้ครูคนนี้' });
+    assert.ok(Q.queuePosition(teacher(), mine.id));
+    assert.equal(Q.queuePosition(teacher(), notMine.id), null);
+  });
+
+  test('ฉบับถัดไปคำนวณสดและตัดฉบับปัจจุบันออกเสมอ', () => {
+    clearQueue();
+    const a = queueDoc({ dueDate: at(1) });
+    const b = queueDoc({ dueDate: at(2) });
+    // ยังไม่ได้ปิดขั้นของ a เลย แต่ nextInQueue ต้องไม่วนกลับมาที่ a อีก
+    assert.deepEqual(Q.nextInQueue(teacher(), a.id), { id: b.id, remaining: 1 });
+    assert.deepEqual(Q.nextInQueue(teacher(), b.id), { id: a.id, remaining: 1 });
+  });
+
+  test('หมดกองแล้วต้องคืนค่าว่าง ไม่ใช่วนกลับมาที่ฉบับเดิม', () => {
+    clearQueue();
+    const only = queueDoc({});
+    assert.deepEqual(Q.nextInQueue(teacher(), only.id), { id: null, remaining: 0 });
+  });
+
+  describe('เส้นทางไปฉบับถัดไป', () => {
+    test('พาไปฉบับถัดไปพร้อมบอกว่าเหลืออีกกี่ฉบับ', async () => {
+      clearQueue();
+      const a = queueDoc({ dueDate: at(1) });
+      const b = queueDoc({ dueDate: at(2) });
+      const c = queueDoc({ dueDate: at(3) });
+      const res = await dispatchGet(teacher(), `/documents/${a.id}/next-task`);
+      assert.equal(res.status, 302);
+      assert.equal(res.headers.Location, `/documents/${b.id}?queued=2`);
+      assert.ok(c, 'ใช้ c เพื่อให้กองมีสามฉบับจริง');
+    });
+
+    test('หมดกองแล้วพากลับหน้าแรกพร้อมคำชม', async () => {
+      clearQueue();
+      const only = queueDoc({});
+      const res = await dispatchGet(teacher(), `/documents/${only.id}/next-task`);
+      assert.equal(res.status, 302);
+      assert.equal(res.headers.Location, '/?celebrate=1');
+    });
+
+    test('คำเตือนเรื่องประทับตราไม่สำเร็จต้องไม่ตกหายระหว่างทาง', async () => {
+      clearQueue();
+      const a = queueDoc({ dueDate: at(1) });
+      const b = queueDoc({ dueDate: at(2) });
+      const warn = 'ประทับลงไฟล์ PDF ไม่สำเร็จ';
+      const res = await dispatchGet(teacher(), `/documents/${a.id}/next-task`, { warn });
+      assert.match(res.headers.Location, new RegExp(`^/documents/${b.id}\\?`));
+      const q = new URLSearchParams(res.headers.Location.split('?')[1]);
+      assert.equal(q.get('warn'), warn, `ต้องส่งคำเตือนต่อไปด้วย ได้ ${res.headers.Location}`);
+      assert.equal(q.get('queued'), '1');
+
+      // ตอนหมดกอง: เหลือฉบับเดียวในคิว แล้วกดเส้นทางนี้จากฉบับนั้นเอง
+      clearQueue();
+      const last = queueDoc({});
+      const done = await dispatchGet(teacher(), `/documents/${last.id}/next-task`, { warn });
+      assert.ok(done.headers.Location.startsWith('/?'), `ตอนหมดกองต้องกลับหน้าแรก ได้ ${done.headers.Location}`);
+      const dq = new URLSearchParams(done.headers.Location.split('?')[1]);
+      assert.equal(dq.get('celebrate'), '1');
+      assert.equal(dq.get('warn'), warn, 'ตอนหมดกองก็ต้องยังพาคำเตือนไปด้วย');
+    });
+
+    test('คนที่ไม่มีอะไรค้างเลย กดเส้นทางนี้ต้องไม่พัง', async () => {
+      clearQueue();
+      const doc = makeDoc({ title: 'หนังสือที่ไม่เกี่ยวกับครูคนนี้' });
+      const res = await dispatchGet(teacher(), `/documents/${doc.id}/next-task`);
+      assert.equal(res.status, 302);
+      assert.equal(res.headers.Location, '/?celebrate=1');
+    });
+  });
+
+  describe('หน้าเว็บ', () => {
+    test('หน้าเอกสารขึ้นแถบไล่ฉบับพร้อมตำแหน่ง เฉพาะคนที่ถือเรื่องนี้อยู่', async () => {
+      clearQueue();
+      const a = queueDoc({ dueDate: at(1) });
+      const b = queueDoc({ dueDate: at(2) });
+      const page = await dispatchGet(teacher(), `/documents/${b.id}`);
+      assert.ok(page.body.includes('id="queueBar"'), 'ต้องมีแถบไล่ฉบับ');
+      assert.match(page.body, /ฉบับที่ 2 จาก 2<\/strong> ที่รอคุณดำเนินการ/);
+      assert.ok(page.body.includes(`href="/documents/${a.id}"`), 'ต้องมีลิงก์ฉบับก่อนหน้า');
+
+      // ธุรการเปิดฉบับเดียวกันนี้ ไม่ได้ถืออยู่ จึงต้องไม่เห็นแถบ
+      const other = await dispatchGet(loadUserForTest(seed.userIds.reg001), `/documents/${b.id}`);
+      assert.ok(!other.body.includes('id="queueBar"'), 'คนที่ไม่ได้ถือเรื่องนี้ต้องไม่เห็นแถบไล่ฉบับ');
+    });
+
+    test('มาจากการกดเสร็จของฉบับก่อนหน้า ต้องบอกความคืบหน้าของกอง', async () => {
+      clearQueue();
+      const doc = queueDoc({});
+      const page = await dispatchGet(teacher(), `/documents/${doc.id}`, { queued: '4' });
+      assert.match(page.body, /บันทึกฉบับที่แล้วเรียบร้อย/);
+      assert.match(page.body, /เหลืออีก 4 ฉบับในกอง/);
+      // ค่าที่ไม่ใช่ตัวเลขต้องถูกมองข้าม ไม่ใช่โผล่ขึ้นหน้าเป็นข้อความแปลกๆ
+      const junk = await dispatchGet(teacher(), `/documents/${doc.id}`, { queued: '<script>x</script>' });
+      assert.ok(!junk.body.includes('บันทึกฉบับที่แล้วเรียบร้อย'));
+    });
+
+    // ทุกปุ่มดำเนินการทำให้เรื่องหลุดจากกองของตัวเองทั้งนั้น จึงต้องพาไปฉบับถัดไปเหมือนกันหมด
+    // ไม่ใช่เฉพาะปุ่มที่ "ผ่าน" — ไม่อนุมัติกับส่งกลับแก้ไขก็จบที่เราเหมือนกัน
+    test('ทุกปุ่มดำเนินการต้องเด้งไปฉบับถัดไป ไม่ใช่โหลดหน้าเดิมกลับมา', async () => {
+      clearQueue();
+      const doc = queueDoc({});
+      const page = await dispatchGet(teacher(), `/documents/${doc.id}`);
+      assert.ok(page.body.includes(`var NEXT_TASK = '/documents/${doc.id}/next-task'`));
+      assert.equal((page.body.match(/NEXT_TASK\)/g) || []).length, 3, 'อนุมัติ/รับทราบ/ไม่อนุมัติ');
+      assert.ok(!page.body.includes("'/?celebrate=1'"),
+        'ไม่ควรเด้งกลับหน้าแรกตรงๆ อีกแล้ว — ต้องผ่านเส้นทางที่ดูก่อนว่ายังเหลือฉบับอื่นไหม');
+
+      // ปุ่ม "ส่งกลับแก้ไข" ขึ้นเฉพาะการ์ดของผู้บริหาร จึงต้องตรวจกับ ผอ. ไม่ใช่กับครูผู้ปฏิบัติ
+      const dir = loadUserForTest(seed.userIds.director01);
+      const forDir = makeDoc({ title: 'หนังสือที่เสนอถึงผู้อำนวยการเพื่อพิจารณา' });
+      assignStep({ documentId: forDir.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+      const dirPage = await dispatchGet(dir, `/documents/${forDir.id}`);
+      assert.ok(dirPage.body.includes(`'/documents/${forDir.id}/next-task')">↩️ ส่งกลับแก้ไข`), 'ส่งกลับแก้ไข');
+    });
+
+    test('หน้างานของฉันมีปุ่มเริ่มไล่ทีละฉบับ และหายไปเมื่อเหลือฉบับเดียว', async () => {
+      clearQueue();
+      queueDoc({ dueDate: at(1) });
+      queueDoc({ dueDate: at(2) });
+      const many = await dispatchGet(teacher(), '/tasks');
+      assert.match(many.body, /เริ่มไล่ทีละฉบับ \(2 ฉบับ\)/);
+
+      clearQueue();
+      const one = queueDoc({});
+      const single = await dispatchGet(teacher(), '/tasks');
+      assert.ok(!single.body.includes('เริ่มไล่ทีละฉบับ'), 'เหลือฉบับเดียวไม่ต้องมีปุ่มไล่');
+      assert.ok(single.body.includes(`href="/documents/${one.id}"`));
+    });
+
+    test('ปุ่มเริ่มไล่ต้องพาไปฉบับแรกของกองจริง ไม่ใช่ฉบับใดก็ได้', async () => {
+      clearQueue();
+      queueDoc({ dueDate: at(9) });
+      const first = queueDoc({ dueDate: at(-5) });
+      const page = await dispatchGet(teacher(), '/tasks');
+      const href = /เริ่มไล่ทีละฉบับ/.test(page.body)
+        ? /href="\/documents\/([0-9a-f-]{36})"[^>]*title="[^"]*เปิดฉบับแรก/.exec(page.body)
+        : null;
+      assert.ok(href, 'ต้องหาปุ่มเริ่มไล่เจอ');
+      assert.equal(href[1], first.id, 'ต้องเป็นฉบับที่เลยกำหนดที่สุด');
+    });
+  });
+
+  test('เอกสารที่ถูกลบไปแล้วต้องหลุดออกจากกองทันที', () => {
+    clearQueue();
+    const keep = queueDoc({});
+    const gone = queueDoc({});
+    forceDeleteDocument({ documentId: gone.id, actorUser: adminUser, reason: 'ทดสอบ' });
+    const ids = Q.myWaitingTasks(teacher()).rows.map((r) => r.id);
+    assert.deepEqual(ids, [keep.id]);
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

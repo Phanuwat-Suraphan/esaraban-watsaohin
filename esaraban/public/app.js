@@ -436,7 +436,7 @@
   }
 
   // simple POST action (no pin) used for reject/return with reason prompt
-  window.actionWithReason = async function (btn, endpoint, promptText, extra) {
+  window.actionWithReason = async function (btn, endpoint, promptText, extra, redirectTo) {
     const reason = prompt(promptText || 'ระบุเหตุผล');
     if (reason === null) return;
     window.setBtnLoading(btn, 'กำลังบันทึก...');
@@ -448,8 +448,8 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
-      if (data.warning) window.location.href = appendWarn(window.location.pathname + window.location.search, data.warning);
-      else window.location.reload();
+      if (!redirectTo && !data.warning) { window.location.reload(); return; }
+      window.location.href = appendWarn(redirectTo || (window.location.pathname + window.location.search), data.warning);
     } catch (err) {
       window.toast(err.message || 'เกิดข้อผิดพลาด', 'danger');
       window.restoreBtn(btn);

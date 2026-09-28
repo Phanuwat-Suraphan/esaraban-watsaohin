@@ -8,14 +8,11 @@ import { getBackupStatus } from '../services/dbBackup.js';
 import { appShortName } from '../services/settings.js';
 import { pendingChaseGroups } from '../services/documentQuery.js';
 import { unassignedIncoming } from '../services/unassigned.js';
+// เงื่อนไข "งานของฉัน" กับลำดับของคิว อยู่ที่ services/myQueue.js ที่เดียว เพราะหน้านี้ ตัวบอกตำแหน่ง
+// บนหน้าเอกสาร ("ฉบับที่ 3 จาก 8") และการเด้งไปฉบับถัดไปหลังกดเสร็จ ต้องเรียงเหมือนกันเป๊ะ
+import { MY_OR_DELEGATED_STEP_SQL, MAX_TASK_ROWS, myWaitingTasks } from '../services/myQueue.js';
 import { pendingDigestText, lineShareBlock } from '../services/line.js';
 
-// รวมงานที่มอบหมายให้ตรงๆ + งานที่มีคนมอบหมายให้เรารักษาการแทน (ยัง active วันนี้) เข้าเป็นเงื่อนไขเดียว —
-// ใช้ซ้ำได้ทั้งตัวนับ KPI, การ์ด "งานของฉัน" ในแดชบอร์ด, และหน้า /tasks
-const MY_OR_DELEGATED_STEP_SQL = `(ws.assignee_id = :me OR ws.assignee_id IN (
-  SELECT delegator_id FROM user_delegations
-  WHERE delegate_id = :me AND cancelled_at IS NULL AND start_date <= :today AND end_date >= :today
-))`;
 
 // งานค้างของฉันต้องนับเฉพาะเอกสารที่ยังอยู่จริง — การลบเอกสารเป็น soft-delete (ตั้ง deleted_at ไว้
 // เพื่อไม่ให้ audit_logs/workflow_steps ที่อ้างถึงเสียหาย และไม่ให้เลขทะเบียนถูกนำไปใช้ซ้ำ) ขั้นตอน
@@ -371,36 +368,8 @@ router.get('/', requirePage((ctx) => {
   html(ctx, 200, layout({ user, title: 'แดชบอร์ด', path: '/', content }));
 }));
 
-// เพดานจำนวนงานค้างที่แสดงในหน้า "งานของฉัน" — ใช้ค่าเดียวกับหน้า "สรุปงานที่ต้องทำ" เพื่อความสม่ำเสมอ
-const MAX_TASK_ROWS = 300;
-
 router.get('/tasks', requirePage((ctx) => {
-  const rawRows = db.prepare(`
-    SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != :me) as is_delegated
-    FROM workflow_steps ws
-    JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
-    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' AND d.deleted_at IS NULL
-    ORDER BY d.priority DESC, ws.created_at ASC
-    LIMIT ${MAX_TASK_ROWS + 1}
-  `).all({ me: ctx.user.id, today: todayInBangkok() });
-  // ดึงมาเกินหนึ่งแถวเพื่อรู้ว่าถูกตัดหรือเปล่า แล้วบอกผู้ใช้ตรงๆ — เหมือนหน้า "สรุปงานที่ต้องทำ"
-  // เดิมหน้านี้ไม่มีเพดานเลย ปกติไม่เป็นไรเพราะงานค้างของคนหนึ่งคนมีไม่กี่สิบฉบับ แต่ถ้าเรื่องไปค้าง
-  // สะสมอยู่ที่ใครคนหนึ่ง (เช่นคนที่ย้ายออกไปแล้วแต่ยังมีเรื่องจ่อคิว) หน้าจะโตขึ้นเรื่อยๆ ไม่มีที่สิ้นสุด
-  const tasksTruncated = rawRows.length > MAX_TASK_ROWS;
-
-  // กรองชั้นความลับด้วยเสมอ เหมือนหน้าอื่นๆ — ปกติคนที่ถูกมอบหมายก็เห็นอยู่แล้ว แต่ถ้าชั้นความลับของ
-  // เอกสารถูกยกระดับขึ้นทีหลัง แถวเก่าต้องหายไปจากหน้านี้ด้วย ไม่ใช่ยังโชว์ชื่อเรื่องค้างไว้
-  const rows = rawRows.slice(0, MAX_TASK_ROWS).filter((d) => canUserSeeDocument(ctx.user, d));
-
-  // เรียงของที่ "เลยกำหนด/ใกล้ครบกำหนด" ขึ้นก่อนเสมอ แล้วค่อยเรียงตามความเร็วที่ต้นทางระบุ —
-  // เดิมเรียงตามความเร็วอย่างเดียว ทำให้หนังสือ "ปกติ" ที่เลยกำหนดมา 5 วันไปจมอยู่ท้ายตาราง
-  rows.sort((a, b) => {
-    const da = daysUntil(a.due_date), dbb = daysUntil(b.due_date);
-    if (da === null && dbb !== null) return 1;
-    if (dbb === null && da !== null) return -1;
-    if (da !== null && dbb !== null && da !== dbb) return da - dbb;
-    return new Date(a.assigned_at) - new Date(b.assigned_at);
-  });
+  const { rows, truncated: tasksTruncated } = myWaitingTasks(ctx.user);
   const overdueCount = rows.filter((d) => daysUntil(d.due_date) < 0).length;
 
   const content = `
@@ -412,6 +381,12 @@ router.get('/tasks', requirePage((ctx) => {
             : 'ไม่มีงานค้างอยู่ในมือคุณตอนนี้'}
         </p>
       </div>
+      ${/* ปุ่มเริ่มไล่ทีละฉบับ — เปิดฉบับแรกของกอง จากนั้นทุกครั้งที่กดเสร็จระบบจะเด้งไปฉบับถัดไปเอง
+            จนหมดกอง (ดู /documents/:id/next-task) ไม่ต้องกลับมาหาบรรทัดถัดไปในตารางนี้อีก */ ''}
+      ${rows.length > 1 ? `<div class="chip-row">
+        <a class="btn btn-primary" href="/documents/${rows[0].id}"
+          title="เปิดฉบับแรก แล้วระบบจะพาไปฉบับถัดไปเองทุกครั้งที่กดเสร็จ จนหมดกอง">▶️ เริ่มไล่ทีละฉบับ (${rows.length} ฉบับ)</a>
+      </div>` : ''}
     </div>
     <div class="card">
       ${tasksTruncated ? `<div class="alert alert-warning">⚠️ มีงานค้างมากกว่า ${MAX_TASK_ROWS} ฉบับ หน้านี้แสดงเฉพาะ ${MAX_TASK_ROWS} ฉบับที่ใกล้ครบกำหนดที่สุด — ดูทั้งหมดได้ที่<a href="/documents?direction=all&status=in_progress">ทะเบียนหนังสือ</a></div>` : ''}

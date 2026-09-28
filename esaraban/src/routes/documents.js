@@ -34,6 +34,7 @@ import { buildXlsx } from '../services/xlsxWrite.js';
 import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, countUnsentOutgoing } from '../services/dispatch.js';
 import { auditRegister } from '../services/registerAudit.js';
 import { unassignedIncoming, canSeeUnassigned } from '../services/unassigned.js';
+import { queuePosition, nextInQueue } from '../services/myQueue.js';
 import { imagesToPdf } from '../services/imagesToPdf.js';
 import {
   canLinkReply, setNeedsReply, setReplyTarget, repliesOf, replyTargetOf, replyCandidates, countAwaitingReply,
@@ -1776,7 +1777,7 @@ router.get('/documents/:id', requirePage((ctx) => {
           <button class="btn btn-success btn-lg" data-pin-title="ยืนยัน PIN เพื่ออนุมัติและส่งต่อ" onclick="doApprove(this)">✅ อนุมัติและส่งต่อ</button>
           <button class="btn btn-primary btn-lg" data-pin-title="ยืนยัน PIN เพื่อรับทราบและปิดเรื่อง" onclick="doAcknowledge(this)">✔️ รับทราบ/ปิดเรื่อง</button>
           <div class="action-buttons-secondary">
-            <button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/workflow/${step.id}/return', 'ระบุเหตุผลที่ส่งกลับแก้ไข')">↩️ ส่งกลับแก้ไข</button>
+            <button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/workflow/${step.id}/return', 'ระบุเหตุผลที่ส่งกลับแก้ไข', null, '/documents/${doc.id}/next-task')">↩️ ส่งกลับแก้ไข</button>
             <button class="btn btn-outline btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="doReject(this)">✖️ ไม่อนุมัติ</button>
           </div>` : `
           <button class="btn btn-success btn-lg" data-pin-title="ยืนยัน PIN เพื่อมอบหมายให้" onclick="doApprove(this)">➡️ มอบหมายให้</button>
@@ -1823,19 +1824,22 @@ router.get('/documents/:id', requirePage((ctx) => {
           ? 'ส่งต่อถึง ' + n + ' คนพร้อมกัน — ทุกคนจะได้รับเรื่องทันที ไม่ต้องรอกันเป็นทอดๆ'
           : 'ยังไม่ได้เลือกใคร — ถ้าจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง"';
       };
+      // ทำเสร็จแล้วไปฉบับถัดไปในกองเลย ไม่ใช่โหลดหน้าเดิมกลับมาซึ่งตอนนี้ไม่มีอะไรให้ทำแล้ว
+      // (ถ้าหมดกอง เส้นทางนี้จะพากลับหน้าแรกพร้อมคำชม เหมือนพฤติกรรมเดิมของปุ่มรับทราบ)
+      var NEXT_TASK = '/documents/${doc.id}/next-task';
       function doApprove(btn){
         var next = pickedAssignees();
         if (!next.length) { toast('กรุณาเลือกผู้รับที่จะส่งต่อ ก่อนกดอนุมัติ (ถ้าเป็นผู้รับคนสุดท้ายให้กด "รับทราบ/ปิดเรื่อง" แทน)', 'warning'); return; }
         if (!confirmIfNoMarksChecked()) return;
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeIds: next }, stampPositionFields()));
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/approve', Object.assign({ nextAssigneeIds: next }, stampPositionFields()), NEXT_TASK);
       }
       function doAcknowledge(btn){
         if (!confirmIfNoMarksChecked()) return;
-        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', stampPositionFields(), '/?celebrate=1');
+        actionWithPin(btn, '/documents/${doc.id}/workflow/${step.id}/acknowledge', stampPositionFields(), NEXT_TASK);
       }
       function doReject(btn){
         if (!confirmIfNoMarksChecked()) return;
-        actionWithReason(btn, '/documents/${doc.id}/workflow/${step.id}/reject', 'ระบุเหตุผลที่ไม่อนุมัติ', stampPositionFields());
+        actionWithReason(btn, '/documents/${doc.id}/workflow/${step.id}/reject', 'ระบุเหตุผลที่ไม่อนุมัติ', stampPositionFields(), NEXT_TASK);
       }
     </script>` : '';
 
@@ -2307,7 +2311,35 @@ router.get('/documents/:id', requirePage((ctx) => {
           </script>` : ''}
         </div>`;
 
+  /**
+   * แถบไล่ฉบับ — ขึ้นเฉพาะตอนที่หนังสือฉบับนี้อยู่ในคิวงานของคนที่กำลังเปิดดูอยู่
+   *
+   * ทำไมต้องมี: วันที่มีหนังสือเสนอขึ้นมาแปดฉบับ วงจรเดิมคือกดเข้าทีละฉบับแล้วกด back กลับไปหา
+   * บรรทัดถัดไปในตาราง ซึ่งตารางเรียงใหม่ทุกครั้งที่โหลด (ฉบับที่เพิ่งทำหายไป บรรทัดที่เหลือเลื่อนขึ้น)
+   * — เสียเวลาและหลงที่อยู่บ่อย ตัวเลข "ฉบับที่ 3 จาก 8" ยังบอกด้วยว่าเหลืออีกเท่าไรจึงจะหมดกอง
+   */
+  const queue = queuePosition(ctx.user, doc.id);
+  const queueBar = !queue ? '' : `
+    <div class="card" id="queueBar" style="border-color:var(--primary);padding:.55rem .8rem">
+      <div class="flex gap-2 items-center" style="flex-wrap:wrap;justify-content:space-between">
+        <span>📌 <strong>ฉบับที่ ${queue.index} จาก ${queue.total}${queue.truncated ? '+' : ''}</strong> ที่รอคุณดำเนินการ</span>
+        <span class="chip-row">
+          ${queue.prevId ? `<a class="btn btn-outline btn-sm" href="/documents/${queue.prevId}">← ฉบับก่อนหน้า</a>` : ''}
+          ${queue.nextId ? `<a class="btn btn-outline btn-sm" href="/documents/${queue.nextId}"
+            title="ข้ามฉบับนี้ไปก่อน แล้วค่อยย้อนกลับมาทีหลัง — ฉบับนี้ยังค้างอยู่ที่คุณเหมือนเดิม">ฉบับถัดไป →</a>` : ''}
+          <a class="btn btn-outline btn-sm" href="/tasks">ดูทั้งกอง</a>
+        </span>
+      </div>
+    </div>`;
+
+  // มาจากการกดเสร็จของฉบับก่อนหน้า — บอกความคืบหน้าของกองไว้ตรงนี้ ไม่ใช่ปล่อยให้เด้งมาเฉยๆ
+  // แล้วผู้ใช้ต้องเดาเองว่าฉบับที่เพิ่งกดไปสำเร็จหรือเปล่า
+  const queuedFrom = /^\d+$/.test(String(ctx.query.queued || '')) ? Number(ctx.query.queued) : null;
   const content = `
+    ${queuedFrom !== null ? `<div class="alert alert-success">
+      ✅ บันทึกฉบับที่แล้วเรียบร้อย — เปิดฉบับถัดไปให้แล้ว <strong>เหลืออีก ${fmtCount(queuedFrom)} ฉบับในกอง</strong>
+    </div>` : ''}
+    ${queueBar}
     ${ctx.query.created ? (canShareToLine(doc) ? `<div class="alert alert-success">
       <p style="margin:0 0 .5rem"><strong>✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</strong></p>
       <!-- ช่องทางที่โรงเรียนใช้แจ้งงานกันจริงคือกลุ่มไลน์ ไม่ใช่เว็บ — ปุ่มแชร์มีอยู่แล้วแต่ไปอยู่ปนกับ
@@ -3543,6 +3575,29 @@ router.post('/documents/:id/attachments/merge-images', requireApi(async (ctx) =>
     detail: { pages: files.length, attachmentId: saved?.id || null },
   });
   json(ctx, 200, { ok: true, pages: files.length, attachmentId: saved?.id || null });
+}));
+
+/**
+ * "ทำฉบับนี้เสร็จแล้ว ไปฉบับถัดไปในกองเลย" — ปลายทางที่ปุ่มดำเนินการเด้งไปหลังกดสำเร็จ
+ *
+ * เป็นเส้นทางแยก ไม่ใช่คำนวณฉบับถัดไปฝังไว้ตอนเรนเดอร์หน้า เพราะระหว่างที่ ผอ. นั่งอ่านอยู่ ธุรการ
+ * อาจเสนอฉบับใหม่ขึ้นมาหรือคนอื่นดึงเรื่องไป คิว ณ ตอนกดเสร็จจึงไม่เท่ากับคิวตอนเปิดหน้า
+ *
+ * หมดกองแล้วพากลับหน้าแรกพร้อม ?celebrate=1 ซึ่งเป็นพฤติกรรมเดิมของปุ่ม "รับทราบ/ปิดเรื่อง"
+ * ส่วน ?warn= ที่ติดมา (ประทับตราลงไฟล์ไม่สำเร็จ) ต้องส่งต่อไปปลายทางด้วย ไม่ใช่ตกหายระหว่างทาง
+ * จนคนกดไม่มีทางรู้เลยว่าไฟล์ที่เพิ่งลงนามไปยังไม่มีลายเซ็นอยู่บนตัวไฟล์
+ */
+router.get('/documents/:id/next-task', requirePage((ctx) => {
+  const { id, remaining } = nextInQueue(ctx.user, ctx.params.id);
+  const warn = typeof ctx.query.warn === 'string' && ctx.query.warn ? ctx.query.warn : '';
+  const q = (base, extra) => {
+    const params = new URLSearchParams(extra);
+    if (warn) params.set('warn', warn);
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
+  // remaining ติดไปกับ URL เพื่อให้หน้าปลายทางขึ้นข้อความ "เหลืออีก N ฉบับ" ได้โดยไม่ต้องนับซ้ำ
+  redirect(ctx, id ? q(`/documents/${id}`, { queued: String(remaining) }) : q('/', { celebrate: '1' }));
 }));
 
 // ธง "ต้องทำหนังสือตอบ" ของหนังสือเข้า และการผูกหนังสือส่งว่าเป็นตัวตอบ (ดู services/replyLink.js)

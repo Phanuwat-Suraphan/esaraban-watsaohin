@@ -21,7 +21,8 @@ const { contentDispositionHeader } = await import('../src/router.js');
 const { daysUntil, fmtDate, fmtThaiDateShort, fmtThaiDateLong, stampDateThai, stampTimeThai, bangkokHour } = await import('../src/render.js');
 const {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS, getDocument, canUserSeeDocument, currentStep,
-  assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
+  assignStep, assignStepsBulk, MAX_BULK_ASSIGN,
+  approveAndForward, acknowledgeAndComplete, rejectStep, returnStep, voidDocument, archiveDocument,
   getWorkflowSteps,
   MAX_PARALLEL_ASSIGNEES,
   assertStepBelongsToDocument, forceDeleteDocument, inactiveStepHolder, reassignStuckStep,
@@ -11390,6 +11391,203 @@ describe('หนังสือชั้นความลับต้องไ�
   // จะกลายเป็นหนังสือสาธารณะทันทีโดยไม่มีอะไรฟ้อง
   test('ชั้นความลับที่ไม่รู้จักต้องถูกปฏิเสธตั้งแต่ตอนบันทึก', () => {
     assert.throws(() => makeDoc({ title: 'ชั้นความลับมั่ว', secretLevel: 'ลับสุดยอดพิเศษ' }));
+  });
+});
+
+// วันที่หนังสือมาเป็นปึก (ซึ่งเป็นเรื่องปกติของวันจันทร์และช่วงสิ้นภาคเรียน) ธุรการต้องเปิดทีละฉบับ
+// เลือกคนทีละฉบับ กดทีละฉบับ แล้วรอหน้าโหลดทีละฉบับ — 12 ฉบับคือ 12 รอบ และผู้รับก็ได้ไลน์ 12 ข้อความ
+describe('มอบหมายหลายฉบับให้คนเดียวกันรวดเดียว', () => {
+  const SUMMARY_TITLE_SQL = "title LIKE 'หนังสือใหม่ต้องดำเนินการ %ฉบับ'";
+  const summaryCount = (uid) =>
+    db.prepare(`SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND ${SUMMARY_TITLE_SQL}`).get(uid).c;
+  const lastSummary = (uid) =>
+    db.prepare(`SELECT title, message, priority, link_url, document_id FROM notifications
+                WHERE user_id = ? AND ${SUMMARY_TITLE_SQL} ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(uid);
+  const perDocNotifs = (ids) => ids.reduce((n, id) =>
+    n + db.prepare('SELECT COUNT(*) c FROM notifications WHERE document_id = ? AND user_id = ?')
+      .get(id, teacherUser.id).c, 0);
+  const stepsOf = (id) => db.prepare('SELECT * FROM workflow_steps WHERE document_id = ?').all(id);
+  const batch = (n, overrides = {}) => Array.from({ length: n }, (_, i) =>
+    makeDoc({ title: `หนังสือมาเป็นปึก ฉบับที่ ${i + 1} ${Math.random().toString(36).slice(2, 8)}`, ...overrides }));
+
+  test('ทุกฉบับที่เลือกได้ขั้นตอนของตัวเองจริง และเปลี่ยนเป็นกำลังดำเนินการ', () => {
+    const docs = batch(3);
+    const res = assignStepsBulk({
+      documentIds: docs.map((d) => d.id), assigneeId: teacherUser.id,
+      instruction: 'โปรดดำเนินการตามอำนาจหน้าที่', actorUser: registrarUser,
+    });
+    assert.equal(res.assigned, 3);
+    assert.deepEqual(res.failed, []);
+    for (const d of docs) {
+      const steps = stepsOf(d.id);
+      assert.equal(steps.length, 1, `${d.docNumberDisplay} ต้องมีขั้นตอนของตัวเองหนึ่งขั้น`);
+      assert.equal(steps[0].assignee_id, teacherUser.id);
+      assert.equal(steps[0].status, 'waiting');
+      assert.equal(steps[0].instruction, 'โปรดดำเนินการตามอำนาจหน้าที่', 'ข้อความเกษียณต้องลงทุกฉบับ');
+      assert.equal(getDocRow(d.id).status, 'in_progress');
+    }
+  });
+
+  // เหตุผลเดียวกับปุ่มตามงานค้างและสรุปหนังสือเข้าประจำวัน: ยิงไลน์ทีละฉบับคือวิธีที่ทำให้คนปิด
+  // การแจ้งเตือนทิ้ง แล้วหลังจากนั้นก็ไม่มีอะไรไปถึงครูอีกเลย ทั้งเรื่องเป็นปึกและเรื่องด่วนฉบับเดียว
+  test('แจ้งเตือนครั้งเดียวสรุปรวม ไม่ใช่ทีละฉบับ', () => {
+    const docs = batch(4);
+    const ids = docs.map((d) => d.id);
+    const before = summaryCount(teacherUser.id);
+    assignStepsBulk({ documentIds: ids, assigneeId: teacherUser.id, actorUser: registrarUser });
+    assert.equal(summaryCount(teacherUser.id), before + 1, 'มอบ 4 ฉบับต้องได้แจ้งเตือนเพิ่มหนึ่งข้อความ');
+    assert.equal(perDocNotifs(ids), 0, 'ต้องไม่มีแจ้งเตือนรายฉบับเลย มิฉะนั้นครูได้ไลน์ 4 ข้อความติดกัน');
+
+    const note = lastSummary(teacherUser.id);
+    assert.match(note.title, /^หนังสือใหม่ต้องดำเนินการ 4 ฉบับ$/);
+    // ลิงก์ไปหน้างานของฉัน ไม่ใช่ฉบับใดฉบับหนึ่ง เพราะข้อความเดียวพูดถึงหลายฉบับพร้อมกัน
+    assert.equal(note.link_url, '/tasks');
+    assert.equal(note.document_id, null);
+    for (const d of docs) assert.ok(note.message.includes(d.docNumberDisplay), `ต้องบอกเลข ${d.docNumberDisplay}`);
+  });
+
+  test('มอบเป็นกองใหญ่ ข้อความไม่ยาวเป็นพืด — ขึ้นห้าฉบับแรกแล้วบอกว่าเหลืออีกกี่ฉบับ', () => {
+    const docs = batch(7);
+    assignStepsBulk({ documentIds: docs.map((d) => d.id), assigneeId: teacherUser.id, actorUser: registrarUser });
+    const note = lastSummary(teacherUser.id);
+    const lines = note.message.split('\n');
+    assert.equal(lines.length, 6, `ห้าบรรทัดแรก + บรรทัดสรุป แต่ได้ ${lines.length} บรรทัด`);
+    assert.match(lines[5], /^• และอีก 2 ฉบับ$/);
+    assert.ok(note.message.includes(docs[0].docNumberDisplay));
+    assert.ok(!note.message.includes(docs[6].docNumberDisplay), 'ฉบับที่เกินห้าต้องถูกยุบเป็นบรรทัดสรุป');
+  });
+
+  test('มีเรื่องด่วนที่สุดอยู่ในกอง แจ้งเตือนทั้งกองต้องขึ้นเป็นด่วน', () => {
+    const docs = [...batch(2), ...batch(1, { priority: 'most_urgent' })];
+    assignStepsBulk({ documentIds: docs.map((d) => d.id), assigneeId: teacherUser.id, actorUser: registrarUser });
+    assert.equal(lastSummary(teacherUser.id).priority, 'urgent');
+  });
+
+  // ธุรการติ๊กทั้งหน้าแล้วกดทีเดียว ถ้าฉบับเดียวล้มแล้วล้มทั้งกอง แปลว่าต้องมานั่งไล่เองว่าฉบับไหน
+  test('ฉบับที่มอบไม่ได้ต้องไม่ล้มทั้งกอง และบอกกลับมาเป็นรายฉบับว่าติดอะไร', () => {
+    const [ok, already] = batch(2);
+    assignStep({ documentId: already.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+    const res = assignStepsBulk({
+      documentIds: [ok.id, already.id], assigneeId: teacherUser.id, actorUser: registrarUser,
+    });
+    assert.equal(res.assigned, 1, 'ฉบับที่มอบได้ต้องยังมอบสำเร็จ');
+    assert.equal(getDocRow(ok.id).status, 'in_progress');
+    assert.equal(res.failed.length, 1);
+    assert.equal(res.failed[0].id, already.id);
+    assert.equal(res.failed[0].docNumberDisplay, already.docNumberDisplay, 'ต้องบอกเลขหนังสือ ไม่ใช่แค่ id');
+    assert.match(res.failed[0].error, /สถานะ/);
+  });
+
+  test('id ซ้ำในรายการเดียว ต้องไม่ถูกมอบซ้ำสองขั้น', () => {
+    const [doc] = batch(1);
+    const res = assignStepsBulk({
+      documentIds: [doc.id, doc.id, doc.id], assigneeId: teacherUser.id, actorUser: registrarUser,
+    });
+    assert.equal(res.assigned, 1);
+    assert.deepEqual(res.failed, []);
+    assert.equal(stepsOf(doc.id).length, 1);
+  });
+
+  test('ไม่ได้เลือกฉบับไหนเลย / ไม่ได้เลือกผู้รับ ต้องบอกตรงๆ', () => {
+    assert.throws(() => assignStepsBulk({ documentIds: [], assigneeId: teacherUser.id, actorUser: registrarUser }),
+      /เลือกหนังสืออย่างน้อยหนึ่งฉบับ/);
+    assert.throws(() => assignStepsBulk({ documentIds: undefined, assigneeId: teacherUser.id, actorUser: registrarUser }),
+      /เลือกหนังสืออย่างน้อยหนึ่งฉบับ/);
+    const [doc] = batch(1);
+    assert.throws(() => assignStepsBulk({ documentIds: [doc.id], assigneeId: '', actorUser: registrarUser }),
+      /เลือกผู้รับงาน/);
+    assert.equal(stepsOf(doc.id).length, 0, 'ตรวจไม่ผ่านต้องไม่แตะฐานข้อมูลเลย');
+  });
+
+  // กันการยิง API ตรงๆ ด้วยรายการเป็นพัน ซึ่งกลายเป็นการเขียนฐานข้อมูลและแจ้งเตือนรวดเดียวมหาศาล
+  test(`เลือกเกิน ${MAX_BULK_ASSIGN} ฉบับต้องถูกปฏิเสธก่อนแตะฐานข้อมูล`, () => {
+    const many = Array.from({ length: MAX_BULK_ASSIGN + 1 }, () => uuid());
+    assert.throws(
+      () => assignStepsBulk({ documentIds: many, assigneeId: teacherUser.id, actorUser: registrarUser }),
+      new RegExp(`ไม่เกิน ${MAX_BULK_ASSIGN} ฉบับ`),
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ?').get(many[0]).c, 0);
+  });
+
+  test('ครูทั่วไปยิง API ตรงๆ มอบหมายหนังสือของธุรการไม่ได้สักฉบับ', async () => {
+    const docs = batch(2);
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    const res = await dispatchPost(teacher, '/documents/bulk-assign', {
+      documentIds: docs.map((d) => d.id), assigneeId: seed.userIds.reg001,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.assigned, 0, 'ต้องไม่ผ่านสักฉบับ');
+    assert.equal(res.json.failed.length, 2);
+    for (const f of res.json.failed) assert.match(f.error, /ผู้บันทึกเอกสารหรือผู้ดูแลระบบ/);
+    for (const d of docs) assert.equal(stepsOf(d.id).length, 0);
+  });
+
+  // ข้อความบอกสาเหตุที่ไม่สำเร็จเคยเป็นช่องถามเลขหนังสือของฝ่ายอื่นได้ทีละฉบับ ด้วยการยิง id เข้ามา
+  test('ฉบับที่ผู้กดไม่มีสิทธิ์เห็น ต้องไม่บอกเลขหนังสือกลับไป', () => {
+    const secret = makeDoc({
+      title: 'หนังสือลับที่ครูคนนี้ไม่มีสิทธิ์เห็น ' + Math.random().toString(36).slice(2, 8),
+      secretLevel: 'top_secret', createdBy: registrarUser.id,
+    });
+    const teacher = loadUserForTest(seed.userIds.teacher001);
+    assert.equal(canUserSeeDocument(teacher, getDocRow(secret.id)), false,
+      'ตั้งค่าเทสต์ผิด — ถ้าครูเห็นอยู่แล้ว เทสต์นี้ไม่ได้ตรวจอะไร');
+    const res = assignStepsBulk({ documentIds: [secret.id], assigneeId: seed.userIds.reg001, actorUser: teacher });
+    assert.equal(res.assigned, 0);
+    assert.equal(res.failed[0].docNumberDisplay, '', 'ต้องไม่รั่วเลขหนังสือของฉบับที่ไม่มีสิทธิ์เห็น');
+  });
+
+  test('มอบเป็นชุดแล้วต้องมีร่องรอยครบ ทั้งรายฉบับและสรุปของชุด', () => {
+    const docs = batch(2);
+    const before = db.prepare("SELECT COUNT(*) c FROM audit_logs WHERE action = 'workflow_assigned_bulk'").get().c;
+    assignStepsBulk({ documentIds: docs.map((d) => d.id), assigneeId: teacherUser.id, actorUser: registrarUser });
+    assert.equal(db.prepare("SELECT COUNT(*) c FROM audit_logs WHERE action = 'workflow_assigned_bulk'").get().c, before + 1);
+    for (const d of docs) {
+      const stepId = stepsOf(d.id)[0].id;
+      assert.equal(db.prepare("SELECT COUNT(*) c FROM audit_logs WHERE action = 'workflow_assigned' AND record_id = ?")
+        .get(stepId).c, 1, 'ต้องมีร่องรอยรายฉบับด้วย ไม่ใช่แค่สรุปของชุด');
+    }
+  });
+
+  describe('หน้าทะเบียน', () => {
+    // ช่องติ๊กต้องขึ้นเฉพาะฉบับที่มอบหมายได้จริง — โชว์ให้ทุกแถวแล้วค่อยไปฟ้องตอนกด แปลว่าผู้ใช้
+    // เลือกไปสิบฉบับแล้วเพิ่งรู้ว่าไม่ได้สักฉบับ
+    const pickBox = (body, id) => {
+      const m = new RegExp(`<input type="checkbox" class="bulkPick" value="${id}"[^>]*>`).exec(body);
+      return m ? m[0] : null;
+    };
+
+    test('ธุรการเห็นช่องติ๊ก แถบมอบหมาย และปุ่มเลือกทั้งหน้า', async () => {
+      const [doc] = batch(1);
+      const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/documents', { direction: 'incoming' });
+      assert.equal(res.status, 200);
+      const box = pickBox(res.body, doc.id);
+      assert.ok(box, 'ฉบับที่เพิ่งลงทะเบียนต้องมีช่องติ๊ก');
+      assert.ok(!box.includes('disabled'), 'ฉบับที่ยังมอบหมายได้ต้องติ๊กได้');
+      assert.ok(res.body.includes('id="bulkAssignBar"'), 'ต้องมีแถบมอบหมายเป็นชุด');
+      assert.ok(res.body.includes('id="bulkAll"'), 'ต้องมีปุ่มเลือกทั้งหน้า');
+      assert.ok(res.body.includes('id="bulkAssignee"') && res.body.includes('id="bulkInstruction"'));
+    });
+
+    test('ฉบับที่เสนอขึ้นไปแล้ว ช่องติ๊กต้องกดไม่ได้และบอกเหตุผล', async () => {
+      const [doc] = batch(1);
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/documents', { direction: 'incoming' });
+      const box = pickBox(res.body, doc.id);
+      assert.ok(box, 'แถวยังต้องแสดงอยู่');
+      assert.ok(box.includes('disabled'), 'ฉบับที่เสนอไปแล้วต้องติ๊กไม่ได้');
+      assert.match(box, /title="[^"]*เสนอขึ้นไปแล้ว/);
+    });
+
+    test('ครูทั่วไปต้องไม่ได้ช่องติ๊กที่กดได้ของหนังสือที่ธุรการเป็นผู้บันทึก', async () => {
+      const [doc] = batch(1);
+      const teacher = loadUserForTest(seed.userIds.teacher001);
+      // มอบให้ครูเห็นฉบับนี้ก่อน ไม่งั้นแถวไม่โผล่ในหน้าของครูเลย และเทสต์จะผ่านด้วยเหตุผลอื่น
+      assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: registrarUser });
+      const res = await dispatchGet(teacher, '/documents', { direction: 'incoming' });
+      assert.ok(res.body.includes(`href="/documents/${doc.id}"`), 'ครูต้องเห็นแถวนี้จริง');
+      const box = pickBox(res.body, doc.id);
+      assert.ok(box === null || box.includes('disabled'), 'ครูต้องติ๊กหนังสือของธุรการไม่ได้');
+    });
   });
 });
 

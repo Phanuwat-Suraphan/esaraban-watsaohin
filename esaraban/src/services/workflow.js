@@ -462,6 +462,71 @@ function documentOfStep(step) {
 }
 
 export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
+  const { id, doc } = insertAssignStep({ documentId, assigneeId, instruction, actorUser });
+  notifyUser({
+    userId: assigneeId, documentId,
+    title: `หนังสือใหม่ต้องดำเนินการ: ${doc.doc_number_display}`,
+    message: doc.title,
+    priority: doc.priority === 'most_urgent' || doc.priority === 'very_urgent' ? 'urgent' : 'info',
+  });
+  return id;
+}
+
+/**
+ * มอบหมายหลายฉบับให้คนเดียวกันในครั้งเดียว — หนังสือเข้าที่มาถึงเป็นปึกมักลงเอยที่ฝ่ายเดียวกันทั้งกอง
+ *
+ * สองอย่างที่ต่างจากการกดทีละฉบับโดยตั้งใจ:
+ *   1. แจ้งเตือนครั้งเดียวสรุปรวม ไม่ใช่ยิงทีละฉบับ — มอบ 12 เรื่องแล้วครูได้ไลน์ 12 ข้อความติดกัน
+ *      คือวิธีที่ทำให้คนปิดการแจ้งเตือนทิ้ง (เหตุผลเดียวกับปุ่มตามงานค้างและสรุปหนังสือเข้าประจำวัน)
+ *   2. ฉบับที่มอบไม่ได้ (เช่นมีคนเสนอขึ้นไปแล้ว) ไม่ล้มทั้งกอง แต่รายงานกลับมาทีละฉบับว่าติดอะไร
+ *      — ธุรการเลือกทั้งหน้าแล้วกดทีเดียว การล้มทั้งกองเพราะฉบับเดียวแปลว่าต้องมานั่งไล่เองว่าอันไหน
+ */
+export function assignStepsBulk({ documentIds, assigneeId, instruction, actorUser }) {
+  const ids = [...new Set((documentIds || []).filter((x) => typeof x === 'string' && x))];
+  if (!ids.length) throw httpError(400, 'กรุณาเลือกหนังสืออย่างน้อยหนึ่งฉบับ');
+  if (ids.length > MAX_BULK_ASSIGN) {
+    throw httpError(400, `เลือกได้ครั้งละไม่เกิน ${MAX_BULK_ASSIGN} ฉบับ — เลือกเป็นชุดย่อยแล้วกดทีละชุด`);
+  }
+  assertMaxLength(instruction, MAX_STEP_TEXT, 'ข้อความเกษียณ/หมายเหตุ');
+  assertAssignableUser(assigneeId);
+
+  const assigned = [];
+  const failed = [];
+  for (const documentId of ids) {
+    try {
+      const { doc } = insertAssignStep({ documentId, assigneeId, instruction, actorUser });
+      assigned.push({ id: documentId, docNumberDisplay: doc.doc_number_display, title: doc.title, priority: doc.priority });
+    } catch (err) {
+      // บอกเลขหนังสือกลับไปเฉพาะฉบับที่ผู้กดมีสิทธิ์เห็นอยู่แล้ว — ไม่อย่างนั้นการยิง id สุ่มเข้ามา
+      // จะกลายเป็นช่องถามเลขหนังสือของฝ่ายอื่นทีละฉบับ ผ่านข้อความบอกสาเหตุที่ไม่สำเร็จ
+      const doc = getDocument(documentId);
+      const visible = doc && canUserSeeDocument(actorUser, doc);
+      failed.push({ id: documentId, docNumberDisplay: visible ? doc.doc_number_display : '', error: err.message });
+    }
+  }
+
+  if (assigned.length) {
+    const urgent = assigned.some((d) => ['most_urgent', 'very_urgent'].includes(d.priority));
+    const lines = assigned.slice(0, 5).map((d) => `• ${d.docNumberDisplay} ${d.title}`);
+    if (assigned.length > lines.length) lines.push(`• และอีก ${assigned.length - lines.length} ฉบับ`);
+    notifyUser({
+      userId: assigneeId,
+      // ลิงก์ไปหน้างานของฉัน ไม่ใช่ฉบับใดฉบับหนึ่ง เพราะข้อความนี้พูดถึงหลายฉบับพร้อมกัน
+      linkUrl: '/tasks',
+      title: `หนังสือใหม่ต้องดำเนินการ ${assigned.length} ฉบับ`,
+      message: lines.join('\n'),
+      priority: urgent ? 'urgent' : 'info',
+    });
+  }
+  audit({
+    userId: actorUser.id, action: 'workflow_assigned_bulk', tableName: 'workflow_steps', recordId: null,
+    detail: { assigneeId, assigned: assigned.length, failed: failed.length },
+  });
+  return { assigned: assigned.length, failed };
+}
+
+/** แกนกลางของการมอบหมาย — ไม่แจ้งเตือน เพื่อให้แบบทีละฉบับกับแบบเป็นชุดใช้กติกาชุดเดียวกันเป๊ะ */
+function insertAssignStep({ documentId, assigneeId, instruction, actorUser }) {
   assertMaxLength(instruction, MAX_STEP_TEXT, 'ข้อความเกษียณ/หมายเหตุ');
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
@@ -480,16 +545,8 @@ export function assignStep({ documentId, assigneeId, instruction, actorUser }) {
   `).run(id, documentId, maxOrder + 1, assigneeId, instruction || null, nowIso());
 
   db.prepare(`UPDATE documents SET status = 'in_progress', updated_at = ? WHERE id = ?`).run(nowIso(), documentId);
-
-  notifyUser({
-    userId: assigneeId, documentId,
-    title: `หนังสือใหม่ต้องดำเนินการ: ${doc.doc_number_display}`,
-    message: doc.title,
-    priority: doc.priority === 'most_urgent' || doc.priority === 'very_urgent' ? 'urgent' : 'info',
-  });
-
   audit({ userId: actorUser.id, action: 'workflow_assigned', tableName: 'workflow_steps', recordId: id, detail: { assigneeId, instruction } });
-  return id;
+  return { id, doc };
 }
 
 // ---------------- แจ้งเวียนประชาสัมพันธ์ (ส่งให้ทุกคนอ่าน ไม่ต้องลงนามรับทราบรายคน) ----------------
@@ -850,6 +907,11 @@ function assertOwnsStep(step, actorUser) {
 // ส่งต่อพร้อมกันได้สูงสุดกี่คน — ตรายาง "รับทราบและปฏิบัติตามคำสั่ง" มีบรรทัดให้ลงชื่อ 4 บรรทัด
 // (ระบบขยายบรรทัดลงมาให้เองถ้าเกิน) เพดานนี้จึงไม่ใช่ข้อจำกัดของตรา แต่กันการกดพลาดเลือกยกโรงเรียน
 // ซึ่งจะทำให้หนังสือฉบับเดียวไปโผล่เป็นงานค้างของทุกคนพร้อมกันโดยไม่มีใครตั้งใจ
+// เพดานการมอบหมายเป็นชุดต่อครั้ง — หน้าทะเบียนแสดงทีละ 50 แถว (PAGE_SIZE ที่ routes/documents.js)
+// การกด "เลือกทั้งหน้า" จึงอยู่ใต้เพดานนี้เสมอ เผื่อไว้เล็กน้อยกันเพดานหน้าขยับขึ้นแล้วชนกันพอดี
+// เพดานนี้มีไว้กันการยิง API ตรงๆ ด้วยรายการเป็นพัน ซึ่งกลายเป็นการเขียนฐานข้อมูลรวดเดียวมหาศาล
+export const MAX_BULK_ASSIGN = 60;
+
 export const MAX_PARALLEL_ASSIGNEES = 10;
 
 /**

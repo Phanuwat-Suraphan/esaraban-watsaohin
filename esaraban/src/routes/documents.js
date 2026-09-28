@@ -7,7 +7,7 @@ import {
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, groupStepsByOrder, currentStep, currentStepFor,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
-  isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep, markStepOpened,
+  isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep, markStepOpened, assignStepsBulk,
   adminReassignStep, adminAddAssignees, adminRemoveAssignee, MAX_PARALLEL_ASSIGNEES,
   broadcastDocument, listBroadcasts, canBroadcast,
 } from '../services/workflow.js';
@@ -208,10 +208,26 @@ router.get('/documents', requirePage((ctx) => {
   const stillOpen = (d) => !CLOSED_STATUSES.includes(d.status);
   const overdueCount = rows.filter((d) => stillOpen(d) && daysUntil(d.due_date) < 0).length;
 
+  // มอบหมายเป็นชุด — หนังสือเข้าที่มาถึงเป็นปึกมักลงเอยที่ฝ่ายเดียวกันทั้งกอง เดิมต้องเปิดทีละฉบับ
+  // กดเสนอทีละฉบับ ซึ่งวันที่หนังสือมา 12 ฉบับคือ 12 รอบของการเปิด-เลือกคน-กด-รอหน้าโหลด
+  //
+  // ช่องติ๊กขึ้นเฉพาะคนที่มอบหมายได้จริง (ผู้บันทึกเอกสาร/ผู้ดูแล) และเฉพาะฉบับที่ยังมอบหมายใหม่ได้
+  // — โชว์ช่องติ๊กให้ทุกแถวแล้วค่อยไปฟ้องตอนกด แปลว่าผู้ใช้เลือกไปสิบฉบับแล้วเพิ่งรู้ว่าไม่ได้สักฉบับ
+  const isAdminUser = ctx.user.roleCodes.includes('admin');
+  const assignableIds = new Set(rows
+    .filter((d) => ['registered', 'returned'].includes(d.status) && (isAdminUser || d.created_by === ctx.user.id))
+    .map((d) => d.id));
+  const canBulkAssign = assignableIds.size > 0;
+
   const rowsHtml = rows.map((d) => {
     const n = stillOpen(d) ? daysUntil(d.due_date) : null;
     return `
     <tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
+      ${canBulkAssign ? `<td style="text-align:center">
+        <!-- ตัวจัดการคลิกทั้งแถว (public/app.js) เว้น input ให้อยู่แล้ว ติ๊กช่องนี้จึงไม่เด้งออกจากหน้า -->
+        <input type="checkbox" class="bulkPick" value="${esc(d.id)}" aria-label="เลือก ${esc(d.doc_number_display)}"
+          ${assignableIds.has(d.id) ? '' : 'disabled title="ฉบับนี้เสนอขึ้นไปแล้ว หรือปิดเรื่องแล้ว จึงมอบหมายใหม่เป็นชุดไม่ได้"'} />
+      </td>` : ''}
       <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}
         ${d.is_circular ? '<div><span class="badge badge-info" style="font-size:.7rem">ว เวียน</span></div>' : ''}</td>
       ${direction === 'all' ? `<td style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
@@ -364,6 +380,21 @@ router.get('/documents', requirePage((ctx) => {
   // เพราะเสียเวลา — รวมเป็นข้อความเดียวที่จัดกลุ่มว่าใครค้างอะไรบ้าง (ใช้ตัวเดียวกับแดชบอร์ดผู้บริหาร)
   const chase = pendingChaseGroups(ctx.user);
 
+  const bulkBar = !canBulkAssign ? '' : `
+    <div class="card" id="bulkAssignBar" hidden style="border-color:var(--primary)">
+      <div class="flex gap-2 flex-wrap items-center">
+        <strong id="bulkCount">เลือกไว้ 0 ฉบับ</strong>
+        <select id="bulkAssignee" aria-label="ผู้รับมอบหมาย" style="max-width:260px">
+          <option value="">— เลือกผู้รับมอบหมาย —</option>
+          ${listUserOptions(ctx.user.id)}
+        </select>
+        <input type="text" id="bulkInstruction" maxlength="500" placeholder="ข้อความเกษียณ/สั่งการ (เว้นว่างได้)" style="max-width:320px" />
+        <button class="btn btn-primary btn-sm" type="button" onclick="submitBulkAssign(this)">เสนอ/มอบหมายที่เลือก</button>
+        <button class="btn btn-outline btn-sm" type="button" onclick="clearPicks()">ล้างที่เลือก</button>
+      </div>
+      <div class="help-text">ผู้รับจะได้รับแจ้งเตือน<strong>ครั้งเดียวสรุปรวมทุกฉบับ</strong> ไม่ใช่ทีละฉบับ</div>
+    </div>`;
+
   const content = `
     <div class="card-header">
       <div>
@@ -411,9 +442,50 @@ router.get('/documents', requirePage((ctx) => {
     </div>
     <div class="card">
       ${filterForm}
-      ${rows.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th class="clip-col" title="ไฟล์แนบ">📎</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
-        <tbody>${rowsHtml}</tbody></table></div>${pager}`
+      ${rows.length ? `${bulkBar}<div class="table-wrap"><table>
+        <thead><tr>${canBulkAssign ? '<th style="text-align:center"><input type="checkbox" id="bulkAll" aria-label="เลือกทั้งหน้า" onclick="toggleAllPicks(this)" /></th>' : ''}<th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th class="clip-col" title="ไฟล์แนบ">📎</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table></div>${pager}
+      ${canBulkAssign ? `<script>
+        function picked() { return [...document.querySelectorAll('.bulkPick:checked')].map(function (x) { return x.value; }); }
+        function refreshBulkBar() {
+          var n = picked().length;
+          document.getElementById('bulkAssignBar').hidden = n === 0;
+          document.getElementById('bulkCount').textContent = 'เลือกไว้ ' + n + ' ฉบับ';
+        }
+        window.toggleAllPicks = function (box) {
+          document.querySelectorAll('.bulkPick:not([disabled])').forEach(function (x) { x.checked = box.checked; });
+          refreshBulkBar();
+        };
+        window.clearPicks = function () {
+          document.querySelectorAll('.bulkPick').forEach(function (x) { x.checked = false; });
+          var all = document.getElementById('bulkAll');
+          if (all) all.checked = false;
+          refreshBulkBar();
+        };
+        document.querySelectorAll('.bulkPick').forEach(function (x) { x.addEventListener('change', refreshBulkBar); });
+        window.submitBulkAssign = function (btn) {
+          var ids = picked();
+          var assigneeId = document.getElementById('bulkAssignee').value;
+          if (!ids.length) { window.toast('ยังไม่ได้เลือกหนังสือ', 'warning'); return; }
+          if (!assigneeId) { window.toast('กรุณาเลือกผู้รับมอบหมาย', 'warning'); return; }
+          if (!confirm('เสนอ/มอบหมายหนังสือ ' + ids.length + ' ฉบับให้คนเดียวกันใช่หรือไม่?')) return;
+          window.setBtnLoading(btn, 'กำลังมอบหมาย...');
+          window.postJson('/documents/bulk-assign', {
+            documentIds: ids, assigneeId: assigneeId,
+            instruction: document.getElementById('bulkInstruction').value.trim(),
+          }).then(function (d) {
+            if (d === null) { window.restoreBtn(btn); return; }
+            if (d.failed && d.failed.length) {
+              // บอกเป็นรายฉบับว่าอันไหนไม่ผ่านและเพราะอะไร ไม่ใช่แค่ "บางฉบับไม่สำเร็จ"
+              window.toast('มอบหมายแล้ว ' + d.assigned + ' ฉบับ · ไม่สำเร็จ ' + d.failed.length + ' ฉบับ: '
+                + d.failed.map(function (f) { return (f.docNumberDisplay || 'ฉบับที่เลือก') + ' (' + f.error + ')'; }).join(', '), 'warning');
+            } else {
+              window.toast('มอบหมาย ' + d.assigned + ' ฉบับให้เรียบร้อยแล้ว — ผู้รับได้รับแจ้งเตือนครั้งเดียวสรุปรวม', 'success');
+            }
+            setTimeout(function () { location.reload(); }, 1600);
+          }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+        };
+      </script>` : ''}`
       : emptyState('📭', filtering
         ? 'ไม่พบหนังสือที่ตรงกับเงื่อนไขที่เลือก — ลองลดเงื่อนไขลงหรือกด "ล้างตัวกรอง"'
         : `ไม่มี${DIRECTION_NOUN[direction]}ในรายการนี้`)}
@@ -3458,6 +3530,14 @@ router.post('/documents/:id/attachments/merge-images', requireApi(async (ctx) =>
 }));
 
 // ธง "ต้องทำหนังสือตอบ" ของหนังสือเข้า และการผูกหนังสือส่งว่าเป็นตัวตอบ (ดู services/replyLink.js)
+// มอบหมายหลายฉบับให้คนเดียวกันรวดเดียว (ดูเหตุผลใน services/workflow.js — assignStepsBulk)
+router.post('/documents/bulk-assign', requireApi((ctx) => {
+  json(ctx, 200, assignStepsBulk({
+    documentIds: ctx.body?.documentIds, assigneeId: ctx.body?.assigneeId,
+    instruction: ctx.body?.instruction, actorUser: ctx.user,
+  }));
+}));
+
 router.post('/documents/:id/needs-reply', requireApi((ctx) => {
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');

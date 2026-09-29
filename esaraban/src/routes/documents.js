@@ -22,7 +22,7 @@ import {
 } from '../services/pdfStamp.js';
 import { assertMaxLength, requireDate } from '../services/validate.js';
 import {
-  canShareToLine, documentShareText, incomingDigestText, pendingReminderText, pendingDigestText,
+  canShareToLine, documentShareText, incomingDigestText, pendingReminderText, pendingDigestText, broadcastChaseText,
   lineShareBlock,
 } from '../services/line.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
@@ -35,6 +35,7 @@ import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, cou
 import { auditRegister } from '../services/registerAudit.js';
 import { unassignedIncoming, canSeeUnassigned } from '../services/unassigned.js';
 import { queuePosition, nextInQueue } from '../services/myQueue.js';
+import { broadcastReadStats, markBroadcastRead } from '../services/broadcastReads.js';
 import { imagesToPdf } from '../services/imagesToPdf.js';
 import {
   canLinkReply, setNeedsReply, setReplyTarget, repliesOf, replyTargetOf, replyCandidates, countAwaitingReply,
@@ -1612,6 +1613,9 @@ router.get('/documents/:id', requirePage((ctx) => {
   // นับว่า "เปิดอ่านแล้ว" ตั้งแต่ตอนเปิดหน้านี้ ไม่ใช่ตอนกดปุ่มอะไรสักอย่าง — เพราะสิ่งที่ธุรการอยากรู้คือ
   // "เจ้าตัวรู้เรื่องนี้หรือยัง" ซึ่งเกิดขึ้นตั้งแต่เปิดหนังสือขึ้นมาอ่านแล้ว (บันทึกเฉพาะครั้งแรก)
   markStepOpened(doc.id, ctx.user.id);
+  // เหตุผลเดียวกันสำหรับหนังสือเวียน — คนที่ถูกแจ้งเวียนถึงและเพิ่งเปิดหน้านี้ ถือว่ารับทราบแล้ว
+  // (แทนช่องเซ็นชื่อใน "บัญชีแจ้งเวียน" บนกระดาษ ดู services/broadcastReads.js)
+  markBroadcastRead(doc.id, ctx.user.id);
 
   const attachments = db.prepare(`SELECT * FROM attachments WHERE document_id = ? ${ATTACHMENT_ORDER}`).all(doc.id);
   // ไฟล์ที่ยังเปิดได้จริง — ปุ่มทุกปุ่มที่พาไปเปิดไฟล์ต้องดูจากรายการนี้ ไม่ใช่ attachments ทั้งหมด
@@ -1851,6 +1855,40 @@ router.get('/documents/:id', requirePage((ctx) => {
   const isSecretDoc = ['secret', 'top_secret'].includes(doc.secret_level);
   const showBroadcastBox = canBroadcast(ctx.user) && !['voided', 'destroyed', 'rejected'].includes(doc.status);
   const lastBroadcast = broadcasts[0];
+
+  /**
+   * บัญชีแจ้งเวียน — อ่านแล้วกี่คน เหลือใครบ้าง พร้อมข้อความตามคนที่ยังไม่อ่าน
+   *
+   * "ส่งถึง 38 คน" ตอบไม่ได้ว่าใครรู้แล้วบ้าง ซึ่งเป็นคำถามเดียวที่ต้องตอบตอนมีคนบอกว่าไม่ได้รับแจ้ง
+   * และตอนต้องตามให้ครบก่อนวันงาน (ดู services/broadcastReads.js)
+   */
+  const readStats = broadcasts.length ? broadcastReadStats(doc.id) : null;
+  const readStatsHtml = !readStats ? '' : !readStats.tracked ? `
+    <p class="help-text" style="margin-top:-.4rem">
+      หนังสือเวียนฉบับนี้แจ้งไปก่อนที่ระบบจะเริ่มเก็บสถิติการอ่าน จึงไม่มีข้อมูลว่าใครอ่านแล้วบ้าง
+      — ฉบับที่แจ้งเวียนหลังจากนี้จะนับให้เอง
+    </p>` : `
+    <div class="stack" id="broadcastReads" style="gap:.4rem;margin-top:-.3rem">
+      <div><strong>อ่านแล้ว ${fmtCount(readStats.readCount)} จาก ${fmtCount(readStats.total)} ท่าน</strong>
+        ${readStats.unreadCount
+    ? `<span class="badge badge-warning">ยังไม่อ่าน ${fmtCount(readStats.unreadCount)}</span>`
+    : '<span class="badge badge-success">ครบทุกท่านแล้ว</span>'}</div>
+      ${readStats.unreadCount ? `
+        <details>
+          <summary style="cursor:pointer">ดูรายชื่อท่านที่ยังไม่ได้เปิดอ่าน</summary>
+          <ol style="margin:.4rem 0 0;padding-left:1.2rem;font-size:.9rem">
+            ${readStats.unread.map((u) => `<li>${esc(u.name)}${u.position ? ` <span class="text-muted">(${esc(u.position)})</span>` : ''}</li>`).join('')}
+            ${readStats.hiddenCount ? `<li class="text-muted">และอีก ${fmtCount(readStats.hiddenCount)} ท่าน</li>` : ''}
+          </ol>
+        </details>
+        ${lineShareBlock({
+    key: `${doc.id}-bcchase`,
+    text: broadcastChaseText(doc, readStats),
+    copyLabel: `⏳ คัดลอกข้อความตามท่านที่ยังไม่อ่าน (${readStats.unreadCount})`,
+    title: 'รวมรายชื่อท่านที่ยังไม่ได้เปิดอ่านเป็นข้อความเดียว คัดลอกไปวางในกลุ่มไลน์ได้เลย',
+  })}` : ''}
+    </div>`;
+
   const broadcastBox = showBroadcastBox ? `
     <div class="card">
       <h3 class="mt-0">📢 ประชาสัมพันธ์ให้ทุกคนอ่าน</h3>
@@ -1860,7 +1898,8 @@ router.get('/documents/:id', requirePage((ctx) => {
           เมื่อ ${esc(fmtDate(lastBroadcast.created_at))} ถึงบุคลากร ${lastBroadcast.recipient_count} คน
           โดย ${esc(`${lastBroadcast.prefix || ''}${lastBroadcast.first_name} ${lastBroadcast.last_name}`.trim())}
           ${lastBroadcast.note ? `<br/>ข้อความ: ${esc(lastBroadcast.note)}` : ''}
-        </div>` : ''}
+        </div>
+        ${readStatsHtml}` : ''}
       ${isSecretDoc ? `
         <div class="alert alert-warning" style="font-size:.85rem">
           หนังสือชั้นความลับ <strong>${esc(LABELS.SECRET_LABEL[doc.secret_level] || doc.secret_level)}</strong>

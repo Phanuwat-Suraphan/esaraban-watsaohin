@@ -433,6 +433,23 @@ export function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_broadcasts_doc ON document_broadcasts(document_id, created_at DESC);
 
+  -- ใครได้รับหนังสือเวียนฉบับนั้น และเปิดอ่านแล้วหรือยัง
+  --
+  -- บนกระดาษ หนังสือเวียนมี "บัญชีแจ้งเวียน" ที่ครูเซ็นชื่อกำกับว่ารับทราบแล้ว ซึ่งเป็นหลักฐานว่า
+  -- แจ้งถึงตัวจริง ระบบเดิมเก็บแค่ recipient_count (จำนวนคนที่ยิงแจ้งเตือนออกไป) จึงตอบไม่ได้เลยว่า
+  -- "ครูคนไหนยังไม่ได้อ่านหนังสือเวียนฉบับนี้" — ซึ่งเป็นคำถามเดียวที่ธุรการต้องตอบเวลามีคนอ้างว่าไม่รู้
+  --
+  -- แถวถูกสร้างตอนกดแจ้งเวียน (ทุกคน ณ ตอนนั้น) ไม่ใช่ไปนับจากรายชื่อครูปัจจุบันตอนแสดงผล เพราะครู
+  -- เข้าออกระหว่างปี ตัวหารต้องเป็น "คนที่ได้รับตอนนั้น" ไม่งั้นสัดส่วนจะเปลี่ยนไปเองทีหลังโดยไม่มีเหตุ
+  CREATE TABLE IF NOT EXISTS document_broadcast_reads (
+    broadcast_id TEXT NOT NULL REFERENCES document_broadcasts(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    opened_at TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (broadcast_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_broadcast_reads_user ON document_broadcast_reads(user_id, opened_at);
+
   CREATE TABLE IF NOT EXISTS announcements (
     id TEXT PRIMARY KEY,
     category TEXT NOT NULL DEFAULT 'ประกาศ', -- ประกาศ | ประชาสัมพันธ์

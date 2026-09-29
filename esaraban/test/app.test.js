@@ -12544,6 +12544,188 @@ describe('บีบอัดคำตอบก่อนส่งออก', () =
   });
 });
 
+// บนกระดาษ หนังสือเวียนมาพร้อม "บัญชีแจ้งเวียน" ให้ครูเซ็นชื่อกำกับว่ารับทราบแล้ว ระบบเดิมยิงแจ้งเตือน
+// ให้ทุกคนแล้วเก็บไว้แค่ "ส่งถึง 38 คน" จึงตอบไม่ได้เลยว่าใครรู้แล้วบ้าง
+describe('บัญชีแจ้งเวียน — ใครอ่านหนังสือเวียนแล้วบ้าง', () => {
+  let BR;
+  before(async () => { BR = await import('../src/services/broadcastReads.js'); });
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  let n = 0;
+  const circular = () => {
+    const doc = makeDoc({ title: `หนังสือเวียนแจ้งให้ทราบทั่วกัน ฉบับที่ ${++n} ${Math.random().toString(36).slice(2, 8)}` });
+    broadcastDocument({ documentId: doc.id, note: 'ขอเชิญคณะครูทุกท่านทราบ', actorUser: registrarUser, allowDuplicate: true });
+    return doc;
+  };
+  const activeUserCount = () => db.prepare("SELECT COUNT(*) c FROM users WHERE deleted_at IS NULL AND status = 'active'").get().c;
+  // ต้องดูว่าลิงก์อยู่ "ในการ์ดรวมหนังสือเวียน" จริง ไม่ใช่แค่มีอยู่ที่ไหนสักแห่งบนแดชบอร์ด —
+  // หน้าแรกมีการ์ด "เอกสารล่าสุดในระบบ" ที่ลิงก์ไปหนังสือทุกฉบับอยู่แล้ว ถ้าตรวจหลวมๆ จะผ่านตลอด
+  const inCircularCard = (body, id) =>
+    new RegExp(`href="/documents/${id}">[^<]*</a>\\s*<span class="text-muted">· อ่านแล้ว`).test(body);
+
+  test('แจ้งเวียนแล้วต้องเก็บรายชื่อผู้รับเป็นรายคน ไม่ใช่แค่จำนวน', () => {
+    const doc = circular();
+    const stats = BR.broadcastReadStats(doc.id);
+    assert.equal(stats.tracked, true);
+    // ทุกคนยกเว้นผู้กดเอง (ธุรการ) — ตัวหารต้องเป็นคนที่ได้รับจริง
+    assert.equal(stats.total, activeUserCount() - 1);
+    assert.equal(stats.readCount, 0, 'แจ้งไปแล้วยังไม่เท่ากับอ่านแล้ว');
+    assert.equal(stats.unreadCount, stats.total);
+  });
+
+  test('เปิดหน้าหนังสือแล้วถูกนับว่าอ่าน และไม่ทับเวลาครั้งแรก', async () => {
+    const doc = circular();
+    const openedOf = () => db.prepare(`SELECT r.opened_at FROM document_broadcast_reads r
+      JOIN document_broadcasts b ON b.id = r.broadcast_id
+      WHERE b.document_id = ? AND r.user_id = ?`).get(doc.id, seed.userIds.teacher001)?.opened_at;
+    assert.equal(openedOf(), null);
+    await dispatchGet(teacher(), `/documents/${doc.id}`);
+    const first = openedOf();
+    assert.ok(first, 'เปิดหน้าแล้วต้องนับว่าอ่าน');
+    await dispatchGet(teacher(), `/documents/${doc.id}`);
+    assert.equal(openedOf(), first, 'เปิดซ้ำต้องไม่ทับเวลาครั้งแรก');
+
+    const stats = BR.broadcastReadStats(doc.id);
+    assert.equal(stats.readCount, 1);
+    assert.ok(!stats.unread.some((u) => u.userId === seed.userIds.teacher001), 'คนที่อ่านแล้วต้องหลุดจากรายชื่อค้าง');
+  });
+
+  test('แจ้งเวียนซ้ำหลายรอบ ต้องนับคนละหนึ่ง ไม่ใช่บวกทบกันไปเรื่อยๆ', async () => {
+    const doc = circular();
+    const before = BR.broadcastReadStats(doc.id).total;
+    broadcastDocument({ documentId: doc.id, actorUser: registrarUser, allowDuplicate: true });
+    const after = BR.broadcastReadStats(doc.id);
+    assert.equal(after.total, before, 'แจ้งซ้ำไม่ได้แปลว่าผู้รับเพิ่มขึ้น');
+    // และอ่านครั้งเดียวต้องนับว่ารับทราบทั้งเรื่อง ไม่ใช่ค้างรอบแรกไว้ตลอดไป
+    await dispatchGet(teacher(), `/documents/${doc.id}`);
+    const read = BR.broadcastReadStats(doc.id);
+    assert.equal(read.readCount, 1);
+    assert.ok(!read.unread.some((u) => u.userId === seed.userIds.teacher001));
+  });
+
+  test('หนังสือที่แจ้งเวียนก่อนระบบเก็บสถิติ ต้องบอกว่าไม่มีข้อมูล ไม่ใช่โชว์ 0 จาก N', async () => {
+    const doc = makeDoc({ title: 'หนังสือเวียนเก่าที่แจ้งไปก่อนระบบเก็บสถิติ' });
+    broadcastDocument({ documentId: doc.id, actorUser: registrarUser, allowDuplicate: true });
+    // จำลองของเก่า: ลบแถวรายคนทิ้ง เหลือแต่ recipient_count เหมือนข้อมูลที่บันทึกไว้ก่อนหน้านี้
+    db.prepare(`DELETE FROM document_broadcast_reads WHERE broadcast_id IN
+      (SELECT id FROM document_broadcasts WHERE document_id = ?)`).run(doc.id);
+    assert.equal(BR.broadcastReadStats(doc.id).tracked, false);
+
+    const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+    assert.match(page.body, /แจ้งไปก่อนที่ระบบจะเริ่มเก็บสถิติการอ่าน/);
+    assert.ok(!page.body.includes('อ่านแล้ว 0 จาก'), 'ห้ามโชว์ 0 จาก N ให้ของเก่า — จะทำให้ไล่ตามคนทั้งโรงเรียนใหม่ทั้งที่อาจอ่านกันไปแล้ว');
+  });
+
+  test('คนที่ลาออก/ปิดบัญชีไปแล้วต้องไม่ถ่วงตัวหารให้ดูเหมือนแจ้งไม่ครบตลอดไป', () => {
+    const doc = circular();
+    const before = BR.broadcastReadStats(doc.id);
+    const victim = before.unread[0];
+    assert.ok(victim, 'ต้องมีคนที่ยังไม่อ่านให้ทดสอบ');
+    db.prepare("UPDATE users SET status = 'inactive' WHERE id = ?").run(victim.userId);
+    try {
+      const after = BR.broadcastReadStats(doc.id);
+      assert.equal(after.total, before.total - 1);
+      assert.ok(!after.unread.some((u) => u.userId === victim.userId));
+    } finally {
+      db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(victim.userId);
+    }
+  });
+
+  describe('ข้อความตามคนที่ยังไม่อ่าน', () => {
+    test('เอ่ยชื่อเฉพาะคนที่ยังไม่อ่าน พร้อมสัดส่วนและลิงก์กลับ', async () => {
+      const line = await import('../src/services/line.js');
+      const doc = circular();
+      await dispatchGet(teacher(), `/documents/${doc.id}`); // ให้มีคนอ่านแล้วหนึ่งคน
+      const stats = BR.broadcastReadStats(doc.id);
+      const text = line.broadcastChaseText(getDocRow(doc.id), stats);
+      assert.ok(text.includes(getDocRow(doc.id).doc_number_display));
+      assert.match(text, /อ่านแล้ว 1 จาก \d+ ท่าน/);
+      assert.match(text, /เรียน ท่านที่ยังไม่ได้เปิดอ่าน/);
+      assert.match(text, /จึงเรียนมาเพื่อโปรดเข้าไปอ่าน/);
+      assert.ok(text.includes(`/documents/${doc.id}`), 'ต้องมีลิงก์กลับมาที่ฉบับนี้');
+      // ห้ามเอ่ยชื่อคนที่อ่านแล้ว — จุดประสงค์คือให้คนที่ยังไม่อ่านเข้าไปอ่าน ไม่ใช่ประจานใคร
+      const readerName = `${teacher().prefix || ''}${teacher().first_name} ${teacher().last_name}`.trim();
+      assert.ok(!text.includes(readerName), 'ต้องไม่มีชื่อคนที่อ่านแล้วอยู่ในข้อความ');
+      for (const u of stats.unread) assert.ok(text.includes(u.name), `ต้องมีชื่อ ${u.name}`);
+    });
+
+    test('รายชื่อยาวเกินต้องถูกตัด แต่ต้องบอกว่าเหลืออีกกี่ท่าน', () => {
+      const doc = circular();
+      const stats = { readCount: 0, total: 40, unreadCount: 40, hiddenCount: 15,
+        unread: Array.from({ length: 25 }, (_, i) => ({ userId: `u${i}`, name: `ครูทดสอบ ${i}`, position: 'ครู' })) };
+      const line = db.prepare('SELECT * FROM documents WHERE id = ?').get(doc.id);
+      return import('../src/services/line.js').then((L) => {
+        const text = L.broadcastChaseText(line, stats);
+        assert.match(text, /และอีก 15 ท่าน/);
+        assert.equal((text.match(/^\d+\. /gm) || []).length, 25);
+      });
+    });
+  });
+
+  describe('หน้าเว็บ', () => {
+    test('หน้าเอกสารขึ้นสัดส่วนการอ่าน รายชื่อค้าง และปุ่มคัดลอกข้อความตาม', async () => {
+      const doc = circular();
+      await dispatchGet(teacher(), `/documents/${doc.id}`);
+      const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+      assert.ok(page.body.includes('id="broadcastReads"'));
+      assert.match(page.body, /อ่านแล้ว \d+ จาก \d+ ท่าน/);
+      assert.match(page.body, /ดูรายชื่อท่านที่ยังไม่ได้เปิดอ่าน/);
+      assert.match(page.body, /คัดลอกข้อความตามท่านที่ยังไม่อ่าน \(\d+\)/);
+    });
+
+    test('อ่านครบทุกคนแล้วต้องขึ้นว่าครบ และไม่มีปุ่มตามอีก', async () => {
+      const doc = circular();
+      const everyone = db.prepare(`SELECT r.user_id FROM document_broadcast_reads r
+        JOIN document_broadcasts b ON b.id = r.broadcast_id WHERE b.document_id = ?`).all(doc.id);
+      db.prepare(`UPDATE document_broadcast_reads SET opened_at = ? WHERE broadcast_id IN
+        (SELECT id FROM document_broadcasts WHERE document_id = ?)`).run(nowIso(), doc.id);
+      assert.ok(everyone.length > 1, 'ต้องมีผู้รับหลายคนจริง');
+      const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+      assert.match(page.body, /ครบทุกท่านแล้ว/);
+      assert.ok(!page.body.includes('คัดลอกข้อความตามท่านที่ยังไม่อ่าน'));
+    });
+
+    test('ครูทั่วไปไม่เห็นบัญชีแจ้งเวียน — เป็นเครื่องมือของคนที่ต้องตาม', async () => {
+      const doc = circular();
+      const page = await dispatchGet(teacher(), `/documents/${doc.id}`);
+      assert.ok(!page.body.includes('id="broadcastReads"'));
+      assert.ok(!page.body.includes('ดูรายชื่อท่านที่ยังไม่ได้เปิดอ่าน'));
+    });
+
+    test('แดชบอร์ดรวมหนังสือเวียนที่ยังอ่านไม่ครบไว้ที่เดียว', async () => {
+      const doc = circular();
+      const page = await dispatchGet(reg(), '/');
+      assert.ok(page.body.includes('id="broadcastPending"'), 'ต้องมีการ์ดรวม');
+      assert.ok(inCircularCard(page.body, doc.id), 'ฉบับนี้ต้องอยู่ในการ์ดรวม');
+      assert.match(page.body, /อ่านแล้ว \d+\/\d+ · <strong>ยังไม่อ่าน \d+<\/strong>/);
+    });
+
+    test('ครูทั่วไปไม่เห็นการ์ดรวมบนแดชบอร์ด', async () => {
+      circular();
+      const page = await dispatchGet(teacher(), '/');
+      assert.ok(!page.body.includes('id="broadcastPending"'));
+    });
+
+    test('อ่านครบแล้วต้องหลุดออกจากการ์ดรวม ไม่ค้างเป็นเสียงรบกวน', async () => {
+      const doc = circular();
+      const before = await dispatchGet(reg(), '/');
+      assert.ok(inCircularCard(before.body, doc.id));
+      db.prepare(`UPDATE document_broadcast_reads SET opened_at = ? WHERE broadcast_id IN
+        (SELECT id FROM document_broadcasts WHERE document_id = ?)`).run(nowIso(), doc.id);
+      const after = await dispatchGet(reg(), '/');
+      assert.ok(!inCircularCard(after.body, doc.id), 'อ่านครบแล้วต้องหลุดออกจากการ์ดรวม');
+    });
+
+    test('หนังสือที่ถูกลบต้องไม่ค้างอยู่ในการ์ดรวม', async () => {
+      const doc = circular();
+      assert.ok(inCircularCard((await dispatchGet(reg(), '/')).body, doc.id), 'ก่อนลบต้องอยู่ในการ์ด');
+      forceDeleteDocument({ documentId: doc.id, actorUser: adminUser, reason: 'ทดสอบ' });
+      const page = await dispatchGet(reg(), '/');
+      assert.ok(!inCircularCard(page.body, doc.id));
+    });
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

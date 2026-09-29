@@ -3,11 +3,12 @@ import { layout, esc, fmtDate, fmtThaiDateLong, fmtCount, statusBadge, priorityB
 import { requirePage } from '../middleware.js';
 import { db, todayInBangkok } from '../db.js';
 import { setupChecklist } from '../services/setupChecklist.js';
-import { canUserSeeDocument, visibleDocumentsSqlFilter } from '../services/workflow.js';
+import { canUserSeeDocument, visibleDocumentsSqlFilter, canBroadcast } from '../services/workflow.js';
 import { getBackupStatus } from '../services/dbBackup.js';
 import { appShortName } from '../services/settings.js';
 import { pendingChaseGroups } from '../services/documentQuery.js';
 import { unassignedIncoming } from '../services/unassigned.js';
+import { pendingBroadcasts } from '../services/broadcastReads.js';
 // เงื่อนไข "งานของฉัน" กับลำดับของคิว อยู่ที่ services/myQueue.js ที่เดียว เพราะหน้านี้ ตัวบอกตำแหน่ง
 // บนหน้าเอกสาร ("ฉบับที่ 3 จาก 8") และการเด้งไปฉบับถัดไปหลังกดเสร็จ ต้องเรียงเหมือนกันเป๊ะ
 import { MY_OR_DELEGATED_STEP_SQL, MAX_TASK_ROWS, myWaitingTasks } from '../services/myQueue.js';
@@ -258,6 +259,28 @@ router.get('/', requirePage((ctx) => {
       </div>
     </div>`;
 
+  /**
+   * หนังสือเวียนที่ยังอ่านไม่ครบ — เฉพาะคนที่แจ้งเวียนได้ เพราะเป็นคนที่ต้องตามต่อ
+   *
+   * สถิติการอ่านรายฉบับอยู่บนหน้าเอกสารอยู่แล้ว แต่จะช่วยได้เฉพาะตอนที่บังเอิญเปิดฉบับนั้นอยู่พอดี
+   * เวลาที่ต้องใช้จริงคือ "ก่อนวันงาน เหลือใครยังไม่รู้เรื่องบ้าง" ซึ่งต้องเริ่มจากที่รวมแบบนี้
+   */
+  const circulars = canBroadcast(user) ? pendingBroadcasts() : { total: 0, docs: [], hiddenCount: 0 };
+  const circularAlert = !circulars.total ? '' : `
+    <div class="alert alert-warning" id="broadcastPending">
+      <strong>📢 หนังสือเวียน ${fmtCount(circulars.total)} ฉบับที่ยังอ่านไม่ครบทุกคน</strong>
+      <ul style="margin:.4rem 0 0;padding-left:1.1rem;font-size:.9rem">
+        ${circulars.docs.map((d) => `<li style="margin-bottom:.2rem">
+          <a href="/documents/${d.id}">${esc(d.number)} — ${esc(d.title)}</a>
+          <span class="text-muted">· อ่านแล้ว ${d.readCount}/${d.totalCount} · <strong>ยังไม่อ่าน ${d.unread}</strong></span>
+        </li>`).join('')}
+        ${circulars.hiddenCount ? `<li class="text-muted">และอีก ${fmtCount(circulars.hiddenCount)} ฉบับ</li>` : ''}
+      </ul>
+      <div class="help-text" style="margin-top:.3rem">
+        เปิดฉบับที่ต้องการเพื่อดูรายชื่อท่านที่ยังไม่ได้อ่าน และคัดลอกข้อความตามไปวางในกลุ่มไลน์ได้เลย
+      </div>
+    </div>`;
+
   // รายการตั้งค่าที่ยังไม่เสร็จ — เฉพาะแอดมิน เพราะเป็นคนเดียวที่กดทำได้จริง และหายไปเองเมื่อครบทุกข้อ
   const checklist = user.roleCodes.includes('admin') ? setupChecklist() : null;
   const checklistHtml = !checklist || !checklist.items.length ? '' : `
@@ -282,6 +305,7 @@ router.get('/', requirePage((ctx) => {
     ${backupAlert}
     ${stampAlert}
     ${unassignedAlert}
+    ${circularAlert}
     ${checklistHtml}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
     <div id="installHint" class="card" hidden style="border-color:var(--primary)">

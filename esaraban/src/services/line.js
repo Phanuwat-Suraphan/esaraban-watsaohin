@@ -228,3 +228,31 @@ export function orderShareText({ noun, numberDisplay, subject, signedDate, order
   lines.push(absoluteUrl(`/orders/${orderId}`));
   return lines.join('\n');
 }
+
+/**
+ * ข้อความตามครูที่ยังไม่ได้อ่านหนังสือเวียน
+ *
+ * ทำไมต้องมีแยกจากข้อความแชร์ปกติ: ข้อความแชร์คือ "หนังสือเวียนฉบับนี้มานะ" ซึ่งส่งตอนแจ้งเวียน
+ * ส่วนอันนี้คือรอบสอง — ก่อนถึงวันงาน ธุรการต้องตามให้ครบ และสิ่งที่ต้องการคือรายชื่อคนที่ยังไม่อ่าน
+ * ซึ่งเดิมไม่มีทางรู้เลย ต้องไล่ถามเอาเองทีละคน
+ *
+ * เอ่ยชื่อเฉพาะคนที่ยังไม่อ่าน ไม่ใช่ประกาศรายชื่อคนที่อ่านแล้วด้วย — จุดประสงค์คือให้คนที่ยังไม่อ่าน
+ * เข้าไปอ่าน ไม่ใช่ประจานใคร ถ้อยคำจึงใช้แบบหนังสือราชการและไม่ใส่ครับ/ค่ะ เพราะคนกดส่งเป็นได้ทั้ง
+ * ธุรการ หัวหน้าฝ่าย และ ผอ.
+ */
+export function broadcastChaseText(doc, stats) {
+  const lines = [];
+  lines.push(`📢 ${doc.doc_number_display || ''} ${clip(doc.title, MAX_TITLE_IN_SHARE)}`.trim());
+  lines.push(`อ่านแล้ว ${stats.readCount} จาก ${stats.total} ท่าน`);
+  lines.push('');
+  lines.push('เรียน ท่านที่ยังไม่ได้เปิดอ่าน');
+  stats.unread.forEach((u, i) => {
+    lines.push(`${i + 1}. ${u.position ? `${u.name} (${clip(u.position, 40)})` : u.name}`);
+  });
+  if (stats.hiddenCount > 0) lines.push(`(และอีก ${stats.hiddenCount} ท่าน — ดูรายชื่อทั้งหมดในระบบ)`);
+  lines.push('');
+  lines.push('จึงเรียนมาเพื่อโปรดเข้าไปอ่านหนังสือเวียนฉบับนี้ในระบบสารบรรณ จะขอบคุณยิ่ง');
+  lines.push('เปิดอ่าน (ต้องเข้าสู่ระบบก่อน):');
+  lines.push(absoluteUrl(`/documents/${doc.id}`));
+  return lines.join('\n');
+}

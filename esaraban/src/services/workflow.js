@@ -4,6 +4,7 @@ import { notifyUser } from './notify.js';
 import { deleteFile as deleteDriveFile, isGoogleDriveEnabled } from './googleDrive.js';
 import { getActiveDelegateFor } from './delegation.js';
 import { httpError, normalizeDate, assertMaxLength, asTextOrNull } from './validate.js';
+import { recordBroadcastRecipients } from './broadcastReads.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -632,6 +633,9 @@ export function broadcastDocument({ documentId, note, actorUser, allowDuplicate 
       INSERT INTO document_broadcasts (id, document_id, note, recipient_count, sent_by, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(id, doc.id, note, recipients.length, actorUser.id, now);
+    // เก็บรายชื่อผู้รับไว้เป็นรายคน ไม่ใช่แค่จำนวน — เพื่อตอบให้ได้ว่า "ใครยังไม่ได้อ่าน"
+    // ซึ่งเป็นคำถามเดียวที่ธุรการต้องตอบเวลามีคนอ้างว่าไม่รู้ (ดู services/broadcastReads.js)
+    recordBroadcastRecipients(id, recipients.map((r) => r.id));
 
     // ไม่มีใครต้องดำเนินการต่อแล้ว จึงปิดเรื่องให้เลย ไม่งั้นหนังสือจะค้างเป็น "รอดำเนินการ" บนหน้าแรก
     // ของธุรการตลอดไป ทั้งที่งานเสร็จแล้ว (หน้าแรกนับสถานะ registered/in_progress/returned เป็นงานค้าง)

@@ -1054,3 +1054,35 @@ code { overflow-wrap: anywhere; }
    ถ้าใช้ contain จะเหลือขอบว่างในวงกลมจนดูเหมือนรูปโหลดไม่ขึ้น */
 .avatar-photo { background: var(--border); padding: 0; overflow: hidden; }
 .avatar-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* ---------- เครื่องมือที่พับเก็บเองบนจอมือถือ ----------
+   บนจอคอมฯ ปุ่มเครื่องมือ (คัดลอกสรุปเข้าไลน์ / ส่งออก Excel / พิมพ์ทะเบียน / ฟอร์มออกเลข) วางเรียง
+   เป็นแถวเดียว กินที่แนวตั้งนิดเดียว แต่บนมือถือมันเรียงลงมาทีละชิ้น จนดัน "ของที่ผู้ใช้เปิดหน้ามาดู"
+   คือตัวรายการ ลงไปพ้นจอ — วัดจริงบน iPhone 13: แถวแรกของทะเบียนหนังสือเข้าอยู่ที่ 705px (เกินหนึ่ง
+   จอเต็ม) และทะเบียนคำสั่งอยู่ที่ 1223px (เกือบสองจอ) แปลว่าต้องเลื่อนผ่านปุ่มที่แทบไม่ได้ใช้บนมือถือ
+   ก่อนทุกครั้งที่เปิดหน้า
+
+   เรนเดอร์มาเป็น <details open> เสมอ แล้วปิดเฉพาะจอแคบด้วยสคริปต์ (ดู public/app.js) — ทำกลับด้าน
+   ไม่ได้ เพราะเบราว์เซอร์ซ่อนเนื้อใน <details> ที่ไม่ open ด้วยกลไกที่ CSS สั่งให้แสดงกลับไม่ได้จริง
+   ผลข้างเคียงที่ตั้งใจ: เครื่องที่ปิด JS จะเห็นทุกอย่างกางอยู่เหมือนเดิม ไม่ใช่เข้าไม่ถึงปุ่มเลย */
+.phone-tools { border: 1px solid var(--border); border-radius: 10px; padding: .1rem .6rem; margin-bottom: .8rem; }
+.phone-tools > summary {
+  cursor: pointer; padding: .7rem .1rem; font-weight: 600; color: var(--primary);
+  list-style: none; user-select: none;
+}
+.phone-tools > summary::-webkit-details-marker { display: none; }
+.phone-tools > summary::before { content: '▸ '; display: inline-block; transition: transform .15s; }
+.phone-tools[open] > summary::before { content: '▾ '; }
+.phone-tools > .phone-tools-body { padding-bottom: .6rem; }
+
+/* บนจอคอมฯ ให้เหมือนเดิมทุกประการ: ไม่มีหัวข้อให้กด ไม่มีกรอบ เนื้อในกางอยู่ตลอด */
+@media (min-width: 900px) {
+  .phone-tools { border: 0; border-radius: 0; padding: 0; margin-bottom: 0; }
+  .phone-tools > summary { display: none; }
+  .phone-tools > .phone-tools-body { padding-bottom: 0; }
+}
+
+/* หัวข้อเดิมของกล่องที่กลายเป็น <summary> บนมือถือ — บนจอคอมฯ ต้องยังเห็นหัวข้อเหมือนเดิม
+   (summary ถูกซ่อนบนจอคอมฯ ถ้าไม่มีตัวนี้ กล่องจะกลายเป็นกล่องไม่มีชื่อ) */
+.hide-on-phone { display: none; }
+@media (min-width: 900px) { .hide-on-phone { display: revert; } }

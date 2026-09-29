@@ -12890,6 +12890,67 @@ describe('ประกาศ/ประชาสัมพันธ์: แจ้�
   });
 });
 
+// วัดบน iPhone 13 จริงแล้วพบว่า "ของที่ผู้ใช้เปิดหน้ามาดู" ถูกดันลงไปพ้นจอ เพราะปุ่มเครื่องมือที่บน
+// จอคอมฯ วางเรียงเป็นแถวเดียว พอมาอยู่บนมือถือมันเรียงลงมาทีละชิ้น
+describe('มือถือ: ของที่มาดูต้องอยู่บนสุด ไม่ใช่ใต้กองปุ่ม', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  // <details> ในหน้าเหล่านี้ไม่ซ้อนกัน จึงตัดด้วย </details> ตัวแรกได้ตรงๆ
+  const firstToolsBlock = (body) => {
+    const start = body.indexOf('<details class="phone-tools" open>');
+    if (start === -1) return null;
+    return body.slice(start, body.indexOf('</details>', start));
+  };
+
+  test('ทะเบียนหนังสือพับเครื่องมือไว้ แต่ปุ่มหลักต้องอยู่นอกกล่องที่พับ', async () => {
+    const res = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+    const tools = firstToolsBlock(res.body);
+    assert.ok(tools, 'ต้องมีกล่องเครื่องมือที่พับได้');
+    assert.match(tools, /<summary>🧰 เครื่องมือและทางลัด<\/summary>/);
+    assert.ok(!tools.includes('+ รับหนังสือใหม่'),
+      'ปุ่มหลักต้องกดได้ทันทีโดยไม่ต้องกางอะไรก่อน');
+    assert.ok(res.body.includes('+ รับหนังสือใหม่'), 'แต่ปุ่มหลักต้องยังอยู่');
+    // แถวส่งออก/พิมพ์ก็ต้องพับด้วย — เป็นของที่แทบไม่ได้ใช้บนมือถือ
+    assert.match(res.body, /<summary>⬇️ ส่งออก \/ พิมพ์ทะเบียน<\/summary>/);
+  });
+
+  test('ทะเบียนคำสั่งพับฟอร์มออกเลขไว้ แต่จอคอมฯ ต้องยังเห็นหัวข้อเดิม', async () => {
+    const res = await dispatchGet(reg(), '/orders', { kind: 'order' });
+    assert.match(res.body, /<details class="phone-tools card" open>\s*<summary>📜 ออกเลขคำสั่งโรงเรียนฉบับใหม่<\/summary>/);
+    // summary ถูกซ่อนบนจอคอมฯ ถ้าไม่มีหัวข้อสำรอง กล่องจะกลายเป็นกล่องไม่มีชื่อ
+    assert.match(res.body, /<h3 class="mt-0 hide-on-phone">📜 ออกเลขคำสั่งโรงเรียนฉบับใหม่<\/h3>/);
+    assert.ok(res.body.includes('id="orderForm"'), 'ฟอร์มต้องยังอยู่ครบ');
+  });
+
+  test('ทุกกล่องต้องเรนเดอร์มาเป็น open เสมอ — เครื่องที่ปิด JavaScript ต้องได้ของครบ', async () => {
+    for (const [path, query] of [['/documents', { direction: 'incoming' }], ['/orders', { kind: 'order' }]]) {
+      const res = await dispatchGet(reg(), path, query);
+      const opens = (res.body.match(/<details class="phone-tools[^"]*"/g) || []).length;
+      const withOpen = (res.body.match(/<details class="phone-tools[^"]*" open>/g) || []).length;
+      assert.ok(opens > 0, `${path} ต้องมีกล่องที่พับได้`);
+      assert.equal(withOpen, opens, `${path}: ทุกกล่องต้องมี open ติดมาด้วย ไม่งั้นคนที่ปิด JS จะกดเข้าไม่ถึงปุ่มเลย`);
+    }
+  });
+
+  test('สคริปต์พับต้องใช้เงื่อนไขตรงข้ามกับเบรกพอยต์ของสไตล์ชีตเป๊ะๆ', () => {
+    const js = fs.readFileSync('public/app.js', 'utf8');
+    const css = fs.readFileSync('public/style.css', 'utf8');
+    assert.match(js, /matchMedia\('\(min-width: 900px\)'\)\.matches/,
+      'ต้องเช็ค min-width: 900px แบบกลับด้าน ไม่ใช่ตั้งค่าแยกของตัวเอง');
+    assert.match(js, /details\.phone-tools\[open\]/);
+    assert.match(js, /removeAttribute\('open'\)/);
+    // จอคอมฯ ต้องไม่มีหัวข้อให้กด (เนื้อในกางอยู่แล้ว) — ถ้าเบรกพอยต์สองที่ไม่ตรงกัน จะมีช่วงกว้าง
+    // ที่ทั้งซ่อนหัวข้อและพับเนื้อในพร้อมกัน กลายเป็นปุ่มที่หายไปโดยไม่มีอะไรให้กดเปิด
+    assert.match(css, /@media \(min-width: 900px\) \{[\s\S]*?\.phone-tools > summary \{ display: none; \}/);
+  });
+
+  test('หน้าที่ไม่ได้แตะต้องไม่มีกล่องพับโผล่มา', async () => {
+    for (const p of ['/tasks', '/notifications', '/announcements']) {
+      const res = await dispatchGet(reg(), p);
+      assert.ok(!res.body.includes('class="phone-tools'), `${p} ไม่ควรมีกล่องพับ`);
+    }
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

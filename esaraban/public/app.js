@@ -457,6 +457,18 @@
   };
 
   // ---------- button loading state with a little 📚 flourish (UX Bible Part 21 §13) ----------
+  // ---------- พับเครื่องมือเก็บบนจอแคบ (UX: ของที่มาดู ต้องอยู่บนสุด) ----------
+  //
+  // หน้าเหล่านี้เรนเดอร์ <details class="phone-tools" open> มาเสมอ เพื่อให้จอคอมฯ (และเครื่องที่ปิด
+  // JavaScript) ได้ของครบกางอยู่เหมือนเดิม แล้วค่อยพับเฉพาะจอแคบตรงนี้ — ทำกลับด้านด้วย CSS
+  // อย่างเดียวไม่ได้ เพราะเนื้อใน <details> ที่ไม่ open ถูกซ่อนด้วยกลไกที่ CSS สั่งให้แสดงกลับไม่ได้
+  //
+  // ใช้เงื่อนไขตรงข้ามกับ min-width: 900px ของสไตล์ชีตเป๊ะๆ จะได้ไม่มีช่วงกว้างที่ทั้งซ่อนหัวข้อ
+  // และพับเนื้อในพร้อมกัน (ซึ่งจะกลายเป็นปุ่มที่หายไปเฉยๆ โดยไม่มีอะไรให้กดเปิด)
+  if (!window.matchMedia('(min-width: 900px)').matches) {
+    document.querySelectorAll('details.phone-tools[open]').forEach(function (d) { d.removeAttribute('open'); });
+  }
+
   window.setBtnLoading = function (btn, text) {
     if (!btn) return;
     if (btn.dataset.origHtml === undefined) btn.dataset.origHtml = btn.innerHTML;

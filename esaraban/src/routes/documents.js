@@ -357,14 +357,17 @@ router.get('/documents', requirePage((ctx) => {
         <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
       </details>
     </form>
-    <div class="flex gap-2 flex-wrap items-center" style="margin:-.4rem 0 1rem">
+    <details class="phone-tools" open>
+      <summary>⬇️ ส่งออก / พิมพ์ทะเบียน</summary>
+      <div class="phone-tools-body flex gap-2 flex-wrap items-center" style="margin:-.4rem 0 1rem">
       <span class="text-muted" style="font-size:.85rem">ส่งออก${filtering ? 'เฉพาะรายการที่กรองไว้' : 'ทั้งทะเบียน'}:</span>
       <a class="btn btn-outline btn-sm" href="${exportLink('/documents/export.xlsx')}">📊 Excel</a>
       <a class="btn btn-outline btn-sm" href="${exportLink('/documents/register')}" target="_blank" rel="noopener">🖨️ พิมพ์ทะเบียน / PDF</a>
       ${direction !== 'all' && canRecordDispatch(ctx.user) ? `<a class="btn btn-outline btn-sm"
         href="/documents/register-check?direction=${esc(direction)}${f.year ? `&year=${f.year}` : ''}"
         title="ไล่เลขให้ว่าเล่มนี้ครบ 1 ถึง N หรือไม่ มีเลขขาด/เลขซ้ำตรงไหน">🔎 ตรวจความครบถ้วนของเล่ม</a>` : ''}
-    </div>`;
+      </div>
+    </details>`;
 
   const canIssueOutgoing = canIssueOutgoingNumber(ctx.user);
   // "ออกเลขแล้ว" ไม่เท่ากับ "ส่งออกไปแล้ว" — ฉบับที่ยังไม่ได้บันทึกการส่งคือกองที่ธุรการต้องตามเคลียร์
@@ -424,7 +427,9 @@ router.get('/documents', requirePage((ctx) => {
         <a class="btn btn-outline" href="/documents?direction=incoming">📥 ทะเบียนหนังสือเข้า</a>
         <a class="btn btn-outline" href="/documents?direction=outgoing">📤 ทะเบียนหนังสือออก</a>
       </div>` : `
-      <div class="flex gap-2 flex-wrap">
+      <details class="phone-tools" open>
+        <summary>🧰 เครื่องมือและทางลัด</summary>
+        <div class="phone-tools-body flex gap-2 flex-wrap">
         ${chase.total ? lineShareBlock({
           key: 'chase', inline: true,
           text: pendingDigestText(chase.groups, fmtThaiDateLong(todayInBangkok()), { hiddenCount: chase.hiddenCount }),
@@ -452,10 +457,12 @@ router.get('/documents', requirePage((ctx) => {
              สำหรับครู ส่วนธุรการ/ผู้ดูแลยังมีปุ่มสร้างหนังสือส่งเองตามเดิม เพราะเป็นงานประจำของเขา -->
         ${direction === 'outgoing' ? `<a class="btn ${canIssueOutgoing ? 'btn-outline' : 'btn-primary'}"
           href="${canIssueOutgoing ? '/outgoing-requests' : '/outgoing-requests/mine'}">🔢 ${canIssueOutgoing ? 'คำขอเลขหนังสือส่ง' : 'ขอเลขหนังสือส่ง'}</a>` : ''}
-        ${direction === 'incoming' || canIssueOutgoing
-          ? `<a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>`
-          : ''}
-      </div>`}
+        </div>
+      </details>
+      <!-- ปุ่มหลักอยู่นอกกล่องที่พับได้เสมอ — สิ่งที่คนเปิดหน้านี้มาทำบ่อยที่สุดต้องกดได้ทันทีโดยไม่ต้องกางอะไรก่อน -->
+      ${direction === 'incoming' || canIssueOutgoing
+        ? `<a class="btn btn-primary" href="/documents/new?direction=${direction}">+ ${direction === 'incoming' ? 'รับหนังสือใหม่' : 'สร้างหนังสือส่ง'}</a>`
+        : ''}`}
     </div>
     <div class="card">
       ${filterForm}

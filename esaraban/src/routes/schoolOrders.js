@@ -97,9 +97,13 @@ router.get('/orders', requirePage((ctx) => {
   }).join('')}
   </div>` : '';
 
+  // ฟอร์มออกเลขยาวมาก (เรื่อง/วันที่/ผู้ลงนาม/หมายเหตุ/ไฟล์/ผู้ที่ต้องทราบ) บนมือถือมันดันทะเบียน
+  // ลงไปพ้นจอเกือบสองจอ ทั้งที่คนส่วนใหญ่เปิดหน้านี้มา "ค้นหาคำสั่งเก่า" ไม่ใช่มาออกเลขใหม่
   const createCard = !manage ? '' : `
-    <div class="card">
-      <h3 class="mt-0">${k.icon} ออกเลข${esc(k.label)}ฉบับใหม่</h3>
+    <details class="phone-tools card" open>
+      <summary>${k.icon} ออกเลข${esc(k.label)}ฉบับใหม่</summary>
+      <div class="phone-tools-body">
+      <h3 class="mt-0 hide-on-phone">${k.icon} ออกเลข${esc(k.label)}ฉบับใหม่</h3>
       <p class="text-muted" style="margin-top:-.4rem;font-size:.85rem">
         เลขถัดไปที่จะได้คือ <strong id="nextOrderNo">${esc(previewOrderNumber(kind))}</strong>
         — เล่มทะเบียน${esc(k.noun)}นับแยกจากทะเบียนหนังสือส่ง และเริ่มเลข 1 ใหม่ทุกปีปฏิทิน
@@ -142,7 +146,8 @@ router.get('/orders', requirePage((ctx) => {
         </details>
         <button class="btn btn-primary" type="submit">ออกเลข${esc(k.noun)}</button>
       </form>
-    </div>
+      </div>
+    </details>
     ${attachMimeScript()}
     <script>
       window.pickAllRecips = function (on) {

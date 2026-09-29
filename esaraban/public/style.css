@@ -1086,3 +1086,47 @@ code { overflow-wrap: anywhere; }
    (summary ถูกซ่อนบนจอคอมฯ ถ้าไม่มีตัวนี้ กล่องจะกลายเป็นกล่องไม่มีชื่อ) */
 .hide-on-phone { display: none; }
 @media (min-width: 900px) { .hide-on-phone { display: revert; } }
+
+/* ---------- ตารางรายการที่กลายเป็นการ์ดบนมือถือ ----------
+   ทะเบียนหนังสือมี 9 คอลัมน์ บนจอ 390px จึงเห็นได้ทีละสองคอลัมน์ ต้องเลื่อนตารางซ้ายขวาไปมาเพื่ออ่าน
+   แถวเดียว แล้วเลื่อนกลับมาอ่านแถวถัดไป — ใช้ไล่สายตาหาหนังสือไม่ได้เลย ซึ่งเป็นสิ่งเดียวที่คนเปิด
+   หน้าทะเบียนมาทำ
+
+   บนจอแคบจึงคลี่แต่ละแถวออกเป็น "การ์ด" เรียงลงมา โดยเอาชื่อคอลัมน์จาก data-label มาเป็นป้ายกำกับ
+   หน้าค่าแต่ละบรรทัด — ไม่ซ่อนคอลัมน์ไหนทิ้ง เพราะคอลัมน์ที่ดูไม่สำคัญ (ฝ่าย/ครบกำหนด) คือสิ่งที่
+   ธุรการใช้ตัดสินใจจริง และการซ่อนบนมือถืออย่างเดียวจะทำให้สองอุปกรณ์เห็นข้อมูลไม่เท่ากัน
+
+   บนจอคอมฯ ไม่มีผลใดๆ ทั้งสิ้น — ตารางยังเป็นตารางเหมือนเดิม (data-label เป็นแค่แอตทริบิวต์ที่ไม่ถูกใช้) */
+@media (max-width: 899px) {
+  /* ต้องล้าง min-width: 640px ของตารางใน .table-wrap ด้วย ไม่งั้นการ์ดจะถูกดันให้กว้าง 640px
+     แล้วล้นออกนอกจอเหมือนเดิมทุกประการ (เป็นจุดที่พลาดตอนทำรอบแรก เห็นได้เฉพาะตอนดูภาพจริง)
+     และกรอบของกล่องครอบก็ไม่ต้องมีแล้ว เพราะแต่ละการ์ดมีกรอบของตัวเอง */
+  .table-cards { overflow-x: visible; border: 0; border-radius: 0; }
+  .table-cards table { min-width: 0; }
+  /* หัวตารางยังต้องอยู่ใน DOM เพื่อโปรแกรมอ่านหน้าจอและเพื่อให้ตารางยังถูกต้องตามความหมาย
+     แค่ไม่ต้องแสดง เพราะป้ายกำกับย้ายไปอยู่หน้าค่าของแต่ละบรรทัดแล้ว */
+  .table-cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .table-cards table, .table-cards tbody, .table-cards tr, .table-cards td { display: block; width: auto; }
+  .table-cards table { border: 0; }
+  .table-cards tr {
+    position: relative; border: 1px solid var(--border); border-radius: 10px;
+    padding: .55rem .7rem; margin-bottom: .55rem; background: var(--surface);
+  }
+  .table-cards td {
+    border: 0; padding: .12rem 0; display: flex; gap: .5rem; align-items: baseline;
+    white-space: normal !important; text-align: left !important;
+  }
+  .table-cards td::before {
+    content: attr(data-label); flex: 0 0 8.5rem; color: var(--text-muted);
+    font-size: .82rem; line-height: 1.5;
+  }
+  /* ช่องเลขที่/เรื่อง เป็นหัวการ์ด ไม่ต้องมีป้ายกำกับ และตัวโตกว่าบรรทัดอื่น */
+  .table-cards td.cell-head::before, .table-cards td.cell-sub::before { content: none; }
+  .table-cards td.cell-head { font-size: 1.02rem; padding-right: 2.2rem; }
+  .table-cards td.cell-sub { padding-bottom: .3rem; }
+  /* ช่องติ๊กเลือกหลายฉบับ ลอยไปมุมขวาบนของการ์ด ไม่กินบรรทัดของตัวเอง */
+  .table-cards td.cell-pick { position: absolute; top: .45rem; right: .6rem; padding: 0; display: block; }
+  .table-cards td.cell-pick::before { content: none; }
+  /* คอลัมน์ที่ค่าซ้ำกับหัวการ์ดอยู่แล้ว (ไอคอนคลิปหนีบ) ไม่ต้องขึ้นอีกบรรทัด */
+  .table-cards td.clip-col { display: none; }
+}

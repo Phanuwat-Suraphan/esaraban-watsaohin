@@ -11585,7 +11585,7 @@ describe('มอบหมายหลายฉบับให้คนเดี�
     test('ช่องติ๊กต้องไม่ทำให้หน้าทะเบียนอ้วนขึ้นเกิน 6 KB ต่อ 50 แถว', async () => {
       const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), '/documents', { direction: 'incoming' });
       const boxes = res.body.match(/<input type="checkbox" class="bulkPick"[^>]*>/g) || [];
-      const dashes = res.body.match(/<td style="text-align:center"><span class="text-muted">–<\/span><\/td>/g) || [];
+      const dashes = res.body.match(/<td class="cell-pick" style="text-align:center"><span class="text-muted">–<\/span><\/td>/g) || [];
       const cells = boxes.length + dashes.length;
       assert.ok(cells > 0, 'เทสต์นี้ต้องมีแถวให้วัดจริง');
       const bytes = [...boxes, ...dashes].reduce((n, x) => n + Buffer.byteLength(x), 0);
@@ -12948,6 +12948,76 @@ describe('มือถือ: ของที่มาดูต้องอย�
       const res = await dispatchGet(reg(), p);
       assert.ok(!res.body.includes('class="phone-tools'), `${p} ไม่ควรมีกล่องพับ`);
     }
+  });
+});
+
+// ทะเบียนหนังสือมี 9 คอลัมน์ บนจอ 390px จึงเห็นได้ทีละสองคอลัมน์ ต้องเลื่อนตารางซ้ายขวาเพื่ออ่าน
+// แถวเดียว แล้วเลื่อนกลับมาอ่านแถวถัดไป — ใช้ไล่สายตาหาหนังสือไม่ได้เลย
+describe('มือถือ: ตารางรายการคลี่เป็นการ์ด', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const css = () => fs.readFileSync('public/style.css', 'utf8');
+
+  test('ตารางที่ต้องคลี่เป็นการ์ดถูกทำเครื่องหมายไว้ทั้งสามหน้า', async () => {
+    for (const [path, query] of [
+      ['/documents', { direction: 'incoming' }],
+      ['/orders', { kind: 'order' }],
+      ['/tasks', {}],
+    ]) {
+      const res = await dispatchGet(reg(), path, query);
+      // หน้าที่ไม่มีแถวเลยจะไม่มีตาราง — ข้ามไป ไม่ใช่ฟ้องผิดจุด
+      if (!res.body.includes('<table>')) continue;
+      assert.ok(res.body.includes('class="table-wrap table-cards"'), `${path} ต้องเปิดโหมดการ์ด`);
+    }
+  });
+
+  test('ทุกช่องในแถวต้องมีป้ายกำกับ หรือถูกกำหนดให้เป็นหัวการ์ด', async () => {
+    const doc = makeDoc({ title: 'หนังสือสำหรับตรวจป้ายกำกับของการ์ดบนมือถือ' });
+    const res = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+    const start = res.body.indexOf(`/documents/${doc.id}`);
+    assert.ok(start > -1, 'ต้องเจอแถวของหนังสือฉบับนี้');
+    const tr = res.body.slice(res.body.lastIndexOf('<tr ', start), res.body.indexOf('</tr>', start));
+    const cells = tr.match(/<td[^>]*>/g) || [];
+    assert.ok(cells.length >= 7, `ควรมีหลายช่อง ได้ ${cells.length}`);
+    for (const c of cells) {
+      const ok = /data-label="[^"]+"/.test(c) || /class="[^"]*\bcell-(head|sub|pick)\b/.test(c) || /class="[^"]*\bclip-col\b/.test(c);
+      assert.ok(ok, `ช่องนี้จะกลายเป็นบรรทัดไม่มีชื่อบนมือถือ: ${c}`);
+    }
+  });
+
+  test('หัวการ์ดคือเลขที่กับเรื่อง ส่วนช่องติ๊กแยกเป็นมุมการ์ด', async () => {
+    const res = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+    assert.match(res.body, /<td class="cell-head"/, 'เลขที่ต้องเป็นหัวการ์ด');
+    assert.match(res.body, /<td class="wrap cell-sub"/, 'ชื่อเรื่องต้องเป็นบรรทัดรองของหัวการ์ด');
+    assert.match(res.body, /<td class="cell-pick"/, 'ช่องติ๊กต้องแยกออกไปมุมการ์ด');
+  });
+
+  // จุดที่พลาดตอนทำรอบแรก และเห็นได้เฉพาะตอนดูภาพหน้าจอจริง: การ์ดถูกดันกว้าง 640px แล้วล้นจอ
+  // ทั้งที่คลี่เป็นการ์ดแล้ว เพราะ .table-wrap table ตั้ง min-width ไว้
+  test('โหมดการ์ดต้องล้าง min-width ของตาราง ไม่งั้นการ์ดล้นออกนอกจอเหมือนเดิม', () => {
+    const sheet = css();
+    assert.match(sheet, /\.table-wrap table \{ min-width: 640px; \}/, 'ตารางปกติยังต้องมี min-width');
+    const mobile = sheet.slice(sheet.indexOf('@media (max-width: 899px)'));
+    assert.match(mobile, /\.table-cards table \{ min-width: 0; \}/,
+      'โหมดการ์ดต้องล้าง min-width ทิ้ง');
+    assert.match(mobile, /\.table-cards \{ overflow-x: visible;/,
+      'การ์ดไม่ควรอยู่ในกล่องที่เลื่อนซ้ายขวาได้อีก');
+  });
+
+  test('หัวตารางต้องถูกซ่อนแบบที่โปรแกรมอ่านหน้าจอยังอ่านได้ ไม่ใช่ display:none', () => {
+    const mobile = css().slice(css().indexOf('@media (max-width: 899px)'));
+    const rule = /\.table-cards thead \{([^}]*)\}/.exec(mobile);
+    assert.ok(rule, 'ต้องมีกฎซ่อนหัวตารางในโหมดการ์ด');
+    assert.ok(!/display:\s*none/.test(rule[1]),
+      'display:none ทำให้โปรแกรมอ่านหน้าจออ่านความหมายของตารางไม่ได้');
+    assert.match(rule[1], /clip-path|position: absolute/);
+  });
+
+  test('จอคอมฯ ต้องไม่ได้รับผลใดๆ — กฎทั้งหมดอยู่ในเงื่อนไขจอแคบเท่านั้น', () => {
+    const sheet = css();
+    const mobileStart = sheet.indexOf('@media (max-width: 899px)');
+    const before = sheet.slice(0, mobileStart);
+    assert.ok(!before.includes('.table-cards'),
+      'ห้ามมีกฎของโหมดการ์ดอยู่นอกเงื่อนไขจอแคบ ไม่งั้นตารางบนจอคอมฯ จะเปลี่ยนไปด้วย');
   });
 });
 

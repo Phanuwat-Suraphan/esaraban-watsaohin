@@ -226,7 +226,7 @@ router.get('/documents', requirePage((ctx) => {
     const n = stillOpen(d) ? daysUntil(d.due_date) : null;
     return `
     <tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
-      ${canBulkAssign ? `<td style="text-align:center">${assignableIds.has(d.id)
+      ${canBulkAssign ? `<td class="cell-pick" style="text-align:center">${assignableIds.has(d.id)
         // ตัวจัดการคลิกทั้งแถว (public/app.js) เว้น input ให้อยู่แล้ว ติ๊กช่องนี้จึงไม่เด้งออกจากหน้า
         ? `<input type="checkbox" class="bulkPick" value="${esc(d.id)}" aria-label="เลือก ${esc(d.doc_number_display)}" />`
         // ฉบับที่เลือกไม่ได้ใส่แค่ขีด ไม่ใช่ช่องติ๊กที่กดไม่ได้พร้อมคำอธิบายรายแถว: คำอธิบายเดียวกัน
@@ -234,20 +234,20 @@ router.get('/documents', requirePage((ctx) => {
         // มือถือซึ่งไม่มีการชี้เมาส์ให้ tooltip โผล่ — เหตุผลอยู่ที่หัวคอลัมน์ และคอลัมน์สถานะข้างๆ
         // ก็บอกอยู่แล้วว่าฉบับนั้นเสนอขึ้นไปแล้ว
         : '<span class="text-muted">–</span>'}</td>` : ''}
-      <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}
+      <td class="cell-head" style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}
         ${d.is_circular ? '<div><span class="badge badge-info" style="font-size:.7rem">ว เวียน</span></div>' : ''}</td>
-      ${direction === 'all' ? `<td style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
-      <td class="wrap">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}${d.attachment_count
+      ${direction === 'all' ? `<td data-label="ประเภท" style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
+      <td class="wrap cell-sub">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}${d.attachment_count
         ? ` <span class="clip-inline" title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? d.attachment_count : ''}</span>` : ''}
         ${d.external_doc_number ? `<div class="text-muted" style="font-size:.78rem">ที่ ${esc(d.external_doc_number)}</div>` : ''}</td>
       <td class="clip-col" style="white-space:nowrap;text-align:center">${d.attachment_count
         ? `<span title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? ` ${d.attachment_count}` : ''}</span>`
         : '<span class="text-muted" title="ยังไม่ได้แนบไฟล์สแกน">—</span>'}</td>
-      <td>${esc(d.dept_name)}</td>
-      <td>${priorityBadge(d.priority)}</td>
-      <td>${statusBadge(d.status)}</td>
-      <td style="white-space:nowrap">${d.due_date ? (n === null ? esc(fmtThaiDateShort(d.due_date)) : dueCell(d.due_date)) : '<span class="text-muted">—</span>'}</td>
-      <td class="text-muted" style="white-space:nowrap">${fmtDate(d.created_at)}</td>
+      <td data-label="ฝ่าย">${esc(d.dept_name)}</td>
+      <td data-label="ความเร็ว">${priorityBadge(d.priority)}</td>
+      <td data-label="สถานะ">${statusBadge(d.status)}</td>
+      <td data-label="ครบกำหนด" style="white-space:nowrap">${d.due_date ? (n === null ? esc(fmtThaiDateShort(d.due_date)) : dueCell(d.due_date)) : '<span class="text-muted">—</span>'}</td>
+      <td data-label="ลงทะเบียน" class="text-muted" style="white-space:nowrap">${fmtDate(d.created_at)}</td>
     </tr>`;
   }).join('');
 
@@ -466,7 +466,7 @@ router.get('/documents', requirePage((ctx) => {
     </div>
     <div class="card">
       ${filterForm}
-      ${rows.length ? `${bulkBar}<div class="table-wrap"><table>
+      ${rows.length ? `${bulkBar}<div class="table-wrap table-cards"><table>
         <thead><tr>${canBulkAssign ? '<th style="text-align:center" title="ติ๊กเพื่อเลือกหลายฉบับแล้วมอบหมายรวดเดียว — ฉบับที่ขึ้นขีด (–) คือฉบับที่เสนอขึ้นไปแล้วหรือปิดเรื่องแล้ว จึงมอบหมายใหม่เป็นชุดไม่ได้"><input type="checkbox" id="bulkAll" aria-label="เลือกทั้งหน้า" onclick="toggleAllPicks(this)" /></th>' : ''}<th>เลขที่</th>${direction === 'all' ? '<th>ประเภท</th>' : ''}<th>เรื่อง</th><th class="clip-col" title="ไฟล์แนบ">📎</th><th>ฝ่าย</th><th>ความเร็ว</th><th>สถานะ</th><th>ครบกำหนด</th><th>วันที่ลงทะเบียน</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>${pager}
       ${canBulkAssign ? `<script>

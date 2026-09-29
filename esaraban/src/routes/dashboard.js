@@ -414,16 +414,16 @@ router.get('/tasks', requirePage((ctx) => {
     </div>
     <div class="card">
       ${tasksTruncated ? `<div class="alert alert-warning">⚠️ มีงานค้างมากกว่า ${MAX_TASK_ROWS} ฉบับ หน้านี้แสดงเฉพาะ ${MAX_TASK_ROWS} ฉบับที่ใกล้ครบกำหนดที่สุด — ดูทั้งหมดได้ที่<a href="/documents?direction=all&status=in_progress">ทะเบียนหนังสือ</a></div>` : ''}
-      ${rows.length ? `<div class="table-wrap"><table>
+      ${rows.length ? `<div class="table-wrap table-cards"><table>
         <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ครบกำหนด</th><th>มอบหมายเมื่อ</th></tr></thead>
         <tbody>${rows.map((d) => {
           const n = daysUntil(d.due_date);
           return `<tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
-            <td style="white-space:nowrap">${rowLink(`/documents/${d.id}`, esc(d.doc_number_display))}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}${d.secret_level !== 'normal' ? ' <span title="ชั้นความลับ">🔒</span>' : ''}</td>
-            <td class="wrap"><strong>${esc(d.title)}</strong></td>
-            <td>${priorityBadge(d.priority)}</td>
-            <td style="white-space:nowrap">${dueCell(d.due_date)}</td>
-            <td class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`;
+            <td class="cell-head" style="white-space:nowrap">${rowLink(`/documents/${d.id}`, esc(d.doc_number_display))}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}${d.secret_level !== 'normal' ? ' <span title="ชั้นความลับ">🔒</span>' : ''}</td>
+            <td class="wrap cell-sub"><strong>${esc(d.title)}</strong></td>
+            <td data-label="ความเร็ว">${priorityBadge(d.priority)}</td>
+            <td data-label="ครบกำหนด" style="white-space:nowrap">${dueCell(d.due_date)}</td>
+            <td data-label="มอบหมายเมื่อ" class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`;
         }).join('')}</tbody>
       </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
     </div>`;

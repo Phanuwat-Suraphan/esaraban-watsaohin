@@ -80,12 +80,12 @@ router.get('/orders', requirePage((ctx) => {
 
   const rowsHtml = rows.map((o) => `
     <tr ${rowAttrs(`/orders/${o.id}`)}>
-      <td style="white-space:nowrap">${rowLink(`/orders/${o.id}`, `<strong style="color:var(--primary)">${esc(o.number_display)}</strong>`)}</td>
-      <td>${rowLink(`/orders/${o.id}`, esc(o.subject))}</td>
-      <td style="white-space:nowrap">${o.signed_date ? esc(fmtThaiDateShort(o.signed_date)) : '<span class="text-muted">—</span>'}</td>
-      <td style="white-space:nowrap">${o.signer_first ? esc(personName(o.signer_prefix, o.signer_first, o.signer_last)) : '<span class="text-muted">—</span>'}</td>
+      <td class="cell-head" style="white-space:nowrap">${rowLink(`/orders/${o.id}`, `<strong style="color:var(--primary)">${esc(o.number_display)}</strong>`)}</td>
+      <td class="cell-sub">${rowLink(`/orders/${o.id}`, esc(o.subject))}</td>
+      <td data-label="ลงวันที่" style="white-space:nowrap">${o.signed_date ? esc(fmtThaiDateShort(o.signed_date)) : '<span class="text-muted">—</span>'}</td>
+      <td data-label="ผู้ลงนาม" style="white-space:nowrap">${o.signer_first ? esc(personName(o.signer_prefix, o.signer_first, o.signer_last)) : '<span class="text-muted">—</span>'}</td>
       <td class="clip-col">${o.file_count ? `📎 ${o.file_count}` : ''}</td>
-      <td style="white-space:nowrap">${o.recipient_count
+      <td data-label="ผู้ที่ต้องทราบ" style="white-space:nowrap">${o.recipient_count
         ? `${o.opened_count}/${o.recipient_count} อ่านแล้ว`
         : '<span class="text-muted">—</span>'}</td>
     </tr>`).join('');
@@ -249,7 +249,7 @@ router.get('/orders', requirePage((ctx) => {
     ${regWarn}
     ${createCard}
     <div class="card">
-      ${rows.length ? `<div class="table-wrap"><table>
+      ${rows.length ? `<div class="table-wrap table-cards"><table>
         <thead><tr><th>ที่</th><th>เรื่อง</th><th>ลงวันที่</th><th>ผู้ลงนาม</th><th class="clip-col" title="ไฟล์แนบ">📎</th><th>ผู้ที่ต้องทราบ</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table></div>${pager}`
     : emptyState(k.icon, q || mine || year

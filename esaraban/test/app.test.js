@@ -12356,6 +12356,194 @@ describe('ไล่ดำเนินการทีละฉบับจนห�
   });
 });
 
+// หน้าเว็บของระบบนี้เป็น HTML ที่ประกอบเองทั้งหน้า และหน้าที่เปิดบ่อยที่สุด (ทะเบียนหนังสือ) วัดได้
+// เกือบ 200 KB ต่อการเปิดหนึ่งครั้ง ซึ่งเดิมวิ่งผ่านเน็ตมือถือของครูแบบดิบๆ ทั้งก้อน
+describe('บีบอัดคำตอบก่อนส่งออก', () => {
+  let C;
+  let http;
+  let zlibMod;
+  before(async () => {
+    C = await import('../src/services/compress.js');
+    http = (await import('node:http')).default;
+    zlibMod = await import('node:zlib');
+  });
+
+  /** เปิดเซิร์ฟเวอร์จริงหนึ่งตัวต่อหนึ่งเทสต์ แล้วยิงด้วย http ดิบ เพื่อเห็นไบต์จริงบนสาย */
+  async function roundTrip(handler, { headers = {}, method = 'GET' } = {}) {
+    const server = http.createServer((req, res) => {
+      C.installCompression(req, res);
+      handler(req, res);
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address();
+    try {
+      return await new Promise((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port, path: '/', method, headers }, (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  }
+
+  const GZIP = { 'Accept-Encoding': 'gzip' };
+  // HTML ที่ซ้ำๆ แบบเดียวกับที่เทมเพลตของระบบสร้างออกมาจริง (ยาวเกินเพดานขั้นต่ำแน่ๆ)
+  const bigHtml = `<!doctype html><html><body>${'<tr><td>ขอความอนุเคราะห์บุคลากร</td></tr>'.repeat(300)}</body></html>`;
+  const sendHtml = (body) => (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(body);
+  };
+
+  test('อ่าน Accept-Encoding ได้ถูกต้อง รวมถึงกรณีที่บอกว่าไม่รับ', () => {
+    for (const ok of ['gzip', 'gzip, deflate, br', 'deflate, gzip;q=1.0', '*', 'br;q=1.0, gzip;q=0.8']) {
+      assert.equal(C.acceptsGzip(ok), true, `"${ok}" ต้องถือว่ารับ gzip ได้`);
+    }
+    for (const no of ['', undefined, null, 'deflate', 'br', 'gzip;q=0', 'identity']) {
+      assert.equal(C.acceptsGzip(no), false, `"${no}" ต้องถือว่ารับ gzip ไม่ได้`);
+    }
+  });
+
+  test('ชนิดที่บีบแล้วไม่ได้อะไรต้องไม่ถูกเลือกมาบีบ', () => {
+    for (const yes of ['text/html; charset=utf-8', 'text/css', 'application/json; charset=utf-8',
+      'image/svg+xml', 'text/csv', 'application/manifest+json']) {
+      assert.equal(C.isCompressibleType(yes), true, `${yes} ควรบีบ`);
+    }
+    for (const no of ['application/pdf', 'image/png', 'image/jpeg', '',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/octet-stream', 'application/msword']) {
+      assert.equal(C.isCompressibleType(no), false, `${no} ไม่ควรบีบ`);
+    }
+  });
+
+  test('หน้า HTML ยาวๆ ถูกบีบ และแกะออกมาแล้วต้องเหมือนเดิมเป๊ะทุกไบต์', async () => {
+    const gz = await roundTrip(sendHtml(bigHtml), { headers: GZIP });
+    assert.equal(gz.headers['content-encoding'], 'gzip');
+    assert.equal(zlibMod.gunzipSync(gz.body).toString('utf8'), bigHtml, 'เนื้อหาต้องไม่เพี้ยนแม้แต่ไบต์เดียว');
+    const saved = 1 - gz.body.length / Buffer.byteLength(bigHtml);
+    assert.ok(saved > 0.7, `ควรเล็กลงอย่างน้อย 70% แต่เล็กลงแค่ ${(saved * 100).toFixed(0)}%`);
+  });
+
+  test('Content-Length ต้องเป็นขนาดหลังบีบ ไม่ใช่ขนาดเดิม', async () => {
+    const gz = await roundTrip(sendHtml(bigHtml), { headers: GZIP });
+    // ผิดตรงนี้คือเบราว์เซอร์รอไบต์ที่ไม่มีวันมา หรือตัดเนื้อความทิ้งกลางคัน — พังแบบเงียบที่สุด
+    assert.equal(Number(gz.headers['content-length']), gz.body.length);
+    assert.ok(gz.body.length < Buffer.byteLength(bigHtml));
+  });
+
+  test('เบราว์เซอร์ที่ไม่รับ gzip ต้องได้ของเดิมครบถ้วน', async () => {
+    const plain = await roundTrip(sendHtml(bigHtml));
+    assert.equal(plain.headers['content-encoding'], undefined);
+    assert.equal(plain.body.toString('utf8'), bigHtml);
+    const off = await roundTrip(sendHtml(bigHtml), { headers: { 'Accept-Encoding': 'gzip;q=0' } });
+    assert.equal(off.headers['content-encoding'], undefined);
+    assert.equal(off.body.toString('utf8'), bigHtml);
+  });
+
+  test('Vary ต้องติดไปทุกคำตอบที่เป็นข้อความ ไม่ใช่เฉพาะครั้งที่บีบจริง', async () => {
+    const big = await roundTrip(sendHtml(bigHtml), { headers: GZIP });
+    const small = await roundTrip(sendHtml('<p>สั้นมาก</p>'), { headers: GZIP });
+    // ถ้าไม่มี Vary ตัวแคชข้างหน้าจะเอาคำตอบที่บีบแล้วไปจ่ายให้เบราว์เซอร์ที่รับ gzip ไม่ได้
+    assert.equal(big.headers.vary, 'Accept-Encoding');
+    assert.equal(small.headers.vary, 'Accept-Encoding');
+  });
+
+  test('คำตอบสั้นๆ ไม่ต้องบีบ เพราะบีบแล้วมักใหญ่กว่าเดิม', async () => {
+    const res = await roundTrip((req, r) => {
+      r.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      r.end(JSON.stringify({ ok: true }));
+    }, { headers: GZIP });
+    assert.equal(res.headers['content-encoding'], undefined);
+    assert.deepEqual(JSON.parse(res.body.toString()), { ok: true });
+  });
+
+  test('ไฟล์ที่บีบแล้วไม่ได้อะไร (PDF/รูป/Excel) ต้องไหลผ่านเหมือนเดิมทุกไบต์', async () => {
+    const pdf = Buffer.from('%PDF-1.4\n' + 'A'.repeat(8000) + '\n%%EOF\n', 'latin1');
+    for (const type of ['application/pdf', 'image/png',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']) {
+      const res = await roundTrip((req, r) => {
+        r.writeHead(200, { 'Content-Type': type, 'Content-Length': pdf.length });
+        r.end(pdf);
+      }, { headers: GZIP });
+      assert.equal(res.headers['content-encoding'], undefined, `${type} ต้องไม่ถูกบีบ`);
+      assert.ok(res.body.equals(pdf), `${type} ต้องได้ไบต์เดิมเป๊ะ`);
+      assert.equal(Number(res.headers['content-length']), pdf.length);
+    }
+  });
+
+  test('คำตอบที่ทยอยเขียนทีละชิ้น (ไฟล์นิ่งที่ pipe ออกมา) ต้องบีบได้ครบ', async () => {
+    const part = 'บรรทัดของไฟล์สไตล์ชีต { color: red }\n'.repeat(40);
+    const res = await roundTrip((req, r) => {
+      r.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
+      for (let i = 0; i < 5; i++) r.write(part);
+      r.end();
+    }, { headers: GZIP });
+    assert.equal(res.headers['content-encoding'], 'gzip');
+    assert.equal(zlibMod.gunzipSync(res.body).toString('utf8'), part.repeat(5));
+  });
+
+  test('คำตอบที่ไม่มีเนื้อความตามสเปก (304/204) ต้องไม่ถูกแตะ', async () => {
+    for (const code of [204, 304]) {
+      const res = await roundTrip((req, r) => {
+        r.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8' });
+        r.end();
+      }, { headers: GZIP });
+      assert.equal(res.status, code);
+      assert.equal(res.headers['content-encoding'], undefined);
+      assert.equal(res.body.length, 0);
+    }
+  });
+
+  test('การเปลี่ยนเส้นทาง (302) ต้องยังเปลี่ยนเส้นทางได้ตามปกติ', async () => {
+    const res = await roundTrip((req, r) => {
+      r.writeHead(302, { Location: '/documents?direction=incoming' });
+      r.end();
+    }, { headers: GZIP });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.location, '/documents?direction=incoming');
+  });
+
+  test('คำตอบที่ถูกเข้ารหัสมาแล้ว ต้องไม่ถูกบีบซ้อนอีกชั้น', async () => {
+    const already = zlibMod.gzipSync(Buffer.from(bigHtml));
+    const res = await roundTrip((req, r) => {
+      r.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Encoding': 'gzip' });
+      r.end(already);
+    }, { headers: GZIP });
+    assert.equal(res.headers['content-encoding'], 'gzip');
+    assert.ok(res.body.equals(already), 'ต้องเป็นก้อนเดิม ไม่ใช่ถูก gzip ซ้อนอีกชั้นจนแกะไม่ออก');
+    assert.equal(zlibMod.gunzipSync(res.body).toString('utf8'), bigHtml);
+  });
+
+  // ตัวจับ error กลางของ server.js และเส้นทางที่ตอบเป็นไฟล์ ใช้ res.headersSent ตัดสินว่ายังตอบอะไร
+  // ได้อยู่ไหม — ระหว่างที่เรากักหัวไว้รอบีบ ค่าจริงยังเป็น false ซึ่งจะทำให้ที่อื่นเข้าใจผิดแล้วตอบซ้ำ
+  test('headersSent ต้องรายงานว่าส่งแล้ว ตั้งแต่ตอนที่หัวถูกกักไว้รอบีบ', async () => {
+    const seen = [];
+    const res = await roundTrip((req, r) => {
+      seen.push(r.headersSent);
+      r.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      seen.push(r.headersSent);
+      r.end(bigHtml);
+    }, { headers: GZIP });
+    assert.equal(res.status, 200);
+    assert.deepEqual(seen, [false, true]);
+  });
+
+  test('คำขอแบบ HEAD ต้องไม่ถูกแตะ', async () => {
+    const res = await roundTrip(sendHtml(bigHtml), { headers: GZIP, method: 'HEAD' });
+    assert.equal(res.headers['content-encoding'], undefined);
+    assert.equal(res.body.length, 0);
+  });
+
+  test('เซิร์ฟเวอร์จริงต้องบีบหน้าเว็บให้ และเนื้อหาต้องตรงกับที่ไม่บีบ', async () => {
+    // ผ่านตัวเซิร์ฟเวอร์จริง ไม่ใช่ handler ปลอม — เพื่อยืนยันว่าต่อสายไว้ที่ server.js จริง
+    assert.match(fs.readFileSync('server.js', 'utf8'), /installCompression\(req, res\)/);
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

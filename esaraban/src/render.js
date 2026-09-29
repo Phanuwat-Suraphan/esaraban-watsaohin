@@ -232,6 +232,22 @@ function unreadOrders(userId) {
   }
 }
 
+/**
+ * ประกาศที่คนนี้ยังไม่ได้เปิดอ่าน
+ *
+ * เหตุผลเดียวกับคำสั่งโรงเรียน: ประกาศที่ไม่มีใครเห็นก็เท่ากับไม่มีประกาศ ตัวเลขข้างเมนูเป็นสิ่งเดียว
+ * ที่ยังอยู่หลังการแจ้งเตือนครั้งแรกถูกเลื่อนผ่านไปแล้ว
+ */
+function unreadAnnouncements(userId) {
+  try {
+    return db.prepare(`SELECT COUNT(*) c FROM announcement_reads r
+      JOIN announcements a ON a.id = r.announcement_id
+      WHERE r.user_id = ? AND r.opened_at IS NULL AND a.deleted_at IS NULL`).get(userId).c;
+  } catch {
+    return 0; // ฐานข้อมูลที่ยังไม่ได้ migrate ตารางนี้ — ไม่ใช่เหตุให้ทั้งหน้าพัง
+  }
+}
+
 function navItem(href, icon, label, currentPath, count = 0) {
   const active = currentPath === href || (href !== '/' && currentPath.startsWith(href));
   // ป้ายตัวเลขบนเมนู — ใช้กับของที่ "ค้างรอคนทำ" เท่านั้น ไม่ใช่ทุกเมนู ไม่งั้นจะกลายเป็นสิ่งที่ทุกคน
@@ -329,7 +345,7 @@ function renderAppShell({ user, currentPath, content, flash, avatar }) {
     <div class="nav-section-label">งานบุคคล</div>
     ${navItem('/leave', '🗓️', 'ลา/ไปราชการ', currentPath)}
     ${navItem('/delegations', '🪪', 'มอบหมายรักษาการแทน', currentPath)}
-    ${navItem('/announcements', '📢', 'ประกาศ/ประชาสัมพันธ์', currentPath)}
+    ${navItem('/announcements', '📢', 'ประกาศ/ประชาสัมพันธ์', currentPath, unreadAnnouncements(user.id))}
 
     <div class="nav-section-label">รายงาน</div>
     ${navItem('/reports', '📊', 'รายงาน', currentPath)}

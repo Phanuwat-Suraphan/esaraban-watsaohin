@@ -468,6 +468,23 @@ export function migrate() {
   );
   CREATE INDEX IF NOT EXISTS idx_announcements_category ON announcements(category);
 
+  -- ใครได้รับประกาศฉบับนั้น และเปิดอ่านแล้วหรือยัง
+  --
+  -- เดิมหน้าประกาศเป็นบอร์ดเงียบ: โพสต์แล้วไม่มีการแจ้งเตือนถึงใครเลย ครูต้องบังเอิญเปิดหน้านั้นเอง
+  -- และผู้ลงประกาศก็ไม่มีทางรู้ว่ามีใครเห็นหรือไม่ — ซึ่งแปลว่าประกาศเรื่องด่วน (เปลี่ยนกำหนดการ
+  -- งดการเรียนการสอน) อาจไม่ถึงใครเลยโดยไม่มีอะไรฟ้อง
+  --
+  -- แถวถูกสร้างตอนกดลงประกาศ (ทุกคน ณ ตอนนั้น) ด้วยเหตุผลเดียวกับบัญชีแจ้งเวียนของหนังสือ
+  -- (ดู services/broadcastReads.js): ตัวหารต้องเป็น "คนที่ได้รับตอนนั้น" ไม่ใช่รายชื่อครูปัจจุบัน
+  CREATE TABLE IF NOT EXISTS announcement_reads (
+    announcement_id TEXT NOT NULL REFERENCES announcements(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    opened_at TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (announcement_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_announcement_reads_user ON announcement_reads(user_id, opened_at);
+
   CREATE TABLE IF NOT EXISTS document_access_grants (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(id),

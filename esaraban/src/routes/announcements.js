@@ -3,7 +3,12 @@ import { layout, esc, fmtDate, emptyState } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, beYear, audit } from '../db.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile as deleteDriveFile } from '../services/googleDrive.js';
-import { announcementShareText, lineShareBlock } from '../services/line.js';
+import { announcementShareText, announcementChaseText, lineShareBlock } from '../services/line.js';
+import { notifyUser } from '../services/notify.js';
+import {
+  recordAnnouncementRecipients, announcementAudience, markAnnouncementRead,
+  announcementReadStats, readStatsByAnnouncement,
+} from '../services/announcementReads.js';
 import { Readable } from 'node:stream';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -74,6 +79,18 @@ router.get('/announcements', requirePage((ctx) => {
     items: rows.all({ cat, limit, preview: BODY_PREVIEW_CHARS }),
     total: totals.get(cat) || 0,
   }));
+  // สัดส่วนการอ่านของทุกฉบับในหน้าเดียว ดึงทีเดียว ไม่ใช่ยิงคำสั่งต่อหนึ่งแถว — หน้านี้แสดงได้ถึง
+  // 200 รายการเมื่อกด "ดูทั้งหมด" ซึ่งจะกลายเป็น 200 คำสั่งทันทีถ้าถามทีละแถว
+  const readStats = isAdmin
+    ? readStatsByAnnouncement(grouped.flatMap((g) => g.items.map((a) => a.id)))
+    : new Map();
+  const readChip = (id) => {
+    const st = readStats.get(id);
+    if (!st) return '';
+    return st.readCount >= st.total
+      ? ` · <span class="badge badge-success" style="font-size:.7rem">อ่านครบ ${st.total}</span>`
+      : ` · <span class="badge badge-warning" style="font-size:.7rem">อ่านแล้ว ${st.readCount}/${st.total}</span>`;
+  };
 
   const content = `
     <div class="card-header">
@@ -98,6 +115,7 @@ router.get('/announcements', requirePage((ctx) => {
               <div class="text-muted" style="font-size:.78rem">
                 ผู้ลงประกาศ ${esc(a.first_name)} ${esc(a.last_name)} · วันที่ ${fmtDate(a.created_at)}
                 ${a.file_name ? ` · <a href="/announcement-files/${a.id}" target="_blank" rel="noopener">📄 ${esc(a.file_name)}</a>` : ''}
+                ${readChip(a.id)}
               </div>
             </div>`).join('') : emptyState('📭', `ยังไม่มี${cat}`)}
           ${total > items.length ? `<p class="text-muted" style="font-size:.82rem;margin:.6rem 0 0">
@@ -135,6 +153,19 @@ router.get('/announcements/new', requireRole(...CAN_POST_ROLES)(requirePage((ctx
           <div id="filePreview" class="help-text"></div>
           <div class="help-text">รองรับเฉพาะไฟล์ PDF ขนาดไม่เกิน 10MB</div>
         </div>
+        <div class="field">
+          <!-- ช่องซ่อนต้องมาก่อนเสมอ: ช่องติ๊กที่ไม่ได้ติ๊กจะไม่ถูกส่งมาเลย ถ้าไม่มีค่าตั้งต้นคู่กัน
+               เซิร์ฟเวอร์จะแยก "ไม่ติ๊ก" กับ "ไม่มีช่องนี้" ไม่ออก แล้วแจ้งเตือนออกไปทั้งที่สั่งไม่ให้แจ้ง -->
+          <input type="hidden" name="notify" value="0" />
+          <label class="check-inline" style="display:block">
+            <input type="checkbox" name="notify" value="1" checked />
+            <span><strong>แจ้งเตือนถึงทุกคน</strong> และนับว่าใครอ่านแล้วบ้าง</span>
+          </label>
+          <div class="help-text">
+            ทุกคนจะได้รับแจ้งเตือน (และเข้าไลน์ถ้าเชื่อมบัญชีไว้) และผู้ลงประกาศจะเห็นว่าเหลือใครยังไม่อ่าน
+            — ติ๊กออกได้ถ้าเป็นเรื่องที่ตั้งใจให้อยู่บนบอร์ดเป็นข้อมูลอ้างอิงเฉยๆ เช่น ระเบียบ/แนวปฏิบัติ
+          </div>
+        </div>
         <button class="btn btn-primary" type="submit">บันทึกประกาศ</button>
         <a class="btn btn-outline" href="/announcements">ยกเลิก</a>
       </form>
@@ -160,6 +191,38 @@ router.get('/announcements/:id', requirePage((ctx) => {
     return html(ctx, 404, layout({ user: ctx.user, title: 'ไม่พบประกาศ', path: '/announcements',
       content: emptyState('📭', 'ไม่พบประกาศนี้ หรือถูกลบไปแล้ว') }));
   }
+  // เปิดหน้านี้ = ลงชื่อรับทราบ (เกณฑ์เดียวกับหนังสือเวียน ดู services/announcementReads.js)
+  markAnnouncementRead(a.id, ctx.user.id);
+  const stats = canPostAnnouncement(ctx.user) ? announcementReadStats(a.id) : null;
+  const readCard = !stats ? '' : !stats.tracked ? `
+    <div class="card"><p class="help-text" style="margin:0">
+      ประกาศฉบับนี้ลงไว้ก่อนที่ระบบจะเริ่มแจ้งถึงตัวและเก็บสถิติการอ่าน จึงไม่มีข้อมูลว่าใครอ่านแล้วบ้าง
+      — ฉบับที่ลงหลังจากนี้จะนับให้เอง
+    </p></div>` : `
+    <div class="card" id="announcementReads">
+      <h3 class="mt-0">👥 ใครอ่านแล้วบ้าง</h3>
+      <div><strong>อ่านแล้ว ${stats.readCount} จาก ${stats.total} ท่าน</strong>
+        ${stats.unreadCount
+    ? `<span class="badge badge-warning">ยังไม่อ่าน ${stats.unreadCount}</span>`
+    : '<span class="badge badge-success">ครบทุกท่านแล้ว</span>'}</div>
+      ${stats.unreadCount ? `
+        <details style="margin-top:.4rem">
+          <summary style="cursor:pointer">ดูรายชื่อท่านที่ยังไม่ได้เปิดอ่าน</summary>
+          <ol style="margin:.4rem 0 0;padding-left:1.2rem;font-size:.9rem">
+            ${stats.unread.map((u) => `<li>${esc(u.name)}${u.position ? ` <span class="text-muted">(${esc(u.position)})</span>` : ''}</li>`).join('')}
+            ${stats.hiddenCount ? `<li class="text-muted">และอีก ${stats.hiddenCount} ท่าน</li>` : ''}
+          </ol>
+        </details>
+        <div style="margin-top:.5rem">
+          ${lineShareBlock({
+    key: `${a.id}-chase`,
+    text: announcementChaseText(a, stats),
+    copyLabel: `⏳ คัดลอกข้อความตามท่านที่ยังไม่อ่าน (${stats.unreadCount})`,
+    title: 'รวมรายชื่อท่านที่ยังไม่ได้เปิดอ่านเป็นข้อความเดียว คัดลอกไปวางในกลุ่มไลน์ได้เลย',
+  })}
+        </div>` : ''}
+    </div>`;
+
   const content = `
     <div class="card-header">
       <h2 class="mt-0">${a.category === 'ประกาศ' ? '📣' : '📌'} ${esc(a.title)}</h2>
@@ -182,7 +245,8 @@ router.get('/announcements/:id', requirePage((ctx) => {
       ${a.file_name ? `<p style="margin-top:1rem">
         <a class="btn btn-outline btn-sm" href="/announcement-files/${a.id}" target="_blank" rel="noopener">📄 ${esc(a.file_name)}</a>
       </p>` : ''}
-    </div>`;
+    </div>
+    ${readCard}`;
   html(ctx, 200, layout({ user: ctx.user, title: a.title, path: '/announcements', content }));
 }));
 
@@ -226,8 +290,30 @@ router.post('/announcements', requireRole(...CAN_POST_ROLES)(requireApi(async (c
     fileFields.file_storage_provider || null, fileFields.file_path || null, fileFields.file_drive_id || null,
     fileFields.file_name || null, fileFields.file_size || null, fileFields.file_mime || null,
     ctx.user.id, now, now);
-  audit({ userId: ctx.user.id, action: 'announcement_created', tableName: 'announcements', recordId: id, detail: { category: b.category, title: b.title } });
-  json(ctx, 201, { redirect: '/announcements' });
+
+  // แจ้งถึงตัวทุกคน ไม่ใช่รอให้บังเอิญเปิดหน้าประกาศเอง — เดิมบอร์ดนี้เงียบสนิท ประกาศเรื่องด่วน
+  // (เปลี่ยนกำหนดการ งดการเรียนการสอน) จึงอาจไม่ถึงใครเลยโดยไม่มีอะไรฟ้อง
+  //
+  // ผู้ลงประกาศติ๊กปิดได้ สำหรับเรื่องที่ตั้งใจให้เป็นข้อมูลอ้างอิงบนบอร์ดเฉยๆ (ระเบียบ/แนวปฏิบัติ)
+  // ซึ่งถ้ายิงเข้าไลน์ทุกคนทุกครั้งจะกลายเป็นเสียงรบกวนจนคนปิดการแจ้งเตือนทิ้ง
+  // ค่าที่ไม่ได้ส่งมาเลยถือว่า "แจ้ง" เพราะนั่นคือเหตุผลหลักที่บอร์ดประกาศมีอยู่ ส่วนการปิดต้องบอก
+  // มาให้ชัด (false / '0' / 'false') — ฟอร์มส่ง '0' มาคู่กับช่องติ๊กเสมอ (ดูช่องซ่อนในฟอร์ม)
+  const notify = !(b.notify === false || b.notify === '0' || b.notify === 'false');
+  const audience = notify ? announcementAudience(ctx.user.id) : [];
+  if (audience.length) {
+    recordAnnouncementRecipients(id, audience);
+    for (const userId of audience) {
+      notifyUser({
+        userId,
+        linkUrl: `/announcements/${id}`,
+        title: `${b.category === 'ประกาศ' ? '📣' : '📌'} ${b.category}ใหม่`,
+        message: b.title.trim(),
+        priority: 'info',
+      });
+    }
+  }
+  audit({ userId: ctx.user.id, action: 'announcement_created', tableName: 'announcements', recordId: id, detail: { category: b.category, title: b.title, notified: audience.length } });
+  json(ctx, 201, { redirect: `/announcements/${id}`, notified: audience.length });
 })));
 
 router.post('/announcements/:id/delete', requireRole(...CAN_POST_ROLES)(requireApi(async (ctx) => {

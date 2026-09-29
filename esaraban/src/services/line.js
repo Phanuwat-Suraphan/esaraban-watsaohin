@@ -256,3 +256,26 @@ export function broadcastChaseText(doc, stats) {
   lines.push(absoluteUrl(`/documents/${doc.id}`));
   return lines.join('\n');
 }
+
+/**
+ * ข้อความตามท่านที่ยังไม่ได้อ่านประกาศ — คู่กับ broadcastChaseText แต่ของบอร์ดประกาศ
+ *
+ * แยกกันเพราะประกาศไม่มีเลขทะเบียนและไม่มีชั้นความลับให้ต้องกัน (ดู announcementShareText)
+ * ถ้อยคำและโครงเหมือนกันโดยตั้งใจ คนอ่านในกลุ่มไลน์จะได้ไม่ต้องเรียนรู้สองรูปแบบ
+ */
+export function announcementChaseText(ann, stats) {
+  const lines = [];
+  lines.push(`${ann.category === 'ประกาศ' ? '📣' : '📌'} ${ann.category} ${clip(ann.title, MAX_TITLE_IN_SHARE)}`);
+  lines.push(`อ่านแล้ว ${stats.readCount} จาก ${stats.total} ท่าน`);
+  lines.push('');
+  lines.push('เรียน ท่านที่ยังไม่ได้เปิดอ่าน');
+  stats.unread.forEach((u, i) => {
+    lines.push(`${i + 1}. ${u.position ? `${u.name} (${clip(u.position, 40)})` : u.name}`);
+  });
+  if (stats.hiddenCount > 0) lines.push(`(และอีก ${stats.hiddenCount} ท่าน — ดูรายชื่อทั้งหมดในระบบ)`);
+  lines.push('');
+  lines.push('จึงเรียนมาเพื่อโปรดเข้าไปอ่านประกาศฉบับนี้ในระบบสารบรรณ จะขอบคุณยิ่ง');
+  lines.push('เปิดอ่าน (ต้องเข้าสู่ระบบก่อน):');
+  lines.push(absoluteUrl(`/announcements/${ann.id}`));
+  return lines.join('\n');
+}

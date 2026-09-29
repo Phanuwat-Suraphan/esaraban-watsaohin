@@ -12726,6 +12726,170 @@ describe('บัญชีแจ้งเวียน — ใครอ่าน�
   });
 });
 
+// เดิมหน้าประกาศเป็น "บอร์ดเงียบ" — โพสต์แล้วไม่มีการแจ้งเตือนถึงใครเลย ครูต้องบังเอิญเปิดหน้านั้นเอง
+// และผู้ลงประกาศก็ไม่มีทางรู้ว่ามีใครเห็นหรือไม่ ประกาศเรื่องด่วนจึงอาจไม่ถึงใครเลยโดยไม่มีอะไรฟ้อง
+describe('ประกาศ/ประชาสัมพันธ์: แจ้งถึงตัว และรู้ว่าใครอ่านแล้ว', () => {
+  let AR;
+  before(async () => { AR = await import('../src/services/announcementReads.js'); });
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const activeOthers = (excludeId) => db.prepare(`SELECT COUNT(*) c FROM users
+    WHERE deleted_at IS NULL AND status = 'active' AND id != ?`).get(excludeId).c;
+  let n = 0;
+  const post = async (over = {}) => {
+    const res = await dispatchPost(reg(), '/announcements', {
+      category: 'ประกาศ', title: `ประกาศทดสอบฉบับที่ ${++n} ${Math.random().toString(36).slice(2, 8)}`,
+      body: 'รายละเอียดของประกาศฉบับนี้', ...over,
+    });
+    assert.equal(res.status, 201, res.body);
+    const id = /announcements\/([0-9a-f-]{36})/.exec(res.json.redirect)?.[1];
+    assert.ok(id, `ต้องพากลับไปหน้าประกาศฉบับที่เพิ่งลง ได้ ${res.json.redirect}`);
+    return { id, notified: res.json.notified };
+  };
+  const notifCount = (uid) => db.prepare(`SELECT COUNT(*) c FROM notifications
+    WHERE user_id = ? AND link_url LIKE '/announcements/%'`).get(uid).c;
+
+  test('ลงประกาศแล้วทุกคนได้รับแจ้งเตือนถึงตัว พร้อมลิงก์มาที่ประกาศฉบับนั้น', async () => {
+    const before = notifCount(seed.userIds.teacher001);
+    const { id, notified } = await post();
+    assert.equal(notified, activeOthers(seed.userIds.reg001), 'ต้องแจ้งทุกคนยกเว้นผู้ลงประกาศเอง');
+    assert.equal(notifCount(seed.userIds.teacher001), before + 1);
+    const note = db.prepare(`SELECT * FROM notifications WHERE user_id = ?
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(seed.userIds.teacher001);
+    assert.equal(note.link_url, `/announcements/${id}`);
+    assert.match(note.title, /ประกาศใหม่/);
+  });
+
+  test('ผู้ลงประกาศไม่ต้องแจ้งตัวเอง และไม่ถูกนับเป็นคนที่ต้องอ่าน', async () => {
+    const before = notifCount(seed.userIds.reg001);
+    const { id } = await post();
+    assert.equal(notifCount(seed.userIds.reg001), before);
+    const stats = AR.announcementReadStats(id);
+    assert.ok(!stats.unread.some((u) => u.userId === seed.userIds.reg001));
+    assert.equal(stats.total, activeOthers(seed.userIds.reg001));
+  });
+
+  test('ติ๊กปิดการแจ้งเตือนแล้วต้องไม่แจ้งใครเลย และไม่เก็บสถิติ', async () => {
+    const before = notifCount(seed.userIds.teacher001);
+    // ฟอร์มส่ง '0' มาจากช่องซ่อนเมื่อไม่ได้ติ๊ก — ต้องแยกออกจาก "ไม่ได้ส่งค่านี้มาเลย"
+    const { id, notified } = await post({ notify: '0' });
+    assert.equal(notified, 0);
+    assert.equal(notifCount(seed.userIds.teacher001), before);
+    assert.equal(AR.announcementReadStats(id).tracked, false);
+  });
+
+  test('ไม่ได้ส่งค่า notify มาเลย ต้องถือว่าแจ้ง — นั่นคือเหตุผลที่บอร์ดนี้มีอยู่', async () => {
+    const { notified } = await post();
+    assert.ok(notified > 0);
+    for (const off of [false, 'false']) {
+      const res = await post({ notify: off });
+      assert.equal(res.notified, 0, `notify=${JSON.stringify(off)} ต้องปิดการแจ้ง`);
+    }
+  });
+
+  test('เปิดหน้าประกาศแล้วถูกนับว่าอ่าน และเปิดซ้ำไม่ทับเวลาครั้งแรก', async () => {
+    const { id } = await post();
+    const openedOf = () => db.prepare('SELECT opened_at FROM announcement_reads WHERE announcement_id = ? AND user_id = ?')
+      .get(id, seed.userIds.teacher001).opened_at;
+    assert.equal(openedOf(), null, 'แจ้งไปแล้วยังไม่เท่ากับอ่านแล้ว');
+    await dispatchGet(teacher(), `/announcements/${id}`);
+    const first = openedOf();
+    assert.ok(first);
+    await dispatchGet(teacher(), `/announcements/${id}`);
+    assert.equal(openedOf(), first);
+    assert.equal(AR.announcementReadStats(id).readCount, 1);
+  });
+
+  test('ตัวเลขข้างเมนูนับเฉพาะประกาศที่ยังไม่อ่านและยังไม่ถูกลบ', async () => {
+    const start = AR.unreadAnnouncementCount(seed.userIds.teacher001);
+    const keep = await post();
+    const gone = await post();
+    assert.equal(AR.unreadAnnouncementCount(seed.userIds.teacher001), start + 2);
+    await dispatchPost(reg(), `/announcements/${gone.id}/delete`, {});
+    assert.equal(AR.unreadAnnouncementCount(seed.userIds.teacher001), start + 1, 'ประกาศที่ถูกลบต้องไม่ค้างเป็นงานให้อ่าน');
+    await dispatchGet(teacher(), `/announcements/${keep.id}`);
+    assert.equal(AR.unreadAnnouncementCount(seed.userIds.teacher001), start);
+  });
+
+  test('คนที่ลาออกไปแล้วต้องไม่ถ่วงตัวหารให้ดูเหมือนแจ้งไม่ครบตลอดไป', async () => {
+    const { id } = await post();
+    const before = AR.announcementReadStats(id);
+    const victim = before.unread[0];
+    db.prepare("UPDATE users SET status = 'inactive' WHERE id = ?").run(victim.userId);
+    try {
+      assert.equal(AR.announcementReadStats(id).total, before.total - 1);
+    } finally {
+      db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(victim.userId);
+    }
+  });
+
+  describe('หน้าเว็บ', () => {
+    test('ผู้ลงประกาศเห็นสัดส่วนการอ่าน รายชื่อค้าง และปุ่มคัดลอกข้อความตาม', async () => {
+      const { id } = await post();
+      await dispatchGet(teacher(), `/announcements/${id}`);
+      const page = await dispatchGet(reg(), `/announcements/${id}`);
+      assert.ok(page.body.includes('id="announcementReads"'));
+      assert.match(page.body, /อ่านแล้ว \d+ จาก \d+ ท่าน/);
+      assert.match(page.body, /ดูรายชื่อท่านที่ยังไม่ได้เปิดอ่าน/);
+      assert.match(page.body, /คัดลอกข้อความตามท่านที่ยังไม่อ่าน \(\d+\)/);
+    });
+
+    test('ครูทั่วไปไม่เห็นสถิติ — เป็นเครื่องมือของคนที่ต้องตาม', async () => {
+      const { id } = await post();
+      const page = await dispatchGet(teacher(), `/announcements/${id}`);
+      assert.equal(page.status, 200);
+      assert.ok(!page.body.includes('id="announcementReads"'));
+      assert.ok(!page.body.includes('ดูรายชื่อท่านที่ยังไม่ได้เปิดอ่าน'));
+    });
+
+    test('อ่านครบทุกคนแล้วขึ้นว่าครบ และไม่มีปุ่มตามอีก', async () => {
+      const { id } = await post();
+      db.prepare('UPDATE announcement_reads SET opened_at = ? WHERE announcement_id = ?').run(nowIso(), id);
+      const page = await dispatchGet(reg(), `/announcements/${id}`);
+      assert.match(page.body, /ครบทุกท่านแล้ว/);
+      assert.ok(!page.body.includes('คัดลอกข้อความตามท่านที่ยังไม่อ่าน'));
+    });
+
+    test('ประกาศเก่าที่ลงก่อนระบบเก็บสถิติ ต้องบอกว่าไม่มีข้อมูล ไม่ใช่โชว์ 0 จาก N', async () => {
+      const { id } = await post({ notify: '0' });
+      const page = await dispatchGet(reg(), `/announcements/${id}`);
+      assert.match(page.body, /ลงไว้ก่อนที่ระบบจะเริ่มแจ้งถึงตัวและเก็บสถิติการอ่าน/);
+      assert.ok(!page.body.includes('อ่านแล้ว 0 จาก'));
+    });
+
+    test('หน้ารายการขึ้นสัดส่วนการอ่านรายฉบับให้ผู้ลงประกาศ แต่ครูไม่เห็น', async () => {
+      const { id } = await post();
+      await dispatchGet(teacher(), `/announcements/${id}`);
+      const admin = await dispatchGet(reg(), '/announcements');
+      assert.match(admin.body, /อ่านแล้ว \d+\/\d+|อ่านครบ \d+/, 'ผู้ลงประกาศต้องเห็นสัดส่วนในรายการ');
+      const plain = await dispatchGet(teacher(), '/announcements');
+      assert.ok(!/badge-warning[^>]*>อ่านแล้ว \d+\//.test(plain.body), 'ครูต้องไม่เห็นสัดส่วน');
+    });
+
+    test('ฟอร์มเพิ่มประกาศมีช่องติ๊กแจ้งเตือน ติ๊กไว้แต่แรก และมีค่าตั้งต้นคู่กัน', async () => {
+      const page = await dispatchGet(reg(), '/announcements/new');
+      assert.ok(page.body.includes('<input type="hidden" name="notify" value="0" />'),
+        'ต้องมีช่องซ่อน ไม่งั้นเซิร์ฟเวอร์แยก "ไม่ติ๊ก" กับ "ไม่มีช่องนี้" ไม่ออก');
+      assert.match(page.body, /<input type="checkbox" name="notify" value="1" checked \/>/);
+      // ช่องซ่อนต้องมาก่อนช่องติ๊กเสมอ ไม่งั้นค่าที่ส่งจริงจะเป็น '0' ตลอด
+      assert.ok(page.body.indexOf('name="notify" value="0"') < page.body.indexOf('name="notify" value="1"'));
+    });
+
+    test('เมนูขึ้นตัวเลขประกาศที่ยังไม่ได้อ่าน และหายไปเมื่ออ่านแล้ว', async () => {
+      const { id } = await post();
+      const before = await dispatchGet(teacher(), '/');
+      const badge = /ประกาศ\/ประชาสัมพันธ์<\/span><span class="nav-count">(\d+)</.exec(before.body);
+      assert.ok(badge && Number(badge[1]) >= 1, 'เมนูต้องขึ้นตัวเลขงานค้างอ่าน');
+      await dispatchGet(teacher(), `/announcements/${id}`);
+      // เคลียร์ที่เหลือจากเทสต์ก่อนหน้าด้วย เพื่อให้ตัวเลขกลับเป็นศูนย์ได้จริง
+      db.prepare('UPDATE announcement_reads SET opened_at = ? WHERE user_id = ? AND opened_at IS NULL')
+        .run(nowIso(), seed.userIds.teacher001);
+      const after = await dispatchGet(teacher(), '/');
+      assert.ok(!/ประกาศ\/ประชาสัมพันธ์<\/span><span class="nav-count">/.test(after.body));
+    });
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

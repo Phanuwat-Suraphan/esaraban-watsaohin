@@ -13021,6 +13021,71 @@ describe('มือถือ: ตารางรายการคลี่เ�
   });
 });
 
+// เกณฑ์พื้นที่แตะของ Apple คือ 44px ของ Google คือ 48px — ต่ำกว่านั้นแปลว่าแตะพลาดเป็นปกติ
+// ซึ่งบนปุ่มอย่างกระดิ่งแจ้งเตือนที่กดทุกวันคือความรำคาญสะสม
+describe('มือถือ: ขนาดที่นิ้วแตะได้ และตัวหนังสือที่อ่านออก', () => {
+  const css = () => fs.readFileSync('public/style.css', 'utf8');
+  const phoneBlocks = () => {
+    const s = css();
+    const out = [];
+    let i = 0;
+    while ((i = s.indexOf('@media (max-width: 899px)', i)) !== -1) {
+      const open = s.indexOf('{', i);
+      let depth = 0;
+      let j = open;
+      for (; j < s.length; j++) {
+        if (s[j] === '{') depth++;
+        else if (s[j] === '}' && --depth === 0) break;
+      }
+      out.push(s.slice(open, j));
+      i = j;
+    }
+    return out.join('\n');
+  };
+
+  test('ปุ่มที่กดบ่อยที่สุดต้องถึง 44px บนมือถือ', () => {
+    const phone = phoneBlocks();
+    assert.match(phone, /\.hamburger-btn, \.icon-btn \{ width: 44px; height: 44px;/, 'ปุ่มเมนู/ธีม/กระดิ่ง');
+    assert.match(phone, /\.btn-sm \{ min-height: 44px; \}/, 'ปุ่มเล็ก (คัดลอกเข้าไลน์ / พิมพ์ทะเบียน)');
+    assert.match(phone, /details > summary \{ min-height: 44px;/, 'หัวข้อพับ/กาง');
+    assert.match(phone, /\.topbar-search \{ height: 44px; \}/);
+  });
+
+  test('ตัวหนังสือบนมือถือต้องไม่เล็กกว่า 12px', () => {
+    const phone = phoneBlocks();
+    // .74rem = 11.84px / .72rem = 11.52px / .68rem = 10.88px — ต่ำกว่าเกณฑ์ทั้งหมด
+    assert.match(phone, /\.badge \{ font-size: \.8rem; \}/);
+    assert.match(phone, /\.nav-section-label \{ font-size: \.8rem; \}/);
+    assert.match(phone, /\.bottom-nav a \{ font-size: \.76rem; \}/);
+  });
+
+  // กฎของจอ 320px ต้องอยู่หลังกฎของจอ ≤899px เสมอ เพราะความเฉพาะเจาะจงเท่ากัน ตัวที่อยู่หลังชนะ
+  // — วางสลับกันแล้ววัดจริงพบว่าตัวอักษรแถบล่างยังเป็นค่าของจอใหญ่อยู่
+  test('กฎของจอแคบมากต้องอยู่หลังกฎของจอมือถือทั่วไป ไม่งั้นไม่มีผล', () => {
+    const s = css();
+    const lastPhone = s.lastIndexOf('@media (max-width: 899px)');
+    const narrowBottomNav = s.indexOf('.bottom-nav a { font-size: .71rem; }');
+    assert.ok(narrowBottomNav > lastPhone,
+      'กฎ 320px ของแถบล่างต้องอยู่หลังบล็อก 899px ตัวสุดท้าย');
+  });
+
+  // ช่องแนบไฟล์กว้างตามเนื้อในของตัวเอง ไม่ได้รับ width:100% เหมือน input ชนิดอื่น
+  // วัดจริงบนจอ 320px: ช่องเลือกรูปโปรไฟล์กว้าง 303px เริ่มที่ x=35 จึงดันทั้งหน้าให้เลื่อนได้ 18px
+  test('ช่องแนบไฟล์ต้องกว้างไม่เกินกล่องที่อยู่ ไม่งั้นดันทั้งหน้าเลื่อนซ้ายขวา', () => {
+    assert.match(css(), /input\[type=file\] \{ max-width: 100%; \}/);
+    const typed = /input\[type=text\][^{]*\{[^}]*width: 100%/.test(css());
+    assert.ok(typed, 'กฎ width:100% ของ input ชนิดอื่นยังต้องอยู่ (ตัวที่ไม่ครอบถึง file)');
+  });
+
+  test('จอคอมฯ ต้องไม่ถูกขยายตาม — กฎทั้งหมดอยู่ในเงื่อนไขจอเล็กเท่านั้น', () => {
+    const s = css();
+    // ค่าเดิมของจอคอมฯ ต้องยังอยู่ครบ
+    assert.match(s, /\.hamburger-btn, \.icon-btn \{[\s\S]*?width: 38px; height: 38px;/);
+    assert.match(s, /\.avatar \{\s*width: 34px; height: 34px;/);
+    assert.match(s, /\.btn-sm \{ padding: \.35rem \.7rem; font-size: \.78rem; \}/);
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

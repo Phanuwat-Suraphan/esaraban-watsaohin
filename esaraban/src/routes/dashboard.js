@@ -419,10 +419,10 @@ router.get('/tasks', requirePage((ctx) => {
         <tbody>${rows.map((d) => {
           const n = daysUntil(d.due_date);
           return `<tr ${rowAttrs(`/documents/${d.id}`)} style="${n !== null && n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
-            <td class="cell-head" style="white-space:nowrap">${rowLink(`/documents/${d.id}`, esc(d.doc_number_display))}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}${d.secret_level !== 'normal' ? ' <span title="ชั้นความลับ">🔒</span>' : ''}</td>
+            <td class="cell-head">${rowLink(`/documents/${d.id}`, esc(d.doc_number_display))}${d.is_delegated ? ' <span title="รักษาการแทน">🪪</span>' : ''}${d.secret_level !== 'normal' ? ' <span title="ชั้นความลับ">🔒</span>' : ''}</td>
             <td class="wrap cell-sub"><strong>${esc(d.title)}</strong></td>
             <td data-label="ความเร็ว">${priorityBadge(d.priority)}</td>
-            <td data-label="ครบกำหนด" style="white-space:nowrap">${dueCell(d.due_date)}</td>
+            <td data-label="ครบกำหนด">${dueCell(d.due_date)}</td>
             <td data-label="มอบหมายเมื่อ" class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`;
         }).join('')}</tbody>
       </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
@@ -484,7 +484,7 @@ router.get('/summary', requirePage((ctx) => {
           const n = daysUntil(d.due_date);
           return `<tr ${rowAttrs(`/documents/${d.id}`)} style="${n < 0 ? 'background:rgba(220,38,38,.06)' : ''}">
             <td>${priorityBadge(d.priority)}</td>
-            <td style="white-space:nowrap">${dueCell(d.due_date, { long: true })}</td>
+            <td>${dueCell(d.due_date, { long: true })}</td>
             <td>${rowLink(`/documents/${d.id}`, `<strong>${esc(d.title)}</strong>`)}<div class="text-muted" style="font-size:.78rem">${esc(d.doc_number_display)}${d.secret_level !== 'normal' ? ' 🔒' : ''}</div></td>
             <td>${d.subject ? esc(d.subject).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}</td>
             <td>${d.pending_instruction ? esc(d.pending_instruction).replace(/\n/g, '<br/>') : '<span class="text-muted">—</span>'}

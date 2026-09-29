@@ -234,9 +234,9 @@ router.get('/documents', requirePage((ctx) => {
         // มือถือซึ่งไม่มีการชี้เมาส์ให้ tooltip โผล่ — เหตุผลอยู่ที่หัวคอลัมน์ และคอลัมน์สถานะข้างๆ
         // ก็บอกอยู่แล้วว่าฉบับนั้นเสนอขึ้นไปแล้ว
         : '<span class="text-muted">–</span>'}</td>` : ''}
-      <td class="cell-head" style="white-space:nowrap">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}
-        ${d.is_circular ? '<div><span class="badge badge-info" style="font-size:.7rem">ว เวียน</span></div>' : ''}</td>
-      ${direction === 'all' ? `<td data-label="ประเภท" style="white-space:nowrap">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
+      <td class="cell-head">${rowLink(`/documents/${d.id}`, `<strong style="color:var(--primary)">${esc(d.doc_number_display)}</strong>`)}
+        ${d.is_circular ? '<div><span class="badge badge-info" style="font-size:.8rem">ว เวียน</span></div>' : ''}</td>
+      ${direction === 'all' ? `<td data-label="ประเภท">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
       <td class="wrap cell-sub">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}${d.attachment_count
         ? ` <span class="clip-inline" title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? d.attachment_count : ''}</span>` : ''}
         ${d.external_doc_number ? `<div class="text-muted" style="font-size:.78rem">ที่ ${esc(d.external_doc_number)}</div>` : ''}</td>
@@ -246,8 +246,8 @@ router.get('/documents', requirePage((ctx) => {
       <td data-label="ฝ่าย">${esc(d.dept_name)}</td>
       <td data-label="ความเร็ว">${priorityBadge(d.priority)}</td>
       <td data-label="สถานะ">${statusBadge(d.status)}</td>
-      <td data-label="ครบกำหนด" style="white-space:nowrap">${d.due_date ? (n === null ? esc(fmtThaiDateShort(d.due_date)) : dueCell(d.due_date)) : '<span class="text-muted">—</span>'}</td>
-      <td data-label="ลงทะเบียน" class="text-muted" style="white-space:nowrap">${fmtDate(d.created_at)}</td>
+      <td data-label="ครบกำหนด">${d.due_date ? (n === null ? esc(fmtThaiDateShort(d.due_date)) : dueCell(d.due_date)) : '<span class="text-muted">—</span>'}</td>
+      <td data-label="ลงทะเบียน" class="text-muted">${fmtDate(d.created_at)}</td>
     </tr>`;
   }).join('');
 
@@ -2223,7 +2223,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               ? `<span class="badge badge-success">ส่งแล้ว ${esc(fmtThaiDateShort(doc.sent_at))}</span>`
               : '<span class="badge badge-warning">ยังไม่ได้บันทึกการส่ง</span>'}</div>
           ${doc.sent_at ? `<table class="table-plain" style="min-width:0"><tbody>
-            <tr><td class="text-muted" style="white-space:nowrap">วันที่ส่ง</td><td>${esc(fmtThaiDateLong(doc.sent_at))}</td></tr>
+            <tr><td class="text-muted">วันที่ส่ง</td><td>${esc(fmtThaiDateLong(doc.sent_at))}</td></tr>
             <tr><td class="text-muted">วิธีส่ง</td><td>${esc(LABELS.DISPATCH_LABEL[doc.sent_method] || doc.sent_method || '-')}</td></tr>
             ${doc.sent_note ? `<tr><td class="text-muted">หมายเหตุ</td><td>${esc(doc.sent_note)}</td></tr>` : ''}
             ${sentByName ? `<tr><td class="text-muted">ผู้บันทึก</td><td>${esc(sentByName)}</td></tr>` : ''}

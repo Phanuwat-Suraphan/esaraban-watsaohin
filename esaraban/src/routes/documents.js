@@ -1729,8 +1729,10 @@ router.get('/documents/:id', requirePage((ctx) => {
           <div class="help-text" id="nextAssigneeHint">ยังไม่ได้เลือกใคร — ถ้าจบเรื่องที่คุณ ให้กด "รับทราบ/ปิดเรื่อง"</div>
         </div>
         ${stampAtt && isRegistrarComment ? `
-        <div class="field">
-          <div class="flex items-center justify-between gap-2" style="flex-wrap:nowrap">
+        <details class="phone-tools" open>
+          <summary><span class="step-num">2</span> ตราธุรการ เสนอ ผอ. (เว้นว่างได้)</summary>
+        <div class="field phone-tools-body">
+          <div class="flex items-center justify-between gap-2 hide-on-phone" style="flex-wrap:nowrap">
             <label style="margin-bottom:0"><span class="step-num">2</span> ตราธุรการ เสนอ ผอ. <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
             <button type="button" class="btn btn-outline btn-sm" style="flex:0 0 auto;white-space:nowrap" onclick="window.clearRegistrarNote()">🗑️ ล้างค่า</button>
           </div>
@@ -1747,8 +1749,12 @@ router.get('/documents/:id', requirePage((ctx) => {
             ✍️ ตรานี้ไม่มีลายเซ็นของคุณอยู่บนหน้ากระดาษแล้ว — ปั๊มแล้วส่งขึ้นไปได้เลย
             ระบบยังบันทึกไว้อยู่ว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่ ทั้งในประวัติการใช้งานและในความเห็นของหนังสือฉบับนี้
           </div>
-        </div>` : ''}
+        </div>
+        </details>` : ''}
         ${stampAtt && isDirectorDecision ? `
+        <details class="phone-tools" open>
+          <summary><span class="step-num">2</span> ตราประทับและความเห็น (เว้นว่างได้)</summary>
+        <div class="phone-tools-body">
         <div class="field">
           <label><span class="step-num">2</span> เครื่องหมายบนตราประทับ <span class="text-muted" style="font-weight:400">(ติ๊กได้หลายอัน — เฉพาะอันที่ติ๊กจะขึ้นบนตราใน PDF จริง)</span></label>
           <div class="stack" style="gap:.35rem">
@@ -1782,7 +1788,9 @@ router.get('/documents/:id', requirePage((ctx) => {
             💡 กด <strong>👁️ ดูตัวอย่าง</strong> ที่ไฟล์แนบไฟล์แรก เพื่อดูว่าตราประทับจะออกมาหน้าตาแบบไหนก่อนกดยืนยัน
           </div>
           <div class="help-text">ติ๊กผิด/พิมพ์ผิดกด "ล้างค่า" ได้ทุกเมื่อ ยังไม่มีผลจนกว่าจะกดปุ่มด้านล่าง</div>
-        </div>` : ''}
+        </div>
+        </div>
+        </details>` : ''}
         <div class="action-buttons">
           ${isDirectorDecision ? `
           <button class="btn btn-success btn-lg" data-pin-title="ยืนยัน PIN เพื่ออนุมัติและส่งต่อ" onclick="doApprove(this)">✅ อนุมัติและส่งต่อ</button>

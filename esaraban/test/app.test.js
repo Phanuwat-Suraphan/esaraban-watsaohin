@@ -13086,6 +13086,68 @@ describe('มือถือ: ขนาดที่นิ้วแตะได�
   });
 });
 
+// หน้าเอกสารเป็นหน้าที่ซับซ้อนที่สุดและเป็นที่ที่ ผอ. กดอนุมัติจริง — วัดบน iPhone 13 แล้วพบว่า
+// ปุ่มอนุมัติอยู่ลึกลงไป 1,870px (เกือบสามหน้าจอ) ทั้งที่การกดปุ่มคือเหตุผลเดียวที่เปิดหน้านี้
+describe('มือถือ: หน้าเอกสารต้องกดอนุมัติได้โดยไม่ต้องเลื่อนหา', () => {
+  const css = () => fs.readFileSync('public/style.css', 'utf8');
+  const pdf = () => Buffer.from(`%PDF-1.4\n% ${Math.random()}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
+
+  async function docWithPdfAssignedTo(assigneeId) {
+    const doc = makeDoc({ title: 'หนังสือสำหรับตรวจหน้าเอกสารบนมือถือ ' + Math.random().toString(36).slice(2, 8) });
+    const att = await dispatchPost(loadUserForTest(seed.userIds.reg001), `/documents/${doc.id}/attachments`,
+      { fileName: 'นำส่ง.pdf', fileType: 'application/pdf', fileDataBase64: pdf() });
+    assert.equal(att.status, 200, att.body);
+    assignStep({ documentId: doc.id, assigneeId, actorUser: registrarUser });
+    return doc;
+  }
+
+  test('กล่องตราประทับ/ความเห็นของผู้บริหารถูกพับบนมือถือ แต่เรนเดอร์มาเป็น open', async () => {
+    const doc = await docWithPdfAssignedTo(seed.userIds.director01);
+    const res = await dispatchGet(loadUserForTest(seed.userIds.director01), `/documents/${doc.id}`);
+    assert.match(res.body, /<details class="phone-tools" open>\s*<summary><span class="step-num">2<\/span> ตราประทับและความเห็น \(เว้นว่างได้\)<\/summary>/);
+    assert.ok(res.body.includes('id="decisionNote"'), 'ช่องข้อความต้องยังอยู่ครบ ไม่ได้ถูกตัดทิ้ง');
+    assert.ok(res.body.includes('class="decisionMark"'), 'เครื่องหมายบนตราต้องยังอยู่');
+  });
+
+  test('กล่องตราธุรการก็ถูกพับเหมือนกัน และจอคอมฯ ยังเห็นหัวข้อเดิม', async () => {
+    const doc = await docWithPdfAssignedTo(seed.userIds.reg001);
+    const res = await dispatchGet(loadUserForTest(seed.userIds.reg001), `/documents/${doc.id}`);
+    assert.match(res.body, /<summary><span class="step-num">2<\/span> ตราธุรการ เสนอ ผอ\. \(เว้นว่างได้\)<\/summary>/);
+    // summary ถูกซ่อนบนจอคอมฯ หัวข้อเดิมจึงต้องยังอยู่ ไม่งั้นกล่องกลายเป็นกล่องไม่มีชื่อ
+    assert.match(res.body, /class="flex items-center justify-between gap-2 hide-on-phone"/);
+    assert.ok(res.body.includes('id="registrarNote"'), 'ช่องความเห็นต้องยังอยู่ครบ');
+  });
+
+  test('ทุกกล่องที่พับต้องมี open ติดมา — เครื่องที่ปิด JavaScript ต้องกรอกได้ครบ', async () => {
+    const doc = await docWithPdfAssignedTo(seed.userIds.director01);
+    const res = await dispatchGet(loadUserForTest(seed.userIds.director01), `/documents/${doc.id}`);
+    const all = (res.body.match(/<details class="phone-tools[^"]*"/g) || []).length;
+    const open = (res.body.match(/<details class="phone-tools[^"]*" open>/g) || []).length;
+    assert.ok(all > 0);
+    assert.equal(open, all);
+  });
+
+  // แถบปุ่มถูกตรึงไว้ท้ายจอระหว่างที่การ์ดยังอยู่ในสายตา จะได้ไม่ต้องเลื่อนหา
+  test('แถบปุ่มดำเนินการถูกตรึงบนมือถือ และยกสูงกว่าแถบเมนูล่างเสมอ', () => {
+    const sheet = css();
+    const start = sheet.lastIndexOf('.action-buttons {', sheet.length);
+    const rule = /@media \(max-width: 899px\) \{\s*\.action-buttons \{([\s\S]*?)\}/.exec(sheet);
+    assert.ok(rule, 'ต้องมีกฎตรึงแถบปุ่มในเงื่อนไขจอมือถือ');
+    assert.match(rule[1], /position: sticky/);
+    // ถ้าไม่ยกสูงกว่าแถบเมนูล่าง ปุ่มจะไปซ้อนใต้แถบนั้นแล้วกดไม่โดน
+    assert.match(rule[1], /bottom: calc\(var\(--bottom-nav-h\)/);
+    assert.ok(start > 0);
+  });
+
+  test('จอคอมฯ ต้องไม่มีแถบตรึง — กฎอยู่ในเงื่อนไขจอมือถือเท่านั้น', () => {
+    const sheet = css();
+    const mobileStart = sheet.indexOf('@media (max-width: 899px)');
+    const outside = sheet.slice(0, mobileStart);
+    assert.ok(!/\.action-buttons \{[^}]*position: sticky/.test(outside),
+      'ห้ามตรึงแถบปุ่มนอกเงื่อนไขจอมือถือ');
+  });
+});
+
 test('cleanup: remove the throwaway test database file', () => {
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });

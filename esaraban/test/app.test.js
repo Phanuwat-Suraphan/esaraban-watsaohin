@@ -1216,6 +1216,31 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
     assert.deepEqual(offenders, [], `ฟอร์ม/fetch ที่ยิงไปยังเส้นทางที่ไม่มีอยู่:\n  ${offenders.join('\n  ')}`);
   });
 
+  // ลิงก์ก็เงียบแบบเดียวกัน แต่แย่กว่า เพราะผู้ใช้เห็นหน้า 404 เต็มๆ แล้วไม่รู้ว่าต้องไปไหนต่อ
+  // เจอจริง: หน้าแจ้งเตือนเข้าไลน์ชี้ไป /backups ทั้งที่เส้นทางจริงคือ /admin/backups ตั้งแต่ตอนย้าย
+  // หน้าสำเนาสำรองไปอยู่ใต้ /admin — คนที่กดตามคำแนะนำ "ดูว่าการสำรองทำงานอยู่จริงหรือไม่" จะเจอ 404
+  test('ทุกลิงก์ภายในต้องชี้ไปยังเส้นทางที่ router รู้จักจริง', async () => {
+    const matchesRoute = (path) => router.routes.some((r) => r.method === 'GET' && r.regex.test(path));
+    const offenders = [];
+    const seen = new Set();
+    for (const code of ['admin', 'director01', 'reg001', 'teacher001']) {
+      const user = userAs(code);
+      for (const pathname of [...pages, ...detailPages]) {
+        const res = await openPage(pathname, user);
+        if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
+        // เอาเฉพาะลิงก์ภายในที่เป็นสตริงตายตัวล้วน — ลิงก์นอก (https://…) และลิงก์ที่ต่อกับตัวแปรเดาไม่ได้
+        for (const m of res.body.matchAll(/<a[^>]*\bhref="(\/[^"'`${}]*)"/g)) {
+          const path = m[1].split('?')[0].split('#')[0];
+          if (!path || seen.has(path)) continue;
+          seen.add(path);
+          if (!matchesRoute(path)) offenders.push(`${pathname} (${code}) -> ${path}`);
+        }
+      }
+    }
+    assert.ok(seen.size > 20, `ตรวจน้อยเกินไป (${seen.size} ลิงก์)`);
+    assert.deepEqual(offenders, [], `ลิงก์ที่กดแล้วได้ 404:\n  ${offenders.join('\n  ')}`);
+  });
+
   // ทั้งระบบใช้ปีพุทธศักราชและชื่อเดือนไทย ถ้าที่ไหนลืมแปลง วันที่ดิบจากฐานข้อมูล (2026-08-25) จะโผล่มา
   // ให้ครูอ่านเอง ซึ่งเป็น ค.ศ. และเรียงคนละแบบ — เคยหลุดมาแล้วทั้งหน้ารายละเอียดเอกสาร หน้าลา
   // หน้ามอบหมายรักษาการแทน และหน้าอายุการเก็บ เพราะไม่มีอะไรคอยจับ
@@ -13060,13 +13085,26 @@ describe('มือถือ: ขนาดที่นิ้วแตะได�
   });
 
   // กฎของจอ 320px ต้องอยู่หลังกฎของจอ ≤899px เสมอ เพราะความเฉพาะเจาะจงเท่ากัน ตัวที่อยู่หลังชนะ
-  // — วางสลับกันแล้ววัดจริงพบว่าตัวอักษรแถบล่างยังเป็นค่าของจอใหญ่อยู่
+  // — วางสลับกันแล้ววัดจริงพบว่าปุ่มบนแถบบนสุดยังเป็นค่าของจอใหญ่อยู่
   test('กฎของจอแคบมากต้องอยู่หลังกฎของจอมือถือทั่วไป ไม่งั้นไม่มีผล', () => {
     const s = css();
-    const lastPhone = s.lastIndexOf('@media (max-width: 899px)');
-    const narrowBottomNav = s.indexOf('.bottom-nav a { font-size: .71rem; }');
-    assert.ok(narrowBottomNav > lastPhone,
-      'กฎ 320px ของแถบล่างต้องอยู่หลังบล็อก 899px ตัวสุดท้าย');
+    // เทียบกับบล็อก 899px ตัวที่ตั้งค่าเดียวกัน ไม่ใช่ตัวสุดท้ายในไฟล์ — บล็อก 899px ตัวหลังๆ
+    // คุมคนละเรื่อง (แถบปุ่มติดท้ายจอ) จึงไม่เกี่ยวกับการทับค่าของจอแคบ
+    const sized = s.indexOf('.hamburger-btn, .icon-btn { width: 44px; height: 44px;');
+    const narrow = s.indexOf('.hamburger-btn, .icon-btn { width: 40px; height: 40px; }');
+    assert.ok(sized !== -1 && narrow > sized,
+      'กฎ 320px ของปุ่มแถบบนสุดต้องอยู่หลังกฎ 44px ของจอมือถือทั่วไป');
+  });
+
+  // เคยลดตัวอักษรแถบล่างเหลือ .71rem (11.36px) บนจอ 320px เพราะเข้าใจผิดว่าคำยาวเกิน ที่จริง
+  // แถบล่างกว้างตาม .app-shell ที่ถูกอย่างอื่นดันจนเกินจอ แก้ต้นเหตุแล้วจึงไม่ต้องลดขนาดอีก
+  test('ไม่มีกฎไหนลดตัวอักษรแถบล่างต่ำกว่า 12px อีก', () => {
+    const m = [...css().matchAll(/\.bottom-nav a \{ font-size: \.(\d+)rem; \}/g)];
+    assert.ok(m.length, 'ต้องมีกฎกำหนดขนาดตัวอักษรแถบล่างบนมือถือ');
+    for (const [, digits] of m) {
+      const px = Number('.' + digits) * 16;
+      assert.ok(px >= 12, `แถบล่างเป็นทางเข้าหลักของทุกหน้าบนมือถือ ต้องไม่เล็กกว่า 12px (พบ ${px}px)`);
+    }
   });
 
   // ช่องแนบไฟล์กว้างตามเนื้อในของตัวเอง ไม่ได้รับ width:100% เหมือน input ชนิดอื่น
@@ -13075,6 +13113,59 @@ describe('มือถือ: ขนาดที่นิ้วแตะได�
     assert.match(css(), /input\[type=file\] \{ max-width: 100%; \}/);
     const typed = /input\[type=text\][^{]*\{[^}]*width: 100%/.test(css());
     assert.ok(typed, 'กฎ width:100% ของ input ชนิดอื่นยังต้องอยู่ (ตัวที่ไม่ครอบถึง file)');
+  });
+
+  // วัดด้วยเบราว์เซอร์จริงบนจอ 320px แล้วพบสามหน้าที่เลื่อนซ้ายขวาได้ทั้งหน้า (หน้าเชื่อมต่อ
+  // Google Drive ล้น 38px, หน้าแจ้งเตือนเข้าไลน์ล้น 13px, หน้าสรุปงานประจำวันล้น 18px)
+  // ต้นเหตุคนละตัวแต่กลไกเดียวกัน: กล่องที่ "ไม่ยอมแคบกว่าเนื้อในของตัวเอง"
+  test('คอลัมน์ในฟอร์มต้องแคบกว่าเนื้อในได้ ไม่งั้นช่องวันที่ดันทั้งหน้าเลื่อนซ้ายขวา', () => {
+    const s = css();
+    assert.match(s, /\.form-grid \{ display: grid; grid-template-columns: minmax\(0, 1fr\);/,
+      '1fr เปล่าๆ มีความกว้างต่ำสุด = ความกว้างต่ำสุดของเนื้อใน ช่อง input[type=date] จึงดันคอลัมน์เกินการ์ด');
+    assert.doesNotMatch(s, /\.form-grid\.cols-[23] \{ grid-template-columns: 1fr/,
+      'คอลัมน์ของ cols-2/cols-3 ต้องใช้ minmax(0,1fr) ด้วย ไม่งั้นจอ 640px ขึ้นไปก็ล้นแบบเดียวกัน');
+  });
+
+  test('ตารางป้ายกำกับ-ค่า ต้องตัดกลางคำได้ ไม่งั้นชื่อตัวแปรยาวๆ ดันทั้งหน้า', () => {
+    const s = css();
+    assert.match(s, /\.table-plain td, \.table-plain th \{ overflow-wrap: anywhere; \}/,
+      'GOOGLE_OAUTH_CLIENT_ID เป็นคำเดียวยาวไม่มีช่องว่าง ถ้าตัดกลางคำไม่ได้ตารางจะกว้างเท่าคำนั้นเสมอ');
+    assert.match(s, /\.table-plain \.badge \{ max-width: 100%; overflow-wrap: anywhere; \}/,
+      'ป้ายสถานะเป็น inline-flex ที่ไม่ยอมแคบกว่าข้อความข้างในถ้าไม่สั่ง');
+  });
+
+  // ตัดกลางคำได้อย่างเดียวไม่พอ: ช่องป้ายกำกับตั้ง width:1% ไว้ พอตัดกลางคำได้ "แคบที่สุด" ก็เหลือ
+  // กว้างหนึ่งตัวอักษร ดูภาพจริงแล้ว STORAGE_PROVIDER เรียงลงมาทีละตัวอักษร — เลขวัดว่าไม่ล้นแล้ว
+  // แต่ไม่ได้แปลว่าอ่านได้ ต้องคลี่เป็นป้ายกำกับบน/ค่าล่างบนจอแคบ
+  test('ตารางป้ายกำกับ-ค่า ต้องคลี่เป็นสองบรรทัดบนจอแคบ ไม่ใช่บีบคอลัมน์จนเหลือตัวอักษรเดียว', () => {
+    const s = css();
+    const at = s.indexOf('@media (max-width: 639px)');
+    assert.ok(at !== -1, 'ต้องมีกฎจอแคบสำหรับตารางป้ายกำกับ-ค่า');
+    const block = s.slice(at, s.indexOf('\n}', s.indexOf('\n}', at) + 2) + 2);
+    assert.match(block, /\.table-plain td \{[^}]*display: block|\.table-plain[^{]*, \.table-plain td \{ display: block/,
+      'ช่องในตารางต้องกลายเป็น block เพื่อให้ค่าได้ความกว้างเต็มการ์ด');
+    assert.match(block, /\.table-plain td:first-child \{ width: auto;/,
+      'ต้องล้าง width:1% ของช่องป้ายกำกับ ไม่งั้นมันยังบีบตัวเองจนเหลือตัวอักษรเดียว');
+    // ต้องมาหลังกฎ width:1% ของจอกว้าง ไม่งั้นไม่มีผล (ความเฉพาะเจาะจงเท่ากัน ตัวหลังชนะ)
+    assert.ok(at > s.indexOf('.table-plain td:first-child { width: 1%; }'),
+      'กฎจอแคบต้องอยู่หลังกฎ width:1% ของจอกว้าง');
+  });
+
+  test('ป้ายที่ครอบช่องกลม/ช่องติ๊ก ต้องสูงพอจะแตะได้บนมือถือ', () => {
+    assert.match(phoneBlocks(),
+      /label:has\(> input\[type=radio\]\), label:has\(> input\[type=checkbox\]\) \{ min-height: 44px; \}/,
+      'ช่องกลมของเบราว์เซอร์สูง 22px และขยายเองไม่ได้ — ต้องขยายป้ายที่ครอบมันแทน');
+  });
+
+  // หน้าพิมพ์ทะเบียน/บันทึกข้อความเป็นหน้ายืนเดี่ยว มี <style> ของตัวเองและไม่ได้โหลด style.css
+  // เกณฑ์เป้าแตะของทั้งระบบจึงไม่มีผล ต้องเขียนซ้ำในแต่ละหน้า — เทสต์นี้กันการลืมเมื่อเพิ่มหน้าใหม่
+  test('แถบปุ่มของหน้าพิมพ์ต้องถึง 44px บนมือถือด้วย', () => {
+    for (const f of ['../src/routes/documents.js', '../src/routes/schoolOrders.js']) {
+      const src = fs.readFileSync(new URL(f, import.meta.url), 'utf8');
+      const decls = [...src.matchAll(/\.toolbar button, \.toolbar a \{(?! min-height)/g)].length;
+      const guards = [...src.matchAll(/\.toolbar button, \.toolbar a \{ min-height: 44px;/g)].length;
+      assert.equal(guards, decls, `${f}: ทุกหน้าพิมพ์ที่มีแถบปุ่ม ต้องมีกฎ 44px ของตัวเองครบ`);
+    }
   });
 
   test('จอคอมฯ ต้องไม่ถูกขยายตาม — กฎทั้งหมดอยู่ในเงื่อนไขจอเล็กเท่านั้น', () => {

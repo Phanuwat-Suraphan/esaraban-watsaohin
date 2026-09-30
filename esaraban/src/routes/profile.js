@@ -28,8 +28,11 @@ function lineSection(ctx) {
       <h3 style="margin-top:1.2rem">💬 แจ้งเตือนเข้าไลน์</h3>
       <p class="text-muted" style="font-size:.85rem">
         ระบบยังไม่ได้เชื่อมกับบัญชีทางการของ LINE ของโรงเรียน
-        ${ctx.user.roleCodes.includes('admin') ? 'ตั้งค่าได้ที่หน้า <a href="/admin/line">แจ้งเตือนเข้าไลน์</a>' : 'แจ้งผู้ดูแลระบบให้เปิดใช้งานได้'}
-      </p>`;
+        ${ctx.user.roleCodes.includes('admin') ? '' : 'แจ้งผู้ดูแลระบบให้เปิดใช้งานได้'}
+      </p>
+      <!-- ปุ่ม ไม่ใช่ลิงก์กลางประโยค — ลิงก์กลางประโยคสูงแค่ 15px บนมือถือ แตะพลาดง่าย -->
+      ${ctx.user.roleCodes.includes('admin')
+        ? '<a class="btn btn-outline btn-sm" href="/admin/line">💬 ไปตั้งค่าแจ้งเตือนเข้าไลน์</a>' : ''}`;
   }
   if (st.linked) {
     return `

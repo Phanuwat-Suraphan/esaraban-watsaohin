@@ -404,9 +404,10 @@ function renderAppShell({ user, currentPath, content, flash, avatar }) {
         👋 <strong>ระบบเพิ่งติดตั้งใหม่</strong> — รหัสตั้งต้นของทุกบัญชียังแสดงอยู่บนหน้าเข้าสู่ระบบ
         ใครเปิดลิงก์นี้เจอก็เข้าระบบได้
         <div style="font-size:.82rem;margin-top:.25rem">
-          จะหายไปเองทันทีที่ลงทะเบียนหนังสือฉบับแรก — หรือให้ทุกคนตั้งรหัสของตัวเองที่
-          <a href="/profile">โปรไฟล์ของฉัน</a> ก่อนเริ่มใช้งานจริง
+          จะหายไปเองทันทีที่ลงทะเบียนหนังสือฉบับแรก — หรือให้ทุกคนตั้งรหัสของตัวเองก่อนเริ่มใช้งานจริง
         </div>
+        <!-- แยกออกมาเป็นปุ่ม ไม่ใช่ลิงก์แทรกกลางประโยค — ลิงก์แทรกกลางประโยคสูงแค่ 15px บนมือถือ -->
+        <div style="margin-top:.4rem"><a class="btn btn-outline btn-sm" href="/profile">👤 ไปตั้งรหัสของตัวเอง</a></div>
       </div>` : '')}
       ${flash ? `<div class="alert alert-${flash.type}">${esc(flash.message)}</div>` : ''}
       ${content}

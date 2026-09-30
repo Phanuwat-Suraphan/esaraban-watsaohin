@@ -293,9 +293,11 @@ router.get('/', requirePage((ctx) => {
         ${checklist.items.map((i) => `<li style="margin-bottom:.7rem">
           <strong>${i.blocking ? '⚠️ ' : ''}${esc(i.title)}</strong>
           <div class="text-muted" style="font-size:.85rem">${esc(i.detail)}</div>
-          <div style="font-size:.85rem;margin-top:.2rem">${i.href
-            ? `<a href="${esc(i.href)}">${esc(i.action)} →</a>`
-            : esc(i.action)}</div>
+          <!-- ลิงก์ "สิ่งที่ต้องกดต่อ" ของแต่ละข้อ ต้องเป็นปุ่ม ไม่ใช่ลิงก์ในบรรทัดข้อความ — ลิงก์เปล่า
+               สูงแค่ 15px วัดจริงบนมือถือ ซึ่งเล็กเกินจะแตะแม่น (.btn-sm บนจอเล็กสูง 44px อยู่แล้ว) -->
+          <div style="margin-top:.35rem">${i.href
+            ? `<a class="btn btn-outline btn-sm" href="${esc(i.href)}">${esc(i.action)} →</a>`
+            : `<span class="text-muted" style="font-size:.85rem">${esc(i.action)}</span>`}</div>
         </li>`).join('')}
       </ol>
     </div>`;

@@ -310,6 +310,10 @@ router.get('/orders/register', requirePage((ctx) => {
     font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid #888;
     background: #f3f3f3; color: #000; cursor: pointer; text-decoration: none;
   }
+  /* หน้ายืนเดี่ยว ไม่ได้โหลด public/style.css จึงต้องเขียนเกณฑ์เป้าแตะ 44px ซ้ำเอง */
+  @media (max-width: 899px) {
+    .toolbar button, .toolbar a { min-height: 44px; display: inline-flex; align-items: center; }
+  }
   .paper-note { align-self: center; font-size: 12px; color: #333; }
   .empty { padding: 2rem; text-align: center; color: #555; }
   .cut-warn { border: 2px solid #000; padding: .6rem .8rem; margin-bottom: 1rem; font-size: 13px; font-weight: 700; text-align: center; }

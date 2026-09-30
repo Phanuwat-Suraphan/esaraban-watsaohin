@@ -331,10 +331,16 @@ input[type=text], input[type=password], input[type=date], input[type=email], inp
 }
 textarea { resize: vertical; min-height: 80px; }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
-.form-grid { display: grid; grid-template-columns: 1fr; gap: 0 1rem; }
-@media (min-width: 640px) { .form-grid.cols-2 { grid-template-columns: 1fr 1fr; } }
-@media (min-width: 640px) { .form-grid.cols-3 { grid-template-columns: 1fr 1fr; } }
-@media (min-width: 900px) { .form-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; } }
+/* ต้องเป็น minmax(0, 1fr) ไม่ใช่ 1fr เปล่าๆ — 1fr มีความกว้างต่ำสุดเท่ากับ "ความกว้างต่ำสุดของ
+   เนื้อใน" โดยปริยาย ช่องกรอกบางชนิดจึงดันคอลัมน์ให้กว้างเกินการ์ดแล้วทั้งหน้าเลื่อนซ้ายขวาได้
+   วัดจริงบนจอ 320px ที่หน้าสรุปงานประจำวัน: ช่อง <input type="date"> ของเบราว์เซอร์ขอความกว้าง
+   ต่ำสุด 303px ทั้งที่การ์ดกว้าง 251px จึงล้นออกไป 18px และ "ทุกหน้า" ขยับตามเพราะแถบเมนูล่าง
+   วางตัวตามความกว้างของ .app-shell ไม่ใช่ความกว้างจอ — minmax(0,…) ยอมให้คอลัมน์แคบกว่าเนื้อใน
+   แล้ว width:100% ของช่องกรอกก็หดตามการ์ดได้ตามที่ตั้งใจไว้แต่แรก */
+.form-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 1rem; }
+@media (min-width: 640px) { .form-grid.cols-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+@media (min-width: 640px) { .form-grid.cols-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+@media (min-width: 900px) { .form-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 /* ช่องติ๊กที่มีข้อความอยู่ข้างๆ — label ปกติเป็น block ถ้าไม่คุมจะดันข้อความลงบรรทัดใหม่ */
 .check-inline {
   display: flex; align-items: center; gap: .45rem; font-weight: 600;
@@ -869,6 +875,29 @@ th.wrap, td.wrap { white-space: normal; min-width: 13rem; }
    "ปกติ (อย่างน้อย 10 ปี) (ครบกำหนด 31 ธันวาคม 2579)" ยาวเกินความกว้างจอมือถือ ถ้า nowrap จะล้นออกนอกการ์ด */
 .table-plain td { white-space: normal; }
 .table-plain td:first-child { width: 1%; }
+/* ตัดกลางคำได้ด้วย ไม่ใช่แค่ตัดตรงช่องว่าง — ค่าในตารางนี้เป็นชื่อตัวแปร/ชื่อบริการที่เป็นคำเดียว
+   ยาวๆ ไม่มีช่องว่าง (GOOGLE_OAUTH_CLIENT_ID, google_drive) เบราว์เซอร์จึงถือว่าตารางต้องกว้าง
+   อย่างน้อยเท่าคำนั้น แล้วดันทั้งหน้าให้เลื่อนซ้ายขวาได้ วัดจริงบนจอ 320px: หน้าเชื่อมต่อ Google
+   Drive ล้น 38px หน้าแจ้งเตือนเข้าไลน์ล้น 13px — ป้ายสถานะต้องคุมความกว้างด้วย เพราะเป็น
+   inline-flex ที่ไม่ยอมแคบกว่าข้อความข้างในถ้าไม่สั่ง */
+.table-plain td, .table-plain th { overflow-wrap: anywhere; }
+.table-plain .badge { max-width: 100%; overflow-wrap: anywhere; }
+
+/* แต่ลำพัง overflow-wrap ยังไม่พอ: ช่องป้ายกำกับตั้ง width:1% ไว้ให้แคบที่สุดเท่าที่เนื้อในยอม
+   พอเนื้อในตัดกลางคำได้ "แคบที่สุด" ก็กลายเป็นกว้างหนึ่งตัวอักษร — ดูภาพจริงบนจอ 320px แล้ว
+   STORAGE_PROVIDER เรียงลงมาเป็นแนวตั้งทีละตัวอักษรยาวครึ่งหน้าจอ (เลขวัดบอกว่า "ไม่ล้นแล้ว"
+   ซึ่งจริง แต่ไม่ได้แปลว่าอ่านได้)
+
+   บนจอแคบจึงคลี่ออกเป็นสองบรรทัด ป้ายกำกับอยู่บน ค่าอยู่ล่าง เต็มความกว้างการ์ดทั้งคู่ —
+   ตารางพวกนี้เป็นคู่ "ป้ายกำกับ + ค่า" ทั้งหมด ไม่ใช่ตารางที่ต้องเทียบกันตามคอลัมน์
+   (ตัดที่ 639px ให้ต่อกับกฎ min-width:640px ด้านบนที่บังคับป้ายกำกับอยู่บรรทัดเดียวบนจอกว้าง) */
+@media (max-width: 639px) {
+  .table-plain, .table-plain tbody, .table-plain tr, .table-plain td { display: block; width: auto; }
+  .table-plain tr { padding: .45rem 0; border-bottom: 1px solid var(--border); }
+  .table-plain tr:last-child { border-bottom: 0; }
+  .table-plain td { border: 0; padding: 0; }
+  .table-plain td:first-child { width: auto; font-size: .82rem; margin-bottom: .15rem; }
+}
 /* บนจอแคบ ป้ายกำกับต้องตัดบรรทัดได้ด้วย ไม่งั้นป้ายยาวๆ อย่าง GOOGLE_OAUTH_CLIENT_ID / SECRET
    จะดันตารางจนล้นออกนอกจอมือถือ — บนจอกว้างค่อยบังคับให้อยู่บรรทัดเดียวเพื่อความเป็นระเบียบ */
 @media (min-width: 640px) { .table-plain td:first-child { white-space: nowrap; } }
@@ -1155,10 +1184,12 @@ code { overflow-wrap: anywhere; }
 
 /* จอแคบมาก (320-360px ซึ่งยังมีใช้จริงในโรงเรียน) ของบนแถบบนสุดรวมกันจะกว้างเกินจอถ้าใช้ 44px
    ทุกปุ่ม — ลดลงมาที่ 40px ซึ่งยังมากกว่าเดิม (38px) และคงไม่ให้ทั้งหน้าเลื่อนซ้ายขวาได้
-   (ปุ่มลัดคีย์บอร์ดถูกซ่อนไปแล้วในกฎ 360px ด้านบน เพราะมือถือไม่มีคีย์บอร์ดอยู่แล้ว) */
+   (ปุ่มลัดคีย์บอร์ดถูกซ่อนไปแล้วในกฎ 360px ด้านบน เพราะมือถือไม่มีคีย์บอร์ดอยู่แล้ว)
+
+   รูปโปรไฟล์เคยถูกลดเหลือ 36px ในกฎนี้ด้วย วัดจริงใหม่บนจอ 320px แล้วพบว่าที่ 40px แถบบนสุด
+   ยังไม่ล้น (ปุ่มลัดคีย์บอร์ดหายไปแล้วจึงมีที่ว่างพอ) จึงเอาออก ให้ใช้ 40px เท่ากับจอมือถือทั่วไป */
 @media (max-width: 360px) {
   .hamburger-btn, .icon-btn { width: 40px; height: 40px; }
-  .avatar { width: 36px; height: 36px; }
   .topbar-search { height: 40px; }
 }
 
@@ -1173,6 +1204,10 @@ code { overflow-wrap: anywhere; }
      เพราะมีสระบนล่าง — ขยับขึ้นให้พ้น 12px โดยยังพอดีห้าช่องบนจอ 320px */
   .bottom-nav a { font-size: .76rem; }
   .sidebar-brand span { font-size: .8rem !important; }
+  /* ช่องกลม/ช่องติ๊กของเบราว์เซอร์สูงแค่ 22px และขยายตัวมันเองไม่ได้ (Chromium ไม่สนใจ padding
+     ของ input ชนิดนี้) — ขยาย <label> ที่ครอบมันแทน เพราะแตะที่ป้ายก็เลือกได้เหมือนกัน
+     ที่เจอจริง: ช่องเลือกสีลายเซ็นในหน้าโปรไฟล์ สองวงอยู่ติดกัน กดพลาดเป็นอีกสีได้ง่ายมาก */
+  label:has(> input[type=radio]), label:has(> input[type=checkbox]) { min-height: 44px; }
 }
 
 
@@ -1197,12 +1232,13 @@ input[type=file] { max-width: 100%; }
   }
 }
 
-/* ต้องอยู่ท้ายไฟล์: กฎของจอ 320px ต้องมาหลังกฎของจอ ≤899px ทุกตัว เพราะความเฉพาะเจาะจงเท่ากัน
-   ตัวที่อยู่หลังจึงชนะ — วางไว้ก่อนแล้ววัดจริงพบว่าตัวอักษรแถบล่างยังเป็น 12.16px บนจอ 320px
+/* เคยมีกฎ @media (max-width: 360px) ลดตัวอักษรแถบล่างเหลือ .71rem (11.36px) อยู่ตรงนี้ เพราะวัดแล้ว
+   เห็นแถบล่างกว้าง 338px บนจอ 320px เลยสรุปว่าคำว่า "งานของฉัน" ยาวเกิน — สรุปผิด
 
-   แถบล่างมีห้าช่อง เหลือช่องละ 64px บนจอ 320px — ที่ .76rem คำว่า "งานของฉัน" กว้างเกินจนดัน
-   ทั้งแถบเป็น 338px แล้ว "ทุกหน้า" เลื่อนซ้ายขวาได้ 18px ลดลงมาที่ .71rem ซึ่งยังใหญ่กว่าของเดิม
-   (.68rem) และพอดีจอ — ตัดคำด้วยจุดไข่ปลาไม่ได้ เพราะ "งานขอ…" อ่านไม่รู้เรื่อง */
-@media (max-width: 360px) {
-  .bottom-nav a { font-size: .71rem; }
-}
+   ที่จริงแถบล่างเป็น position: fixed อยู่ใน .app-shell จึงวางตัวตามความกว้างของ .app-shell ไม่ใช่
+   ความกว้างจอ หน้าไหนที่มีอย่างอื่นดันให้กว้างเกินจอ (ตารางในหน้าเชื่อมต่อ Google Drive, ช่องวันที่
+   ในหน้าสรุปงานประจำวัน) แถบล่างก็กว้างตามไปด้วย แถบล่างเป็นเหยื่อ ไม่ใช่ต้นเหตุ
+
+   แก้ต้นเหตุจริง (minmax(0,1fr) ของ .form-grid และ overflow-wrap ของ .table-plain ด้านบน) แล้ว
+   วัดซ้ำบนจอ 320px: ที่ .76rem (12.16px) ทั้งห้าคำอยู่บรรทัดเดียวครบ ไม่ถูกตัด และหน้าไม่ล้น
+   จึงไม่ต้องลดขนาดอีกต่อไป — ตัวอักษรแถบล่างพ้นเกณฑ์ 12px ทุกจอแล้ว */

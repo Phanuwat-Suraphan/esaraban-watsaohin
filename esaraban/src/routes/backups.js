@@ -75,8 +75,9 @@ router.get('/admin/backups', requireRole(...CAN_MANAGE)(requirePage(async (ctx) 
       user: ctx.user, title: 'สำเนาสำรองฐานข้อมูล', path: '/admin/backups',
       content: `<h2>💾 สำเนาสำรองฐานข้อมูล</h2>
         <div class="alert alert-warning">
-          ยังไม่ได้เปิดใช้การสำรองขึ้น Google Drive — ไปที่
-          <a href="/admin/google-drive">เชื่อมต่อ Google Drive</a> ก่อน
+          ยังไม่ได้เปิดใช้การสำรองขึ้น Google Drive
+          <!-- ปุ่ม ไม่ใช่ลิงก์กลางประโยค — ลิงก์กลางประโยคสูง 16px บนมือถือ ซึ่งแตะพลาดง่าย -->
+          <div style="margin-top:.5rem"><a class="btn btn-outline btn-sm" href="/admin/google-drive">🗂️ ไปหน้าเชื่อมต่อ Google Drive</a></div>
         </div>`,
     }));
   }

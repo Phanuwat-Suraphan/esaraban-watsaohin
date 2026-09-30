@@ -106,11 +106,13 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           </div>
           <div class="help-text">
             ระบบจะสรุป<strong>งานที่เลยกำหนด/ครบกำหนดวันนี้/ใกล้ครบกำหนด</strong>ส่งให้เจ้าตัวเป็นข้อความเดียวต่อวัน
-            (เข้าทั้งกระดิ่งในระบบและไลน์ของคนที่ผูกบัญชีไว้) — ไม่เตือนวันเสาร์-อาทิตย์และวันหยุดที่ตั้งไว้ใน
-            <a href="/admin/holidays">ปฏิทินวันหยุด</a>
+            (เข้าทั้งกระดิ่งในระบบและไลน์ของคนที่ผูกบัญชีไว้) — ไม่เตือนวันเสาร์-อาทิตย์และวันหยุดที่ตั้งไว้ในปฏิทินวันหยุด
           </div>
+          <!-- ลิงก์ไปปฏิทินวันหยุดเคยแทรกอยู่กลางประโยคด้านบน ซึ่งสูงแค่ 15px บนมือถือ แตะยาก —
+               ย้ายลงมาเป็นชิปในแถวเดียวกับปุ่มอื่น ที่มี min-height 44px บนจอเล็กอยู่แล้ว -->
           <div class="chip-row" style="margin-top:.4rem">
             <button class="btn btn-outline btn-sm" type="button" onclick="testReminder(this)">🔔 ส่งตัวอย่างให้ตัวเองดูเดี๋ยวนี้</button>
+            <a class="btn btn-outline btn-sm" href="/admin/holidays">🎌 ปฏิทินวันหยุด</a>
           </div>
         </div>
         <button class="btn btn-primary" type="submit">บันทึก</button>

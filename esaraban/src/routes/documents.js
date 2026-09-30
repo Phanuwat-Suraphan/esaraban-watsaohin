@@ -1369,6 +1369,11 @@ router.get('/documents/register', requirePage((ctx) => {
     font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid #888;
     background: #f3f3f3; color: #000; cursor: pointer; text-decoration: none;
   }
+  /* หน้าพิมพ์เป็นหน้ายืนเดี่ยว ไม่ได้โหลด public/style.css จึงไม่ได้รับเกณฑ์เป้าแตะ 44px ของทั้งระบบ
+     ต้องเขียนซ้ำเองที่นี่ — วัดจริงบนมือถือ ปุ่มแถบนี้สูงแค่ 34px ทั้งที่ธุรการกดพิมพ์ทะเบียนจากมือถือจริง */
+  @media (max-width: 899px) {
+    .toolbar button, .toolbar a { min-height: 44px; display: inline-flex; align-items: center; }
+  }
   .empty { padding: 2rem; text-align: center; color: #555; }
   /* คำเตือนว่าทะเบียนถูกตัด ต้องติดไปกับกระดาษที่พิมพ์ออกมาด้วย ไม่ใช่เห็นแค่บนจอ —
      ไม่งั้นคนที่หยิบกระดาษไปเก็บเข้าแฟ้มจะเข้าใจว่าเป็นทะเบียนฉบับสมบูรณ์ */
@@ -1547,6 +1552,10 @@ router.get('/documents/:id/print', requirePage((ctx) => {
   body { font-family: "Noto Sans Thai", "TH Sarabun New", "Sarabun", sans-serif; font-size: 16pt; line-height: 1.7; max-width: 210mm; margin: 0 auto; padding: 20mm 20mm; color: #111; }
   .toolbar { display: flex; justify-content: flex-end; gap: .5rem; margin-bottom: 1.5rem; }
   .toolbar button, .toolbar a { font-family: inherit; font-size: 11pt; padding: .5rem 1rem; border-radius: 8px; border: 1px solid #ccc; background: #f4f4f4; cursor: pointer; text-decoration: none; color: #111; }
+  /* หน้ายืนเดี่ยว ไม่ได้โหลด public/style.css จึงต้องเขียนเกณฑ์เป้าแตะ 44px ซ้ำเอง */
+  @media (max-width: 899px) {
+    .toolbar button, .toolbar a { min-height: 44px; display: inline-flex; align-items: center; }
+  }
   h1 { text-align: center; font-size: 22pt; margin: 0 0 1.2rem; }
   .header-row { display: flex; justify-content: space-between; gap: 1rem; }
   .field-label { font-weight: 700; }

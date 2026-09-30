@@ -8,6 +8,7 @@ import { getBackupStatus } from '../services/dbBackup.js';
 import { appShortName } from '../services/settings.js';
 import { pendingChaseGroups } from '../services/documentQuery.js';
 import { unassignedIncoming } from '../services/unassigned.js';
+import { unstampedIncoming } from '../services/unstamped.js';
 import { pendingBroadcasts } from '../services/broadcastReads.js';
 // เงื่อนไข "งานของฉัน" กับลำดับของคิว อยู่ที่ services/myQueue.js ที่เดียว เพราะหน้านี้ ตัวบอกตำแหน่ง
 // บนหน้าเอกสาร ("ฉบับที่ 3 จาก 8") และการเด้งไปฉบับถัดไปหลังกดเสร็จ ต้องเรียงเหมือนกันเป๊ะ
@@ -260,6 +261,34 @@ router.get('/', requirePage((ctx) => {
     </div>`;
 
   /**
+   * หนังสือเข้าที่มีไฟล์ PDF แล้วแต่ยังไม่ได้ปั๊มตรารับลงไฟล์ (ดูเหตุผลเต็มใน services/unstamped.js)
+   *
+   * ต้องอยู่บนแดชบอร์ดเพราะการลืมปั๊มไม่มีอาการอะไรให้เห็นเลย — หนังสือเดินหน้าไปตามปกติทุกอย่าง
+   * สิ่งเดียวที่ผิดคือไฟล์ที่คนอื่นเปิดดูไม่มีเลขรับ ซึ่งคนที่ลืมไม่มีวันเห็นเองเพราะไม่ได้เปิดไฟล์ซ้ำ
+   */
+  const unstamped = unstampedIncoming(user, visible);
+  const unstampedAlert = !unstamped.total ? '' : `
+    <div class="alert ${unstamped.sentUpCount ? 'alert-danger' : 'alert-warning'}" id="unstampedAlert">
+      <strong>🖋️ หนังสือเข้า ${fmtCount(unstamped.total)} ฉบับยังไม่ได้ปั๊มตรารับลงในไฟล์ PDF</strong>
+      <div style="margin-top:.35rem;font-size:.9rem">
+        ${unstamped.sentUpCount
+    ? `ในนั้น <strong>${fmtCount(unstamped.sentUpCount)} ฉบับเสนอขึ้นไปแล้ว</strong> — ผู้รับเรื่องอาจเปิดไฟล์ที่ยังไม่มีตรารับไปแล้ว `
+    : ''}ตรารับคือเลขรับ วันที่ และเวลา ที่ทำให้ไฟล์นั้นเป็นหนังสือที่โรงเรียนรับไว้แล้วตามระเบียบ
+      </div>
+      <ul style="margin:.4rem 0 0;padding-left:1.1rem;font-size:.9rem">
+        ${unstamped.docs.map((d) => `<li style="margin-bottom:.2rem">
+          <a href="/documents/${d.id}">${esc(d.number)} — ${esc(d.title)}</a>
+          ${d.priority !== 'normal' ? priorityBadge(d.priority) : ''}
+          <span class="text-muted">· ${d.sentUp ? 'เสนอขึ้นไปแล้ว' : 'ยังไม่ได้เสนอ — ปั๊มก่อนเสนอได้ทัน'}</span>
+        </li>`).join('')}
+        ${unstamped.hiddenCount ? `<li class="text-muted">และอีก ${fmtCount(unstamped.hiddenCount)} ฉบับ</li>` : ''}
+      </ul>
+      <div style="margin-top:.5rem">
+        <a class="btn btn-primary btn-sm" href="/documents?direction=incoming&unstamped=1">เปิดทะเบียนเพื่อไล่ปั๊มทั้งกอง →</a>
+      </div>
+    </div>`;
+
+  /**
    * หนังสือเวียนที่ยังอ่านไม่ครบ — เฉพาะคนที่แจ้งเวียนได้ เพราะเป็นคนที่ต้องตามต่อ
    *
    * สถิติการอ่านรายฉบับอยู่บนหน้าเอกสารอยู่แล้ว แต่จะช่วยได้เฉพาะตอนที่บังเอิญเปิดฉบับนั้นอยู่พอดี
@@ -307,6 +336,7 @@ router.get('/', requirePage((ctx) => {
     ${backupAlert}
     ${stampAlert}
     ${unassignedAlert}
+    ${unstampedAlert}
     ${circularAlert}
     ${checklistHtml}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}

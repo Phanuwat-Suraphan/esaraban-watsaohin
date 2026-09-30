@@ -11223,6 +11223,27 @@ describe('หนังสือเข้า → กลุ่มไลน์', ()
         'ต้องบอกว่ามีที่ไม่ได้อยู่ในรายการ ไม่งั้นคนอ่านจะนับผิดแล้วคิดว่าครบแล้ว');
     });
 
+    // ข้อความของ LINE ยาวเกิน 5,000 ตัวอักษรแล้วส่งไม่ออกทั้งข้อความ (ไม่ใช่ตัดให้) และข้อความนี้
+    // ยังถูกฝังอยู่ในหน้าทะเบียนของทุกคนที่เปิดดูด้วย — วัดจริงกับวันที่ลงทะเบียน 1,500 ฉบับ
+    // หน้าทะเบียนโตจาก 113 KB เป็น 1,966 KB ทั้งที่ตารางบนหน้ายังแสดง 50 แถวเท่าเดิม
+    test('วันที่ลงทะเบียนเป็นร้อยฉบับ ข้อความต้องไม่ยาวจนส่งไม่ออกและไม่ถ่วงหน้าทะเบียน', () => {
+      const MAX = lineSvc().MAX_DOCS_IN_DIGEST;
+      const many = Array.from({ length: 150 }, (_, i) =>
+        d({ doc_number_display: `${String(i + 1).padStart(4, '0')}/2569`, title: `หนังสือเข้าฉบับที่ ${i + 1}` }));
+      const t = digest(many);
+      assert.equal(t.split('\n').filter((l) => /^\d+\. /.test(l)).length, MAX,
+        `ต้องยกมาไล่ไม่เกิน ${MAX} ฉบับ`);
+      assert.match(t, /^📥 หนังสือเข้าวันที่ .* — 150 ฉบับ/, 'แต่หัวข้อต้องบอกจำนวนจริงทั้งวัน');
+      assert.match(t, new RegExp(`และอีก ${150 - MAX} ฉบับ`), 'ต้องบอกว่าที่เหลือดูในระบบ');
+      assert.ok(t.length < 5000, `ข้อความยาว ${t.length} ตัวอักษร — LINE ส่งได้ไม่เกิน 5,000`);
+    });
+
+    test('ฉบับที่ผู้เรียกไม่ได้ดึงมา ต้องถูกนับรวมในหัวข้อ ไม่ใช่หายไปเฉยๆ', () => {
+      const t = lineSvc().incomingDigestText([d(), d()], '18 กันยายน 2569', { extraCount: 98 });
+      assert.match(t, /— 100 ฉบับ/, 'หัวข้อต้องเป็นจำนวนจริงทั้งวัน ไม่ใช่เท่าที่อ่านมา');
+      assert.match(t, /และอีก 98 ฉบับ/);
+    });
+
     test('หนังสือที่ยกเลิก/ทำลายแล้วต้องไม่อยู่ในสรุป', () => {
       const t = digest([d({ title: 'ยกเลิกไปแล้ว', status: 'voided' }), d({ title: 'ยังใช้ได้' })]);
       assert.ok(!/ยกเลิกไปแล้ว/.test(t), 'ส่งลิงก์ไปก็ไม่มีอะไรให้อ่าน มีแต่ทำให้เข้าใจผิดว่ายังต้องทำ');
@@ -12177,6 +12198,204 @@ describe('หนังสือเข้าที่ยังไม่ได้�
       const after = db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND link_url = '/documents?direction=incoming&unassigned=1'").get(seed.userIds.reg001).c;
       // ธุรการในชุดทดสอบอาจมีงานของตัวเองค้างด้วย ซึ่งกรณีนั้นลิงก์ยังเป็น /tasks ตามเดิมโดยตั้งใจ
       assert.ok(after > before || note.link_url === '/tasks', `ได้ลิงก์ ${note.link_url}`);
+    });
+  });
+});
+
+// ธุรการลืมปั๊มตรารับลงไฟล์ PDF เป็นเรื่องที่เกิดจริงและไม่มีอาการอะไรให้เห็นเลย — หนังสือเดินหน้า
+// ไปตามปกติทุกอย่าง สิ่งเดียวที่ผิดคือไฟล์ที่ ผอ. เปิดดูไม่มีเลขรับ วันที่ และเวลา ซึ่งคนที่ลืมไม่มีวัน
+// เห็นเอง เพราะไม่ได้กลับไปเปิดไฟล์ซ้ำ
+describe('หนังสือเข้าที่ยังไม่ได้ปั๊มตรารับลงไฟล์', () => {
+  let US;
+  let visibleOf;
+  before(async () => {
+    US = await import('../src/services/unstamped.js');
+    const wf = await import('../src/services/workflow.js');
+    visibleOf = (u) => wf.visibleDocumentsSqlFilter(u);
+  });
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const summaryFor = (u) => US.unstampedIncoming(u, visibleOf(u), { limit: 500 });
+  const inSummary = (u, id) => summaryFor(u).docs.some((d) => d.id === id);
+  let n = 0;
+
+  // แนบไฟล์ตรงที่ตาราง ไม่ผ่าน endpoint อัปโหลด — เทสต์นี้สนใจแค่ "มีไฟล์ PDF และปั๊มแล้วหรือยัง"
+  // ส่วนการอัปโหลดจริงมีเทสต์ของตัวเองอยู่แล้ว (และเครื่องที่รันเทสต์ปั๊มจริงไม่ได้ ไม่มี chromium/qpdf)
+  const attach = (documentId, { mime = 'application/pdf', stamped = false, at: created = nowIso() } = {}) => {
+    const id = uuid();
+    db.prepare(`
+      INSERT INTO attachments (id, document_id, filename, storage_provider, filepath, filesize,
+        mime_type, hash_sha256, uploaded_by, created_at, stamped_storage_provider, stamped_filepath, stamped_at)
+      VALUES (?, ?, ?, 'local', ?, 1024, ?, 'x', ?, ?, ?, ?, ?)
+    `).run(id, documentId, `${id}.bin`, `${id}.bin`, mime, registrarUser.id, created,
+      stamped ? 'local' : null, stamped ? `${id}-stamped.pdf` : null, stamped ? nowIso() : null);
+    return id;
+  };
+  const mkIn = (over = {}) => makeDoc({
+    title: `หนังสือเข้าที่ยังไม่ได้ปั๊มตรา ฉบับที่ ${++n} ${Math.random().toString(36).slice(2, 8)}`, ...over,
+  });
+  const withPdf = (over = {}) => { const d = mkIn(over); attach(d.id); return d; };
+
+  test('มีไฟล์ PDF แต่ยังไม่ได้ปั๊ม อยู่ในกอง — ปั๊มแล้วหลุดออกทันที', () => {
+    const doc = mkIn();
+    const attId = attach(doc.id);
+    assert.equal(inSummary(reg(), doc.id), true, 'ยังไม่ปั๊มต้องอยู่ในกอง');
+    db.prepare("UPDATE attachments SET stamped_storage_provider = 'local', stamped_at = ? WHERE id = ?")
+      .run(nowIso(), attId);
+    assert.equal(inSummary(reg(), doc.id), false, 'ปั๊มแล้วต้องหลุดออกจากกอง');
+  });
+
+  test('ยังไม่มีไฟล์ PDF ต้องไม่อยู่ในกอง — กดปั๊มไม่ได้อยู่แล้ว', () => {
+    const noFile = mkIn();
+    assert.equal(inSummary(reg(), noFile.id), false, 'ไม่มีไฟล์เลยต้องไม่นับ');
+    const wordOnly = mkIn();
+    attach(wordOnly.id, { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    assert.equal(inSummary(reg(), wordOnly.id), false, 'มีแต่ไฟล์ Word ก็ปั๊มไม่ได้ ต้องไม่นับ');
+  });
+
+  // ตราลงรับไปลงที่ไฟล์ PDF "ไฟล์แรก" เสมอ ถ้าถามแค่ว่ามีไฟล์ไหนถูกปั๊มบ้างไหม ฉบับที่ปั๊มลงผิดไฟล์
+  // จะหลุดออกจากกองทั้งที่ตัวหนังสือจริงยังไม่มีตรา
+  test('ปั๊มลงไฟล์ที่สองแต่ตัวหนังสือ (ไฟล์แรก) ยังไม่มีตรา ต้องยังอยู่ในกอง', () => {
+    const doc = mkIn();
+    attach(doc.id, { at: '2000-01-01T00:00:00.000Z' });
+    attach(doc.id, { stamped: true, at: '2030-01-01T00:00:00.000Z' });
+    assert.equal(inSummary(reg(), doc.id), true);
+  });
+
+  test('ปิดเรื่อง ยกเลิก ลบ และหนังสือส่ง ต้องไม่ค้างอยู่ในกองนี้', () => {
+    const voided = withPdf();
+    voidDocument({ documentId: voided.id, reason: 'ลงซ้ำ', actorUser: registrarUser });
+    assert.equal(inSummary(reg(), voided.id), false, 'ยกเลิกแล้วต้องไม่นับ');
+
+    const closed = withPdf();
+    db.prepare("UPDATE documents SET status = 'completed' WHERE id = ?").run(closed.id);
+    assert.equal(inSummary(reg(), closed.id), false, 'ปิดเรื่องแล้วต้องไม่นับ');
+
+    const deleted = withPdf();
+    forceDeleteDocument({ documentId: deleted.id, actorUser: adminUser, reason: 'ทดสอบ' });
+    assert.equal(inSummary(reg(), deleted.id), false, 'ลบแล้วต้องไม่นับ');
+
+    const out = makeDoc({ direction: 'outgoing', title: `หนังสือส่งที่ยังไม่ปั๊ม ${++n}` });
+    attach(out.id);
+    assert.equal(inSummary(reg(), out.id), false, 'ตรารับมีเฉพาะหนังสือรับ');
+  });
+
+  test('ไฟล์ที่ถูกทำลายตามระเบียบแล้ว ต้องไม่ลากหนังสือเข้ามาอยู่ในกอง', () => {
+    const doc = mkIn();
+    const attId = attach(doc.id);
+    db.prepare('UPDATE attachments SET destroyed_at = ? WHERE id = ?').run(nowIso(), attId);
+    assert.equal(inSummary(reg(), doc.id), false, 'ไฟล์ไม่มีอยู่จริงแล้ว ปั๊มไม่ได้');
+  });
+
+  test('แยกกองที่เสนอขึ้นไปแล้วออกจากกองที่ยังทันแก้ และเรียงกองที่ด่วนกว่าขึ้นก่อน', () => {
+    const notSent = withPdf();
+    const sent = withPdf();
+    assignStep({ documentId: sent.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+    const s = summaryFor(reg());
+    assert.equal(s.docs.find((d) => d.id === sent.id).sentUp, true);
+    assert.equal(s.docs.find((d) => d.id === notSent.id).sentUp, false);
+    assert.ok(s.sentUpCount >= 1);
+    const firstNotSent = s.docs.findIndex((d) => !d.sentUp);
+    const lastSentUp = s.docs.map((d) => d.sentUp).lastIndexOf(true);
+    assert.ok(lastSentUp < firstNotSent || firstNotSent === -1,
+      'ฉบับที่เสนอไปแล้วต้องอยู่บนสุดทั้งหมด เพราะ ผอ. อาจเปิดไฟล์ที่ไม่มีตราไปแล้ว');
+  });
+
+  test('ครูทั่วไปไม่ต้องเห็นกองนี้ — ปั๊มแทนทั้งเล่มไม่ได้', () => {
+    withPdf();
+    assert.equal(US.canSeeUnstamped(teacher()), false);
+    assert.equal(summaryFor(teacher()).total, 0);
+  });
+
+  // กองนี้ใหญ่ได้จริงต่างจาก "ยังไม่ได้เสนอใคร" — โรงเรียนที่เพิ่งเริ่มใช้ปุ่มปั๊มจะมีทั้งเล่มค้างอยู่
+  // การ์ดบนแดชบอร์ดต้องไม่อ่านทะเบียนทั้งเล่มขึ้นมาก่อนแล้วค่อยตัดเหลือแปดฉบับ
+  test('การ์ดยกมาแสดงเท่าที่กำหนดเท่านั้น ไม่ดึงทั้งกองมาก่อน', () => {
+    for (let i = 0; i < US.MAX_UNSTAMPED_SHOWN + 4; i++) withPdf();
+    const s = US.unstampedIncoming(reg(), visibleOf(reg()));
+    assert.equal(s.docs.length, US.MAX_UNSTAMPED_SHOWN, 'ต้องยกมาไม่เกินที่กำหนด');
+    assert.ok(s.total > s.docs.length, 'แต่ยอดรวมต้องเป็นจำนวนจริงทั้งกอง');
+    assert.equal(s.hiddenCount, s.total - s.docs.length, 'ส่วนที่เหลือต้องบอกว่ามีอีกกี่ฉบับ');
+  });
+
+  describe('ทางที่ธุรการจะกลับมาปั๊ม', () => {
+    test('กรองในทะเบียนได้ และคำอธิบายเงื่อนไขบนหน้าพิมพ์บอกว่ากรองอะไรอยู่', async () => {
+      const doc = withPdf();
+      const stampedDoc = mkIn();
+      attach(stampedDoc.id, { stamped: true });
+      const page = await dispatchGet(reg(), '/documents', { direction: 'incoming', unstamped: '1' });
+      assert.equal(page.status, 200);
+      assert.ok(page.body.includes(`/documents/${doc.id}`), 'ฉบับที่ยังไม่ปั๊มต้องอยู่ในผลลัพธ์');
+      assert.ok(!page.body.includes(`/documents/${stampedDoc.id}`), 'ฉบับที่ปั๊มแล้วต้องไม่ติดมา');
+      assert.match(describeFilters(buildDocumentQuery(reg(), { direction: 'incoming', unstamped: '1' })),
+        /ยังไม่ได้ประทับตรารับลงไฟล์/);
+    });
+
+    test('ทะเบียนหนังสือเข้ามีชิปบอกจำนวนและกดไปที่กองได้เลย', async () => {
+      withPdf();
+      const page = await dispatchGet(reg(), '/documents', { direction: 'incoming' });
+      assert.match(page.body, /ยังไม่ได้ปั๊มตรารับ \(/, 'ต้องมีชิปบอกจำนวน');
+      assert.ok(page.body.includes('/documents?direction=incoming&unstamped=1'));
+    });
+
+    test('แดชบอร์ดขึ้นการ์ดเตือนพร้อมรายชื่อและทางไปไล่ปั๊มทั้งกอง', async () => {
+      const doc = withPdf();
+      const page = await dispatchGet(reg(), '/');
+      assert.equal(page.status, 200);
+      assert.ok(page.body.includes('id="unstampedAlert"'), 'ต้องมีการ์ดเตือน');
+      assert.ok(page.body.includes(`href="/documents/${doc.id}"`), 'ต้องยกฉบับจริงมาให้กดได้เลย');
+      assert.ok(page.body.includes('/documents?direction=incoming&unstamped=1'), 'ต้องมีทางไปไล่ปั๊มทั้งกอง');
+    });
+
+    test('ครูทั่วไปเปิดแดชบอร์ดต้องไม่เจอการ์ดนี้', async () => {
+      withPdf();
+      const page = await dispatchGet(teacher(), '/');
+      assert.ok(!page.body.includes('id="unstampedAlert"'));
+    });
+  });
+
+  // จุดสำคัญที่สุด: ดักตอนที่กำลังจะเสนอ ก่อนเรื่องขึ้นไปถึง ผอ. — ที่เหลือข้างบนเป็นตาข่ายรองรับ
+  // สำหรับฉบับที่หลุดไปแล้ว แต่ตรงนี้คือจุดที่ยังแก้ได้ทันโดยไม่มีใครรู้ว่าเคยลืม
+  describe('เตือนตรงหน้าปุ่มเสนอ ก่อนเรื่องขึ้นไปถึง ผอ.', () => {
+    test('การ์ดเสนอขึ้นคำเตือนพร้อมปุ่มปั๊มในที่เดียวกัน ไม่ต้องเลื่อนไปหา', async () => {
+      const doc = withPdf();
+      const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+      assert.equal(page.status, 200);
+      assert.ok(page.body.includes('id="assignStampWarn"'), 'ต้องเตือนบนการ์ดเสนอ');
+      assert.match(page.body, /onclick="stampThenAssign\(this\)"/, 'ต้องปั๊มได้จากตรงนั้นเลย');
+      assert.match(page.body, /var ASSIGN_STAMP_MISSING = true;/,
+        'ปุ่มเสนอต้องถามยืนยันก่อน ถ้ายังไม่ได้ปั๊ม');
+    });
+
+    test('ปั๊มแล้วคำเตือนต้องหายไป และปุ่มเสนอต้องไม่ถามยืนยันอีก', async () => {
+      const doc = mkIn();
+      attach(doc.id, { stamped: true });
+      const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+      assert.ok(!page.body.includes('id="assignStampWarn"'));
+      assert.match(page.body, /var ASSIGN_STAMP_MISSING = false;/);
+    });
+
+    test('ยังไม่มีไฟล์ PDF ต้องไม่เตือนเรื่องตรา — มีคำเตือนเรื่องไม่มีไฟล์ของมันเองอยู่แล้ว', async () => {
+      const doc = mkIn();
+      const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+      assert.ok(!page.body.includes('id="assignStampWarn"'));
+    });
+
+    test('ฉบับที่เสนอไปแล้ว ต้องเตือนจากบนสุดของหน้าแทน เพราะการ์ดเสนอหายไปแล้ว', async () => {
+      const doc = withPdf();
+      assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+      const page = await dispatchGet(reg(), `/documents/${doc.id}`);
+      assert.ok(page.body.includes('id="stampMissingAlert"'), 'ต้องเตือนจากบนสุด');
+      assert.ok(!page.body.includes('id="assignStampWarn"'), 'การ์ดเสนอไม่มีแล้ว');
+    });
+
+    // ผอ. ปั๊มตรารับแทนธุรการไม่ได้ (ดู canApplyReceivedStamp) การเตือนท่านจึงเป็นการบอกให้ทำ
+    // สิ่งที่กดไม่ได้ ซึ่งแย่กว่าไม่บอกเลย
+    test('คนที่ปั๊มไม่ได้ต้องไม่เห็นคำเตือน', async () => {
+      const doc = withPdf();
+      assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser });
+      const page = await dispatchGet(loadUserForTest(seed.userIds.director01), `/documents/${doc.id}`);
+      assert.equal(page.status, 200);
+      assert.ok(!page.body.includes('id="stampMissingAlert"'));
     });
   });
 });

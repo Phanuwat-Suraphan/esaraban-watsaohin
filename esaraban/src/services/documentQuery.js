@@ -24,6 +24,25 @@ export const unassignedSql = () => `d.direction = 'incoming'
   AND d.status NOT IN (${CLOSED_STATUSES.map((s) => `'${s}'`).join(', ')})
   AND NOT EXISTS (SELECT 1 FROM workflow_steps ws WHERE ws.document_id = d.id)`;
 
+/**
+ * "ยังไม่ได้ประทับตรารับลงไฟล์" — หนังสือเข้าที่มีไฟล์ PDF อยู่แล้ว แต่ไฟล์นั้นยังไม่มีตรารับฝังอยู่
+ *
+ * ต้องเทียบกับ "ไฟล์ที่ตราจะไปลงจริง" ตัวเดียว ไม่ใช่ "มีไฟล์ไหนถูกประทับบ้างไหม" — ตราลงรับไปลงที่
+ * ไฟล์ PDF ไฟล์แรกเสมอ (ดู stampTargetAttachment ใน routes/documents.js ซึ่งใช้ ORDER BY เดียวกันนี้)
+ * ถ้าถามแค่ว่า "มีไฟล์ไหนถูกประทับไหม" หนังสือที่ธุรการเผลอประทับลงไฟล์สิ่งที่ส่งมาด้วยแทนตัวหนังสือ
+ * จะหลุดออกจากกองนี้ทั้งที่ตัวหนังสือจริงยังไม่มีตรา
+ *
+ * หนังสือที่ยังไม่มีไฟล์ PDF เลยไม่นับ — ประทับไม่ได้อยู่แล้ว หน้าเอกสารมีคำเตือนของมันเองอยู่แล้ว
+ * และถ้านับรวมมา กองนี้จะเต็มไปด้วยฉบับที่กดอะไรไม่ได้ จนธุรการเลิกดู
+ */
+export const unstampedSql = () => `d.direction = 'incoming'
+  AND d.status NOT IN (${CLOSED_STATUSES.map((s) => `'${s}'`).join(', ')})
+  AND EXISTS (SELECT 1 FROM attachments ap WHERE ap.document_id = d.id
+    AND ap.mime_type = 'application/pdf' AND ap.destroyed_at IS NULL)
+  AND (SELECT ap.stamped_storage_provider FROM attachments ap
+    WHERE ap.document_id = d.id AND ap.mime_type = 'application/pdf' AND ap.destroyed_at IS NULL
+    ORDER BY ap.created_at, ap.rowid LIMIT 1) IS NULL`;
+
 // ค่าที่ไม่รู้จักให้ตกเป็นค่าว่าง (= ไม่กรอง) แทนที่จะยิงเข้า SQL ตรงๆ — พิมพ์ ?priority=xxx มั่วๆ
 // แล้วต้องได้ "ทุกความเร็ว" ไม่ใช่ตารางว่างเปล่าที่ชวนให้เข้าใจผิดว่าไม่มีหนังสือ
 const pick = (value, allowed) => (allowed.includes(value) ? value : '');
@@ -90,6 +109,8 @@ export function buildDocumentQuery(user, query = {}) {
     awaitingReply: query.awaitingReply === '1',
     // "ยังไม่ได้เสนอใคร" — กองที่ไม่มีใครถืออยู่ จึงไม่โผล่ที่ไหนเลยก่อนหน้านี้ (ดู unassignedSql)
     unassigned: query.unassigned === '1',
+    // "ยังไม่ได้ประทับตรารับลงไฟล์" — กองที่ธุรการต้องกลับมาปั๊มให้ครบ (ดู services/unstamped.js)
+    unstamped: query.unstamped === '1',
   };
   if (f.year) { where.push('d.year_be = :yearBe'); params.yearBe = f.year; }
   if (f.dept) { where.push('d.department_id = :dept'); params.dept = f.dept; }
@@ -106,6 +127,7 @@ export function buildDocumentQuery(user, query = {}) {
   if (f.hasFile) where.push('EXISTS (SELECT 1 FROM attachments ax WHERE ax.document_id = d.id AND ax.destroyed_at IS NULL)');
   if (f.awaitingReply) where.push(awaitingReplySql());
   if (f.unassigned) where.push(unassignedSql());
+  if (f.unstamped) where.push(unstampedSql());
   if (f.unsent) {
     where.push("d.direction = 'outgoing' AND d.sent_at IS NULL AND d.status NOT IN ('voided', 'destroyed')");
   }
@@ -214,6 +236,7 @@ export function describeFilters({ q, statusFilter, f }) {
   if (f.unsent) parts.push('เฉพาะที่ยังไม่ได้บันทึกการส่ง');
   if (f.awaitingReply) parts.push('เฉพาะที่ต้องทำหนังสือตอบและยังไม่ได้ตอบ');
   if (f.unassigned) parts.push('เฉพาะที่ยังไม่ได้เสนอใคร');
+  if (f.unstamped) parts.push('เฉพาะที่ยังไม่ได้ประทับตรารับลงไฟล์');
   return parts.join(' · ');
 }
 

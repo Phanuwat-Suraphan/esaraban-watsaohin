@@ -22,7 +22,7 @@ import {
 } from '../services/pdfStamp.js';
 import { assertMaxLength, requireDate } from '../services/validate.js';
 import {
-  canShareToLine, documentShareText, incomingDigestText, pendingReminderText, pendingDigestText, broadcastChaseText,
+  canShareToLine, documentShareText, incomingDigestText, MAX_DOCS_IN_DIGEST, pendingReminderText, pendingDigestText, broadcastChaseText,
   lineShareBlock,
 } from '../services/line.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
@@ -34,6 +34,7 @@ import { buildXlsx } from '../services/xlsxWrite.js';
 import { DISPATCH_METHODS, canRecordDispatch, recordDispatch, clearDispatch, countUnsentOutgoing } from '../services/dispatch.js';
 import { auditRegister } from '../services/registerAudit.js';
 import { unassignedIncoming, canSeeUnassigned } from '../services/unassigned.js';
+import { countUnstampedIncoming, canSeeUnstamped } from '../services/unstamped.js';
 import { queuePosition, nextInQueue } from '../services/myQueue.js';
 import { broadcastReadStats, markBroadcastRead } from '../services/broadcastReads.js';
 import { imagesToPdf } from '../services/imagesToPdf.js';
@@ -352,6 +353,10 @@ router.get('/documents', requirePage((ctx) => {
               <input type="checkbox" name="unassigned" value="1" ${f.unassigned ? 'checked' : ''} />
               เฉพาะที่ยังไม่ได้เสนอใคร
             </label>` : ''}
+            ${direction === 'incoming' && canSeeUnstamped(ctx.user) ? `<label class="check-inline">
+              <input type="checkbox" name="unstamped" value="1" ${f.unstamped ? 'checked' : ''} />
+              เฉพาะที่ยังไม่ได้ประทับตรารับลงไฟล์
+            </label>` : ''}
           </div>
         </div>
         <button class="btn btn-primary btn-sm" type="submit">กรองตามเงื่อนไข</button>
@@ -382,16 +387,25 @@ router.get('/documents', requirePage((ctx) => {
     ? unassignedIncoming(ctx.user, visibleDocumentsSqlFilter(ctx.user))
     : { total: 0, lateCount: 0, docs: [], hiddenCount: 0 };
 
+  // หนังสือเข้าที่มีไฟล์ PDF แล้วแต่ยังไม่ได้ปั๊มตรารับลงไฟล์ (ดู services/unstamped.js)
+  const unstampedCount = direction === 'incoming' && canSeeUnstamped(ctx.user)
+    ? countUnstampedIncoming(visibleDocumentsSqlFilter(ctx.user).sql, visibleDocumentsSqlFilter(ctx.user).params)
+    : 0;
+
   // หนังสือเข้าที่ลงทะเบียนวันนี้ — ใช้ทำปุ่ม "ส่งสรุปวันนี้เข้าไลน์" ข้อความเดียวจบ แทนการแชร์ทีละฉบับ
   // ซึ่งวันที่มีหนังสือเข้าหกฉบับจะกลายเป็นยิงเข้ากลุ่มหกข้อความติดกัน จนคนในกลุ่มเลื่อนผ่าน
   // กรองสิทธิ์ด้วยเงื่อนไขเดียวกับรายการที่คนนี้เห็นอยู่แล้ว ไม่ใช่ดึงทั้งฐานข้อมูล
-  const todayIncoming = direction === 'incoming' ? db.prepare(`
-    SELECT * FROM documents d
-    WHERE d.deleted_at IS NULL AND d.direction = 'incoming'
+  // อ่านมาเท่าที่ข้อความจะยกไปไล่ได้จริง ไม่ใช่ทั้งวัน — วันที่เอกสารจากเขตพื้นที่มาเป็นชุดร้อยกว่าฉบับ
+  // มีจริง และแถวที่เกินจากนั้นไม่ได้ถูกใช้ทำอะไรเลยนอกจากถูกนับ (ดู MAX_DOCS_IN_DIGEST ใน line.js)
+  const todayWhere = direction === 'incoming' ? `d.deleted_at IS NULL AND d.direction = 'incoming'
       AND ${bangkokDateSql('d.created_at')} = :today
-      AND (${visibleDocumentsSqlFilter(ctx.user).sql})
-    ORDER BY d.created_at
-  `).all({ ...visibleDocumentsSqlFilter(ctx.user).params, today: todayInBangkok() }) : [];
+      AND (${visibleDocumentsSqlFilter(ctx.user).sql})` : '';
+  const todayParams = { ...visibleDocumentsSqlFilter(ctx.user).params, today: todayInBangkok() };
+  const todayIncoming = direction === 'incoming' ? db.prepare(`
+    SELECT * FROM documents d WHERE ${todayWhere} ORDER BY d.created_at LIMIT ${MAX_DOCS_IN_DIGEST}
+  `).all(todayParams) : [];
+  const todayIncomingTotal = todayIncoming.length < MAX_DOCS_IN_DIGEST ? todayIncoming.length
+    : db.prepare(`SELECT COUNT(*) c FROM documents d WHERE ${todayWhere}`).get(todayParams).c;
 
   // ตามงานค้าง "ทีเดียวทั้งหมด" — ปลายสัปดาห์เรื่องค้างพร้อมกันสิบกว่าฉบับเป็นเรื่องปกติ ถ้าตามทีละฉบับ
   // คือยิงเข้ากลุ่มไลน์สิบกว่าข้อความติดกัน ซึ่งกลบข้อความอื่นในกลุ่มจนคนเลื่อนผ่าน และธุรการก็ไม่ทำจริง
@@ -441,12 +455,15 @@ router.get('/documents', requirePage((ctx) => {
         </span>` : ''}
         ${direction === 'incoming' && todayIncoming.length ? lineShareBlock({
           key: 'digest', inline: true,
-          text: incomingDigestText(todayIncoming, fmtThaiDateLong(todayInBangkok())),
-          copyLabel: `📋 คัดลอกสรุปหนังสือเข้าวันนี้ (${todayIncoming.length})`,
+          text: incomingDigestText(todayIncoming, fmtThaiDateLong(todayInBangkok()),
+            { extraCount: todayIncomingTotal - todayIncoming.length }),
+          copyLabel: `📋 คัดลอกสรุปหนังสือเข้าวันนี้ (${todayIncomingTotal})`,
           title: 'สรุปหนังสือเข้าของวันนี้เป็นข้อความเดียว คัดลอกไปส่งให้ครูได้เลย',
         }) : ''}
         ${unassigned.total && !f.unassigned ? `<a class="btn ${unassigned.lateCount ? 'btn-danger' : 'btn-outline'}" href="/documents?direction=incoming&unassigned=1"
           title="ลงทะเบียนรับไว้แล้วแต่ยังไม่มีขั้นตอนใดๆ เลย — ไม่มีใครถืออยู่ จึงไม่โผล่ในงานของใครและไม่มีอะไรเตือน">📥 ยังไม่ได้เสนอใคร (${fmtCount(unassigned.total)})${unassigned.lateCount ? ` · เกินกำหนดควรเสนอ ${fmtCount(unassigned.lateCount)}` : ''}</a>` : ''}
+        ${unstampedCount && !f.unstamped ? `<a class="btn btn-outline" href="/documents?direction=incoming&unstamped=1"
+          title="มีไฟล์ PDF อยู่แล้วแต่ยังไม่ได้ปั๊มตรารับลงในไฟล์ — ไฟล์ที่ ผอ. เปิดดูจะไม่มีเลขรับ วันที่ และเวลา">🖋️ ยังไม่ได้ปั๊มตรารับ (${fmtCount(unstampedCount)})</a>` : ''}
         ${direction === 'incoming' && awaitingReplyCount && !f.awaitingReply ? `<a class="btn btn-outline" href="/documents?direction=incoming&awaitingReply=1"
           title="หนังสือเข้าที่ธุรการติ๊กไว้ว่าต้องทำหนังสือตอบ แต่ยังไม่มีหนังสือส่งผูกไว้ว่าเป็นตัวตอบ">↩️ รอทำหนังสือตอบ (${fmtCount(awaitingReplyCount)})</a>` : ''}
         ${direction === 'outgoing' && unsentCount && !f.unsent ? `<a class="btn btn-outline" href="/documents?direction=outgoing&unsent=1"
@@ -1673,6 +1690,16 @@ router.get('/documents/:id', requirePage((ctx) => {
   const isCreatorOrAdmin = doc.created_by === ctx.user.id || ctx.user.roleCodes.includes('admin');
   // ต้องตรงกับที่บังคับฝั่งเซิร์ฟเวอร์เป๊ะ ไม่งั้นปุ่มจะโผล่มาแล้วกดไม่ผ่าน หรือกดได้แต่ไม่มีปุ่มให้กด
   const canStampReceived = canApplyReceivedStamp(ctx.user, doc);
+  /**
+   * มีไฟล์ PDF ให้ปั๊มอยู่แล้ว แต่ยังไม่ได้ปั๊มตรารับลงไป — และคนที่เปิดอยู่ปั๊มเองได้
+   *
+   * ระบบแยก "ลงทะเบียน" ออกจาก "ปั๊มตราลงไฟล์" โดยตั้งใจ (ต้องลากวางตำแหน่งตราให้พ้นข้อความก่อน
+   * และบางฉบับยังไม่มีไฟล์ตอนลงทะเบียน) ผลข้างเคียงคือลืมกดปุ่มปั๊มได้ง่ายมาก แล้วไม่มีอะไรบอกเลย
+   * จนกระทั่ง ผอ. เปิดไฟล์แล้วไม่เห็นตรารับ — ตอนนั้นสายไปแล้วเพราะท่านอ่านไปแล้ว
+   *
+   * ใช้ทั้งเตือนบนการ์ดเสนอ (ก่อนเรื่องขึ้นไปถึง ผอ.) และเตือนบนการ์ดไฟล์แนบ (สำหรับฉบับที่เสนอไปแล้ว)
+   */
+  const stampMissing = Boolean(stampAtt) && !stampAtt.stamped_storage_provider && canStampReceived;
   const canEditRegisterInfo = canEditRegister(ctx.user, doc);
   const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
@@ -2152,6 +2179,19 @@ router.get('/documents/:id', requirePage((ctx) => {
     <div class="card">
       <h3>${doc.status === 'returned' ? 'แก้ไขแล้วเสนอใหม่' : 'เสนอ / มอบหมายงาน'}</h3>
       <div class="stack">
+        <!-- จุดที่ธุรการลืมปั๊มตรารับบ่อยที่สุดคือตรงนี้: เปิดหน้ามาแล้วเลื่อนลงมาเสนอเลย โดยไม่ได้
+             แวะที่การ์ดไฟล์แนบซึ่งปุ่มปั๊มอยู่ — เตือนตรงหน้าปุ่มเสนอ พร้อมปุ่มปั๊มให้เสร็จได้ที่เดิม
+             ไม่ต้องเลื่อนไปหา เพราะถ้าต้องเลื่อนไปหาเองก็จะกลับมาเป็นการลืมเหมือนเดิม -->
+        ${stampMissing ? `<div class="alert alert-warning" id="assignStampWarn">
+          <strong>🖋️ ยังไม่ได้ปั๊มตรารับลงในไฟล์ PDF</strong>
+          <div style="margin-top:.3rem;font-size:.9rem">
+            ถ้าเสนอตอนนี้ ผอ. จะเปิดเจอไฟล์ที่ไม่มีเลขรับ ไม่มีวันที่ และไม่มีเวลารับ
+            ซึ่งเป็นสิ่งที่ทำให้ไฟล์นั้นเป็นหนังสือที่โรงเรียนรับไว้แล้วตามระเบียบงานสารบรรณ
+          </div>
+          <div style="margin-top:.5rem">
+            <button class="btn btn-primary btn-sm" type="button" onclick="stampThenAssign(this)">🖋️ ปั๊มตรารับก่อน</button>
+          </div>
+        </div>` : ''}
         <div>
           <label>มอบหมายให้</label>
           <select id="assignTo">${listUserOptions(ctx.user.id)}</select>
@@ -2182,7 +2222,22 @@ router.get('/documents/:id', requirePage((ctx) => {
       </div>
     </div>
     <script>
+      var ASSIGN_STAMP_MISSING = ${stampMissing ? 'true' : 'false'};
+      var ASSIGN_STAMP_ATT = ${JSON.stringify(stampAtt ? stampAtt.id : null)};
+      // ใช้ปุ่มเดียวกับในการ์ดไฟล์แนบ (window.applyStamp) ไม่ใช่เขียนขั้นตอนปั๊มขึ้นมาใหม่ที่นี่ —
+      // ปั๊มเสร็จหน้าจะโหลดใหม่เอง คำเตือนนี้จะหายไป แล้วค่อยกดเสนอได้ตามปกติ
+      function stampThenAssign(btn){
+        if (!ASSIGN_STAMP_ATT) return;
+        window.applyStamp(ASSIGN_STAMP_ATT, btn);
+      }
       async function doAssign(btn){
+        // ถามก่อนทุกอย่าง รวมถึงก่อนถาม PIN — ถ้าถามทีหลังจะกลายเป็นให้ธุรการกรอก PIN เสร็จแล้ว
+        // ค่อยบอกว่า "กลับไปปั๊มก่อนไหม" ซึ่งเสียเที่ยวและทำให้คนกดผ่านไปเลย
+        if (ASSIGN_STAMP_MISSING && !confirm(
+          'ยังไม่ได้ปั๊มตรารับลงในไฟล์ PDF\\n\\n' +
+          'ถ้าเสนอตอนนี้ ผอ. จะเปิดเจอไฟล์ที่ไม่มีเลขรับ ไม่มีวันที่ และไม่มีเวลารับ\\n\\n' +
+          'กดตกลง = เสนอไปเลยโดยยังไม่ปั๊ม (ปั๊มทีหลังได้)\\nกดยกเลิก = กลับไปกดปุ่ม "ปั๊มตรารับก่อน"'
+        )) return;
         var assigneeId = document.getElementById('assignTo').value;
         var instruction = document.getElementById('assignInstruction').value;
         var noteEl = document.getElementById('assignRegistrarNote');
@@ -2416,6 +2471,20 @@ router.get('/documents/:id', requirePage((ctx) => {
       </div>
     </div>` : '<div class="alert alert-success">✅ บันทึกและออกเลขเอกสารเรียบร้อยแล้ว</div>') : ''}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}
+    <!-- ฉบับที่เสนอขึ้นไปแล้วแต่ยังไม่ได้ปั๊มตรารับ ต้องเตือนตั้งแต่บนสุด — การ์ดเสนอที่มีคำเตือนของมันเอง
+         หายไปแล้วตั้งแต่ตอนเสนอ และปุ่มปั๊มอยู่ลึกลงไปในการ์ดไฟล์แนบซึ่งไม่มีใครเลื่อนลงไปถ้าไม่มีเหตุ
+         กองนี้ด่วนกว่าฉบับที่ยังไม่เสนอ เพราะ ผอ. อาจเปิดไฟล์ที่ยังไม่มีตรารับไปแล้ว -->
+    ${stampMissing && steps.length ? `<div class="alert alert-warning" id="stampMissingAlert">
+      <strong>🖋️ เสนอขึ้นไปแล้วแต่ยังไม่ได้ปั๊มตรารับลงในไฟล์ PDF</strong>
+      <div style="margin-top:.3rem;font-size:.9rem">
+        ไฟล์ที่ผู้รับเรื่องเปิดดูอยู่ตอนนี้ยังไม่มีเลขรับ วันที่ และเวลารับ — ปั๊มได้เลยจากตรงนี้
+        ระบบจะสร้างไฟล์ใหม่ที่มีตรา โดยเก็บต้นฉบับไว้เหมือนเดิม
+      </div>
+      <div style="margin-top:.5rem">
+        <button class="btn btn-primary btn-sm" type="button"
+                onclick="applyStamp('${stampAtt.id}', this)">🖋️ ปั๊มตรารับเดี๋ยวนี้</button>
+      </div>
+    </div>` : ''}
     <div class="card-header">
       <div>
         <h2 class="mt-0"><span style="color:var(--primary)">${esc(doc.doc_number_display)}</span> — ${esc(doc.title)}</h2>

@@ -193,15 +193,38 @@ export function lineShareBlock({ key, text, copyLabel = '📋 คัดลอก
  * หนังสือชั้นความลับถูกคัดออกด้วยเกณฑ์เดียวกับการแชร์รายฉบับ (canShareToLine) เพราะข้อความในกลุ่มไลน์
  * ไม่ผ่านการตรวจสิทธิ์ใดๆ ทั้งสิ้น ใครอยู่ในกลุ่มก็เห็นชื่อเรื่องหมด
  */
-export function incomingDigestText(docs, dateLabel) {
-  const shareable = (docs || []).filter(canShareToLine);
-  const lines = [`📥 หนังสือเข้าวันที่ ${dateLabel} — ${shareable.length} ฉบับ`];
-  shareable.forEach((d, i) => {
+/**
+ * จำนวนฉบับที่ยกมาไล่ในข้อความเดียว
+ *
+ * ข้อความของ LINE ยาวได้ไม่เกิน 5,000 ตัวอักษร และถ้าเกินคือ "ส่งไม่ออกทั้งข้อความ" ไม่ใช่ตัดให้ —
+ * วันที่ธุรการลงทะเบียนรวดเดียวเป็นร้อยฉบับ (เอกสารจากเขตพื้นที่มาเป็นชุด) มีอยู่จริง ยี่สิบฉบับ
+ * ที่ฉบับละสองบรรทัดอยู่ราว 3,200 ตัวอักษร ยังเหลือที่ให้หัวข้อและลิงก์ท้ายข้อความ
+ *
+ * อีกเหตุผลที่สำคัญไม่แพ้กัน: ข้อความนี้ถูกฝังอยู่ในหน้าทะเบียนของทุกคนที่เปิดดู (ปุ่มคัดลอก)
+ * ถ้าไม่จำกัด หน้าทะเบียนจะโตตามจำนวนหนังสือที่ลงวันนั้น — วัดจริงกับวันที่มี 1,500 ฉบับ
+ * หน้าโตจาก 113 KB เป็น 1,966 KB ทั้งที่ตารางบนหน้ายังแสดงแค่ 50 แถวเท่าเดิม
+ */
+export const MAX_DOCS_IN_DIGEST = 20;
+
+/**
+ * สรุปหนังสือเข้าของวันเป็นข้อความเดียว
+ *
+ * extraCount = จำนวนที่มีอยู่จริงแต่ผู้เรียกไม่ได้ดึงมา (ผู้เรียกจำกัดจำนวนแถวที่อ่านจากฐานข้อมูล)
+ * ต้องรับมาเป็นตัวเลข ไม่ใช่ให้เดาเอง ไม่งั้นหัวข้อจะบอกจำนวนน้อยกว่าความจริง
+ */
+export function incomingDigestText(docs, dateLabel, { extraCount = 0 } = {}) {
+  const all = docs || [];
+  const shareable = all.filter(canShareToLine);
+  const listed = shareable.slice(0, MAX_DOCS_IN_DIGEST);
+  const lines = [`📥 หนังสือเข้าวันที่ ${dateLabel} — ${shareable.length + extraCount} ฉบับ`];
+  listed.forEach((d, i) => {
     lines.push(`${i + 1}. ${d.doc_number_display || ''} ${clip(d.title, 90)}`.trim());
     if (d.correspondent_name) lines.push(`    จาก ${clip(d.correspondent_name, 60)}`);
   });
-  const hidden = (docs || []).length - shareable.length;
   // ต้องบอกว่ามีที่ไม่ได้อยู่ในรายการ ไม่ใช่เงียบ — ไม่งั้นคนอ่านจะนับจำนวนผิดแล้วคิดว่าครบแล้ว
+  const notListed = (shareable.length - listed.length) + extraCount;
+  if (notListed > 0) lines.push(`(และอีก ${notListed} ฉบับ — ดูทั้งหมดในระบบ)`);
+  const hidden = all.length - shareable.length;
   if (hidden > 0) lines.push(`(อีก ${hidden} ฉบับเป็นหนังสือชั้นความลับ ดูได้ในระบบเท่านั้น)`);
   lines.push('');
   lines.push('เปิดทะเบียนหนังสือเข้าในระบบ (ต้องเข้าสู่ระบบก่อน):');

@@ -12614,6 +12614,104 @@ describe('หนังสือเข้าที่ยังไม่ได้�
 
 // วันที่ธุรการเสนอหนังสือขึ้นไปเป็นปึก วงจรเดิมของ ผอ. คือ กดเข้าฉบับที่ 1 → ตัดสินใจ → หน้าโหลด
 // กลับมาที่ฉบับเดิมซึ่งไม่มีอะไรให้ทำแล้ว → กด back → หาบรรทัดถัดไปในตารางที่เพิ่งเรียงใหม่ → วนใหม่
+// กล่องเตือน "กองงานค้าง" บนหน้าแรกไล่รายฉบับให้เห็นเลย ซึ่งดีตอนมีกองเดียว แต่ธุรการจริงมีพร้อมกัน
+// หลายกอง วัดจริงบน iPhone 13 ตอนมีครบสามกอง: กล่องเตือนรวมกันสูง 980px และตัวเลขสรุปของแดชบอร์ด
+// ถูกดันไปอยู่ที่ 1,964px = ต้องเลื่อนสามหน้าจอกว่าจะเห็นหน้าแรกของตัวเอง (ผู้ใช้แจ้งว่าเยอะไป)
+describe('กล่องเตือนบนหน้าแรกต้องพับเก็บได้', () => {
+  const reg = () => loadUserForTest(seed.userIds.reg001);
+  let n = 0;
+  const pdfB64 = Buffer.from(`%PDF-1.4\n${'x'.repeat(1200)}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
+  const withPdf = async () => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      direction: 'incoming', title: `กองค้างสำหรับกล่องพับ ${++n} ${Math.random().toString(36).slice(2, 8)}`,
+      correspondentName: 'สพป.', departmentId: deptId, allowDuplicate: true,
+      fileName: 'a.pdf', fileType: 'application/pdf', fileDataBase64: pdfB64,
+    });
+    return /\/documents\/([0-9a-f-]{36})/.exec(res.body)[1];
+  };
+  // ตัดเอาเฉพาะหัวข้อ (ส่วนที่เห็นตอนพับอยู่) ของกล่องที่ระบุ
+  const summaryOf = (body, id) => {
+    const at = body.indexOf(`id="${id}"`);
+    if (at < 0) return null;
+    const open = body.indexOf('<summary>', at);
+    return open < 0 ? null : body.slice(open + 9, body.indexOf('</summary>', open));
+  };
+
+  test('กล่องกองงานค้างต้องพับมาเป็นค่าเริ่มต้น ไม่ใช่กางทุกกอง', async () => {
+    await withPdf();
+    const page = await dispatchGet(reg(), '/');
+    for (const id of ['unassignedAlert', 'unstampedAlert']) {
+      const at = page.body.indexOf(`id="${id}"`);
+      assert.ok(at > 0, `ไม่พบกล่อง ${id}`);
+      const tag = page.body.slice(page.body.lastIndexOf('<', at), page.body.indexOf('>', at) + 1);
+      assert.match(tag, /^<details /, 'ต้องเป็น <details> ถึงจะพับได้โดยไม่ต้องใช้ JavaScript');
+      assert.ok(!/\sopen[\s>]/.test(tag), `${id} ต้องพับมาเป็นค่าเริ่มต้น (${tag})`);
+    }
+  });
+
+  // พับแล้วหัวข้อคือทั้งหมดที่ผู้ใช้เห็น ถ้าจำนวนหรือความด่วนไปอยู่ข้างใน กล่องจะไม่ได้ทำหน้าที่เตือนอีกต่อไป
+  test('หัวข้อตอนพับอยู่ต้องบอกครบทั้งจำนวนและความด่วน', async () => {
+    const late = await withPdf();
+    // ดันให้เป็นฉบับที่เกินกำหนดควรเสนอ โดยย้อนวันที่รับไปไกลพอ
+    const back = new Date(Date.parse(`${todayInBangkok()}T00:00:00Z`) - 30 * 86400000).toISOString().slice(0, 10);
+    db.prepare('UPDATE documents SET received_date = ? WHERE id = ?').run(back, late);
+    const page = await dispatchGet(reg(), '/');
+
+    const unassigned = summaryOf(page.body, 'unassignedAlert');
+    assert.match(unassigned, /หนังสือเข้า \d+ ฉบับลงทะเบียนแล้วแต่ยังไม่ได้เสนอใคร/, 'ต้องบอกจำนวน');
+    assert.match(unassigned, /เกินกำหนดที่ควรเสนอแล้ว \d+ ฉบับ/, 'ความด่วนต้องอยู่บนหัวข้อ ไม่ใช่ซ่อนอยู่ข้างใน');
+
+    const unstamped = summaryOf(page.body, 'unstampedAlert');
+    assert.match(unstamped, /ยังไม่ได้ปั๊มตรารับลงในไฟล์ PDF/);
+    // รายชื่อรายฉบับต้องอยู่ในส่วนที่พับ ไม่ใช่บนหัวข้อ
+    assert.ok(!unstamped.includes('<li'), 'รายชื่อรายฉบับต้องอยู่ข้างใน');
+  });
+
+  test('หนังสือเวียน: หัวข้อต้องบอกยอดรวมที่ยังไม่อ่าน ไม่ใช่แค่จำนวนฉบับ', async () => {
+    const id = await withPdf();
+    await dispatchPost(registrarUser, `/documents/${id}/broadcast`, { scope: 'all' });
+    const page = await dispatchGet(reg(), '/');
+    const s = summaryOf(page.body, 'broadcastPending');
+    assert.match(s, /หนังสือเวียน \d+ ฉบับที่ยังอ่านไม่ครบทุกคน/);
+    assert.match(s, /รวมยังไม่อ่าน \d+ ครั้ง/, '"5 ฉบับ" เฉยๆ ไม่ได้บอกว่ามีคนยังไม่รู้เรื่องอยู่กี่สิบคน');
+  });
+
+  // กล่องที่เตือนว่าข้อมูลจะหาย หรือไฟล์ที่ส่งออกไม่มีลายเซ็น ไม่ควรต้องกดถึงจะเห็น
+  test('กล่องเตือนเรื่องความปลอดภัยต้องไม่ถูกพับไปด้วย', async () => {
+    const src = fs.readFileSync(new URL('../src/routes/dashboard.js', import.meta.url), 'utf8');
+    const stampAlert = src.slice(src.indexOf('const stampAlert ='), src.indexOf('const stampAlert =') + 400);
+    assert.match(stampAlert, /<div class="alert alert-danger">/,
+      'กล่องไฟล์ที่ขาดลายเซ็นต้องกางค้างไว้ — "อย่าเพิ่งส่งไฟล์เหล่านี้ออกไป" ต้องเห็นทันที');
+    assert.ok(!stampAlert.includes('foldAlert'), 'และต้องไม่ถูกเปลี่ยนเป็นกล่องพับในอนาคตโดยไม่ตั้งใจ');
+  });
+
+  test('รายการตั้งค่าที่ยังไม่ครบ: ข้อที่อันตรายต้องกางค้าง ส่วนข้อที่แค่แนะนำพับได้', async () => {
+    const admin = loadUserForTest(seed.userIds.admin);
+    const page = await dispatchGet(admin, '/');
+    const at = page.body.indexOf('id="setupChecklist"');
+    assert.ok(at > 0, 'ไม่พบรายการตั้งค่า');
+    const tag = page.body.slice(page.body.lastIndexOf('<', at), page.body.indexOf('>', at) + 1);
+    const blocking = /🚧 ยังตั้งค่าไม่ครบ/.test(page.body);
+    assert.equal(/\sopen[\s>]/.test(tag), blocking,
+      blocking ? 'ข้อที่ทำให้ข้อมูลหาย/ใครก็เข้าได้ ต้องกางค้างไว้' : 'ข้อที่แค่แนะนำ ต้องพับได้');
+  });
+
+  test('สถานะเปิด/ปิดของแต่ละกล่องต้องถูกจำไว้ที่เครื่องผู้ใช้', () => {
+    const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const at = app.indexOf("querySelectorAll('details[data-fold]')");
+    assert.ok(at > 0, 'ต้องมีสคริปต์จำสถานะกล่องพับ');
+    const block = app.slice(at, at + 900);
+    assert.match(block, /localStorage\.getItem/);
+    assert.match(block, /localStorage\.setItem/);
+    // โหมดส่วนตัว/เบราว์เซอร์ที่ปิดการเก็บข้อมูลเว็บ โยน error ตั้งแต่บรรทัดที่เรียก ถ้าไม่ครอบ
+    // สคริปต์ทั้งไฟล์จะหยุดทำงานตรงนี้ แล้วปุ่มอื่นๆ ทั้งหน้าจะตายตามไปด้วย
+    assert.equal((block.match(/try \{/g) || []).length, 2, 'ต้องครอบ try/catch ทั้งตอนอ่านและตอนเขียน');
+    const css = fs.readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+    assert.match(css, /details\.alert-fold > summary \{/, 'ต้องมีสไตล์ของหัวข้อกล่องพับ');
+    assert.match(css, /details\.alert-fold\[open\] > summary::after/, 'ลูกศรต้องกลับด้านตอนกางอยู่');
+  });
+});
+
 describe('ไล่ดำเนินการทีละฉบับจนหมดกอง', () => {
   let Q;
   before(async () => { Q = await import('../src/services/myQueue.js'); });

@@ -204,6 +204,27 @@ router.get('/', requirePage((ctx) => {
     </div>`;
   }
 
+  /**
+   * กล่องเตือน "กองงานค้าง" แบบพับเก็บได้
+   *
+   * ทำไมต้องพับ: กล่องพวกนี้ไล่รายฉบับให้เห็นเลย ซึ่งดีตอนมีกองเดียว แต่ธุรการจริงมีพร้อมกันหลายกอง
+   * วัดจริงบนมือถือ (iPhone 13) ตอนมีครบสามกอง: กล่องเตือนรวมกันสูง 980px และตัวเลขสรุปของแดชบอร์ด
+   * ถูกดันลงไปอยู่ที่ 1,964px = ต้องเลื่อนสามหน้าจอกว่าจะเห็นหน้าแรกของตัวเอง (ผู้ใช้แจ้งว่าเยอะไป)
+   *
+   * หัวข้อที่เห็นตอนพับอยู่ต้องบอกครบว่า "กี่ฉบับ" และ "ด่วนแค่ไหน" — สองอย่างนี้คือตัวเตือนจริง
+   * ส่วนรายชื่อรายฉบับเป็นความสะดวก กางดูเมื่อจะลงมือ
+   *
+   * จำไว้ว่าแต่ละกล่องถูกเปิดหรือปิดค้างไว้ (ดู public/app.js) คนที่ชอบกางไว้จึงไม่ต้องกดใหม่ทุกครั้ง
+   *
+   * กล่องเตือนเรื่องความปลอดภัย (ข้อมูลหาย / ไฟล์ขาดลายเซ็น) ไม่พับ — สั้นอยู่แล้วและเป็นเรื่องที่
+   * ไม่ควรต้องกดถึงจะเห็น
+   */
+  const foldAlert = ({ id, tone = 'warning', summary, body }) => `
+    <details class="alert alert-${tone} alert-fold" id="${id}" data-fold="${id}">
+      <summary>${summary}</summary>
+      <div class="alert-fold-body">${body}</div>
+    </details>`;
+
   // แถบเตือนเรื่องการสำรองข้อมูล — แสดงเฉพาะแอดมิน/ธุรการ เพราะเป็นกลุ่มที่แก้ไขได้จริง
   // ครูทั่วไปเห็นแล้วทำอะไรไม่ได้ มีแต่ตกใจเปล่า
   const canFixBackup = user.roleCodes.some((r) => ['admin', 'registrar'].includes(r));
@@ -239,13 +260,15 @@ router.get('/', requirePage((ctx) => {
    * แจ้งเตือน ไม่โผล่ในงานของใคร และไม่มีอะไรทวง คนเดียวที่จะเจอคือคนที่บังเอิญเปิดทะเบียนไปเห็น
    */
   const unassigned = unassignedIncoming(user, visible);
-  const unassignedAlert = !unassigned.total ? '' : `
-    <div class="alert ${unassigned.lateCount ? 'alert-danger' : 'alert-warning'}" id="unassignedAlert">
-      <strong>📥 หนังสือเข้า ${fmtCount(unassigned.total)} ฉบับลงทะเบียนแล้วแต่ยังไม่ได้เสนอใคร</strong>
-      <div style="margin-top:.35rem;font-size:.9rem">
-        ${unassigned.lateCount
-    ? `ในนั้น <strong>${fmtCount(unassigned.lateCount)} ฉบับเกินกำหนดที่ควรเสนอแล้ว</strong> — `
-    : ''}ยังไม่มีขั้นตอนใดๆ จึงไม่ขึ้นในงานของใคร ไม่มีใครได้รับแจ้งเตือน และไม่มีอะไรตามให้
+  const unassignedAlert = !unassigned.total ? '' : foldAlert({
+    id: 'unassignedAlert',
+    tone: unassigned.lateCount ? 'danger' : 'warning',
+    // หัวข้อต้องบอกครบทั้งจำนวนและความด่วน เพราะนี่คือทั้งหมดที่เห็นตอนพับอยู่
+    summary: `📥 หนังสือเข้า ${fmtCount(unassigned.total)} ฉบับลงทะเบียนแล้วแต่ยังไม่ได้เสนอใคร${
+      unassigned.lateCount ? ` · เกินกำหนดที่ควรเสนอแล้ว ${fmtCount(unassigned.lateCount)} ฉบับ` : ''}`,
+    body: `
+      <div style="font-size:.9rem">
+        ยังไม่มีขั้นตอนใดๆ จึงไม่ขึ้นในงานของใคร ไม่มีใครได้รับแจ้งเตือน และไม่มีอะไรตามให้
       </div>
       <ul style="margin:.4rem 0 0;padding-left:1.1rem;font-size:.9rem">
         ${unassigned.docs.map((d) => `<li style="margin-bottom:.2rem">
@@ -257,8 +280,8 @@ router.get('/', requirePage((ctx) => {
       </ul>
       <div style="margin-top:.5rem">
         <a class="btn btn-primary btn-sm" href="/documents?direction=incoming&unassigned=1">เปิดทะเบียนเพื่อเสนอทั้งกอง →</a>
-      </div>
-    </div>`;
+      </div>`,
+  });
 
   /**
    * หนังสือเข้าที่มีไฟล์ PDF แล้วแต่ยังไม่ได้ปั๊มตรารับลงไฟล์ (ดูเหตุผลเต็มใน services/unstamped.js)
@@ -267,13 +290,14 @@ router.get('/', requirePage((ctx) => {
    * สิ่งเดียวที่ผิดคือไฟล์ที่คนอื่นเปิดดูไม่มีเลขรับ ซึ่งคนที่ลืมไม่มีวันเห็นเองเพราะไม่ได้เปิดไฟล์ซ้ำ
    */
   const unstamped = unstampedIncoming(user, visible);
-  const unstampedAlert = !unstamped.total ? '' : `
-    <div class="alert ${unstamped.sentUpCount ? 'alert-danger' : 'alert-warning'}" id="unstampedAlert">
-      <strong>🖋️ หนังสือเข้า ${fmtCount(unstamped.total)} ฉบับยังไม่ได้ปั๊มตรารับลงในไฟล์ PDF</strong>
-      <div style="margin-top:.35rem;font-size:.9rem">
-        ${unstamped.sentUpCount
-    ? `ในนั้น <strong>${fmtCount(unstamped.sentUpCount)} ฉบับเสนอขึ้นไปแล้ว</strong> — ผู้รับเรื่องอาจเปิดไฟล์ที่ยังไม่มีตรารับไปแล้ว `
-    : ''}ตรารับคือเลขรับ วันที่ และเวลา ที่ทำให้ไฟล์นั้นเป็นหนังสือที่โรงเรียนรับไว้แล้วตามระเบียบ
+  const unstampedAlert = !unstamped.total ? '' : foldAlert({
+    id: 'unstampedAlert',
+    tone: unstamped.sentUpCount ? 'danger' : 'warning',
+    summary: `🖋️ หนังสือเข้า ${fmtCount(unstamped.total)} ฉบับยังไม่ได้ปั๊มตรารับลงในไฟล์ PDF${
+      unstamped.sentUpCount ? ` · เสนอขึ้นไปแล้ว ${fmtCount(unstamped.sentUpCount)} ฉบับ` : ''}`,
+    body: `
+      <div style="font-size:.9rem">
+        ${unstamped.sentUpCount ? 'ฉบับที่เสนอขึ้นไปแล้ว ผู้รับเรื่องอาจเปิดไฟล์ที่ยังไม่มีตรารับไปแล้ว — ' : ''}ตรารับคือเลขรับ วันที่ และเวลา ที่ทำให้ไฟล์นั้นเป็นหนังสือที่โรงเรียนรับไว้แล้วตามระเบียบ
       </div>
       <ul style="margin:.4rem 0 0;padding-left:1.1rem;font-size:.9rem">
         ${unstamped.docs.map((d) => `<li style="margin-bottom:.2rem">
@@ -285,8 +309,8 @@ router.get('/', requirePage((ctx) => {
       </ul>
       <div style="margin-top:.5rem">
         <a class="btn btn-primary btn-sm" href="/documents?direction=incoming&unstamped=1">เปิดทะเบียนเพื่อไล่ปั๊มทั้งกอง →</a>
-      </div>
-    </div>`;
+      </div>`,
+  });
 
   /**
    * หนังสือเวียนที่ยังอ่านไม่ครบ — เฉพาะคนที่แจ้งเวียนได้ เพราะเป็นคนที่ต้องตามต่อ
@@ -294,11 +318,15 @@ router.get('/', requirePage((ctx) => {
    * สถิติการอ่านรายฉบับอยู่บนหน้าเอกสารอยู่แล้ว แต่จะช่วยได้เฉพาะตอนที่บังเอิญเปิดฉบับนั้นอยู่พอดี
    * เวลาที่ต้องใช้จริงคือ "ก่อนวันงาน เหลือใครยังไม่รู้เรื่องบ้าง" ซึ่งต้องเริ่มจากที่รวมแบบนี้
    */
-  const circulars = canBroadcast(user) ? pendingBroadcasts() : { total: 0, docs: [], hiddenCount: 0 };
-  const circularAlert = !circulars.total ? '' : `
-    <div class="alert alert-warning" id="broadcastPending">
-      <strong>📢 หนังสือเวียน ${fmtCount(circulars.total)} ฉบับที่ยังอ่านไม่ครบทุกคน</strong>
-      <ul style="margin:.4rem 0 0;padding-left:1.1rem;font-size:.9rem">
+  const circulars = canBroadcast(user) ? pendingBroadcasts() : { total: 0, unreadTotal: 0, docs: [], hiddenCount: 0 };
+  // ยอดรวม "ยังไม่อ่าน" ของทุกฉบับรวมกัน ต้องอยู่บนหัวข้อ เพราะตอนพับอยู่นี่คือสิ่งเดียวที่บอกว่า
+  // กองนี้ใหญ่แค่ไหน — "5 ฉบับ" เฉยๆ ไม่ได้บอกว่ามีคนที่ยังไม่รู้เรื่องอยู่กี่สิบคน
+  // (unreadTotal นับจากทุกฉบับที่ค้าง ไม่ใช่เฉพาะห้าฉบับที่ยกมาแสดง)
+  const circularAlert = !circulars.total ? '' : foldAlert({
+    id: 'broadcastPending',
+    summary: `📢 หนังสือเวียน ${fmtCount(circulars.total)} ฉบับที่ยังอ่านไม่ครบทุกคน · รวมยังไม่อ่าน ${fmtCount(circulars.unreadTotal)} ครั้ง`,
+    body: `
+      <ul style="margin:0;padding-left:1.1rem;font-size:.9rem">
         ${circulars.docs.map((d) => `<li style="margin-bottom:.2rem">
           <a href="/documents/${d.id}">${esc(d.number)} — ${esc(d.title)}</a>
           <span class="text-muted">· อ่านแล้ว ${d.readCount}/${d.totalCount} · <strong>ยังไม่อ่าน ${d.unread}</strong></span>
@@ -307,14 +335,20 @@ router.get('/', requirePage((ctx) => {
       </ul>
       <div class="help-text" style="margin-top:.3rem">
         เปิดฉบับที่ต้องการเพื่อดูรายชื่อท่านที่ยังไม่ได้อ่าน และคัดลอกข้อความตามไปวางในกลุ่มไลน์ได้เลย
-      </div>
-    </div>`;
+      </div>`,
+  });
 
   // รายการตั้งค่าที่ยังไม่เสร็จ — เฉพาะแอดมิน เพราะเป็นคนเดียวที่กดทำได้จริง และหายไปเองเมื่อครบทุกข้อ
   const checklist = user.roleCodes.includes('admin') ? setupChecklist() : null;
+  // ข้อที่ถ้าไม่ทำแล้วข้อมูลหาย/ใครก็เข้าเป็นใครก็ได้ ต้องกางค้างไว้เสมอ ส่วน "ที่แนะนำ" พับได้
+  // เพราะบางข้อ (เช่นยังไม่เชื่อมไลน์) ค้างอยู่ได้เป็นเดือนโดยที่โรงเรียนตั้งใจไม่ทำ
   const checklistHtml = !checklist || !checklist.items.length ? '' : `
-    <div class="card" style="border-color:${checklist.blocking ? 'var(--danger)' : 'var(--primary)'}">
-      <h3 class="mt-0">${checklist.blocking ? '🚧 ยังตั้งค่าไม่ครบ — ยังไม่ควรเอาหนังสือจริงเข้าระบบ' : '📋 ตั้งค่าเพิ่มเติมที่แนะนำ'}</h3>
+    <details class="card alert-fold" id="setupChecklist" data-fold="setupChecklist"
+             style="border-color:${checklist.blocking ? 'var(--danger)' : 'var(--primary)'}" ${checklist.blocking ? 'open' : ''}>
+      <summary>${checklist.blocking
+    ? `🚧 ยังตั้งค่าไม่ครบ — ยังไม่ควรเอาหนังสือจริงเข้าระบบ (${checklist.blocking} ข้อ)`
+    : `📋 ตั้งค่าเพิ่มเติมที่แนะนำ (${checklist.items.length} ข้อ)`}</summary>
+      <div class="alert-fold-body">
       ${checklist.blocking ? `<p class="text-muted" style="font-size:.88rem;margin-top:-.3rem">
         มี ${checklist.blocking} ข้อที่ถ้าไม่ทำ ข้อมูลอาจหายทั้งหมด หรือใครก็เข้าเป็นใครก็ได้
       </p>` : ''}
@@ -329,7 +363,8 @@ router.get('/', requirePage((ctx) => {
             : `<span class="text-muted" style="font-size:.85rem">${esc(i.action)}</span>`}</div>
         </li>`).join('')}
       </ol>
-    </div>`;
+      </div>
+    </details>`;
 
   const greeting = timeGreeting();
   const content = `

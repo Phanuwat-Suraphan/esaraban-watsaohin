@@ -469,6 +469,25 @@
     document.querySelectorAll('details.phone-tools[open]').forEach(function (d) { d.removeAttribute('open'); });
   }
 
+  // ---------- จำว่ากล่องเตือนบนหน้าแรกถูกกางหรือพับไว้ ----------
+  //
+  // กล่องพวกนี้พับมาเป็นค่าเริ่มต้น เพราะมีได้พร้อมกันหลายกองจนดันเนื้อหาจริงลงไปสามหน้าจอ
+  // แต่ธุรการที่กำลังไล่เคลียร์กองใดกองหนึ่งอยู่ ต้องไม่ต้องมากดกางใหม่ทุกครั้งที่เปิดหน้าแรก
+  //
+  // เก็บที่เครื่องผู้ใช้เท่านั้น ไม่ส่งขึ้นเซิร์ฟเวอร์ — เป็นความชอบส่วนตัวของแต่ละเครื่อง ไม่ใช่ข้อมูลงาน
+  // ต้องครอบ try/catch ทั้งอ่านและเขียน เพราะโหมดส่วนตัว/เบราว์เซอร์ที่ปิดการเก็บข้อมูลเว็บจะโยน error
+  // ตั้งแต่บรรทัดที่เรียก และถ้าไม่ครอบ สคริปต์ทั้งไฟล์จะหยุดทำงานตรงนี้
+  document.querySelectorAll('details[data-fold]').forEach(function (box) {
+    var key = 'fold:' + box.dataset.fold;
+    var saved = null;
+    try { saved = localStorage.getItem(key); } catch (err) { saved = null; }
+    if (saved === 'open') box.open = true;
+    else if (saved === 'shut') box.open = false;
+    box.addEventListener('toggle', function () {
+      try { localStorage.setItem(key, box.open ? 'open' : 'shut'); } catch (err) { /* เก็บไม่ได้ก็ใช้งานได้ปกติ */ }
+    });
+  });
+
   window.setBtnLoading = function (btn, text) {
     if (!btn) return;
     if (btn.dataset.origHtml === undefined) btn.dataset.origHtml = btn.innerHTML;

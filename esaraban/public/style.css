@@ -513,6 +513,30 @@ tbody tr:last-child td { border-bottom: none; }
 .alert-warning { background: var(--warning-bg); color: var(--warning); border-left: 4px solid var(--warning); }
 .alert-warning code { background: rgba(0, 0, 0, .08); padding: .05rem .3rem; border-radius: 4px; }
 
+/* ---------- กล่องเตือน "กองงานค้าง" บนหน้าแรก แบบพับเก็บได้ ----------
+   วัดจริงบนมือถือตอนธุรการมีกองค้างพร้อมกันสามกอง: กล่องเตือนรวมกันสูง 980px และตัวเลขสรุปของ
+   แดชบอร์ดถูกดันไปอยู่ที่ 1,964px = ต้องเลื่อนสามหน้าจอกว่าจะเห็นหน้าแรกของตัวเอง
+
+   หัวข้อยังบอกจำนวนและความด่วนครบตอนพับอยู่ — รายชื่อรายฉบับคือส่วนที่กางดูเมื่อจะลงมือ
+   สถานะเปิด/ปิดของแต่ละกล่องถูกจำไว้ที่เครื่องผู้ใช้ (ดู public/app.js) */
+details.alert-fold > summary {
+  display: flex; align-items: center; gap: .5rem;
+  cursor: pointer; font-weight: 700; list-style: none;
+  -webkit-tap-highlight-color: transparent;
+}
+details.alert-fold > summary::-webkit-details-marker { display: none; }
+/* ลูกศรชิดขวาสุดเสมอ ไม่ว่าหัวข้อจะยาวกี่บรรทัด — flex-shrink: 0 กันไม่ให้ถูกบีบหายบนจอแคบ */
+details.alert-fold > summary::after {
+  content: '▾'; margin-left: auto; flex: 0 0 auto; font-size: .9rem; opacity: .7;
+  transition: transform .15s ease;
+}
+details.alert-fold[open] > summary::after { transform: rotate(180deg); }
+details.alert-fold > summary:hover { text-decoration: underline; }
+details.alert-fold > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.alert-fold-body { margin-top: .5rem; }
+/* ใช้กับการ์ด (รายการตั้งค่า) ด้วย ซึ่งหัวข้อเดิมเป็น <h3> จึงต้องตั้งขนาดให้เท่ากัน */
+details.card.alert-fold > summary { font-size: 1.05rem; }
+
 /* ---------- กล่องโหมดทดสอบบนหน้า login ---------- */
 .testmode-box { margin-top: 1rem; border: 1px solid var(--warning); border-radius: var(--radius); background: var(--warning-bg); padding: .75rem .8rem; }
 .testmode-head { font-weight: 700; font-size: .85rem; color: var(--warning); margin-bottom: .35rem; }

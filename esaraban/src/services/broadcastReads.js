@@ -112,6 +112,10 @@ export function pendingBroadcasts(limit = MAX_PENDING_BROADCASTS) {
   `).all(since);
   return {
     total: rows.length,
+    // นับจาก rows ทั้งหมด ไม่ใช่เฉพาะที่ยกมาแสดง — ตัวเลขนี้ไปอยู่บนหัวข้อกล่องเตือนที่พับอยู่
+    // ซึ่งเป็นสิ่งเดียวที่บอกว่ากองนี้ใหญ่แค่ไหน ("5 ฉบับ" เฉยๆ ไม่ได้บอกว่ามีคนยังไม่รู้เรื่องกี่สิบคน)
+    // ถ้านับเฉพาะที่แสดง ตัวเลขจะต่ำกว่าความจริงทุกครั้งที่มีเกินโควตาที่ยกมาแสดง
+    unreadTotal: rows.reduce((sum, r) => sum + (r.total - r.read_count), 0),
     docs: rows.slice(0, limit).map((r) => ({
       id: r.id, number: r.doc_number_display, title: r.title,
       readCount: r.read_count, totalCount: r.total, unread: r.total - r.read_count, lastSent: r.last_sent,

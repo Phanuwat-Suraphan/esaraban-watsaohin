@@ -9,7 +9,7 @@ import {
   voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
   isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep, markStepOpened, assignStepsBulk,
   adminReassignStep, adminAddAssignees, adminRemoveAssignee, MAX_PARALLEL_ASSIGNEES,
-  broadcastDocument, listBroadcasts, canBroadcast,
+  broadcastDocument, listBroadcasts, canBroadcast, canRouteDocument,
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { canIssueOutgoingNumber } from '../services/outgoingRequest.js';
@@ -1701,7 +1701,10 @@ router.get('/documents/:id', requirePage((ctx) => {
    */
   const stampMissing = Boolean(stampAtt) && !stampAtt.stamped_storage_provider && canStampReceived;
   const canEditRegisterInfo = canEditRegister(ctx.user, doc);
-  const canAssign = ['registered', 'returned'].includes(doc.status) && isCreatorOrAdmin;
+  // ต้องใช้ตัวเดียวกับที่ฝั่งเซิร์ฟเวอร์บังคับ (canRouteDocument ใน services/workflow.js) ไม่ใช่
+  // เขียนเงื่อนไขซ้ำที่นี่ — ที่ผ่านมาสองที่นี้หลุดจากกันแล้วธุรการเห็นกองงานแต่ไม่มีปุ่มให้กด
+  const canRoute = canRouteDocument(ctx.user, doc);
+  const canAssign = ['registered', 'returned'].includes(doc.status) && canRoute;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
   const canForceDelete = ctx.user.roleCodes.includes('admin');
@@ -1996,9 +1999,9 @@ router.get('/documents/:id', requirePage((ctx) => {
       <h3 class="mt-0">⚠️ เรื่องนี้ค้างอยู่</h3>
       <p style="margin-top:0">หนังสือฉบับนี้รออยู่ที่ <strong>${esc(stuckHolderName)}</strong>
         ซึ่ง<strong>ปิดบัญชีไปแล้ว</strong> (ย้าย/ลาออก/ถูกระงับ) จึงไม่มีใครกดดำเนินการต่อได้
-        ${isCreatorOrAdmin ? 'เลือกผู้รับผิดชอบคนใหม่ด้านล่างเพื่อให้เรื่องเดินต่อ' : 'กรุณาแจ้งธุรการผู้บันทึกเรื่องนี้หรือผู้ดูแลระบบให้มอบหมายผู้รับผิดชอบคนใหม่'}
+        ${canRoute ? 'เลือกผู้รับผิดชอบคนใหม่ด้านล่างเพื่อให้เรื่องเดินต่อ' : 'กรุณาแจ้งเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบให้มอบหมายผู้รับผิดชอบคนใหม่'}
       </p>
-      ${isCreatorOrAdmin ? `
+      ${canRoute ? `
       <div class="stack">
         <div class="field">
           <label>มอบหมายให้คนใหม่แทน</label>

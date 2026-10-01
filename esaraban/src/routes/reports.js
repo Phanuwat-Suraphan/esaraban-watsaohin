@@ -18,7 +18,10 @@ function resolveRange(query) {
   const raw = String(query.fy || '').trim();
   if (raw === 'all') return { key: 'all', label: 'ทั้งหมดตั้งแต่เปิดใช้ระบบ', where: '', params: {} };
   const current = fiscalYearRange(todayInBangkok());
-  const yearBe = Number.parseInt(raw, 10);
+  // ต้องเป็นตัวเลขล้วนทั้งค่า ไม่ใช่ปล่อยให้ parseInt อ่านเฉพาะตัวเลขหน้าสุดแล้วทิ้งที่เหลือ —
+  // "2569; DROP TABLE documents" เคยถูกอ่านเป็นปี 2569 เงียบๆ (ไม่ได้ทำให้เกิด SQL injection เพราะ
+  // ค่าถูกผูกเป็นพารามิเตอร์อยู่แล้ว แต่หน้ารายงานกลับแสดงปีที่ผู้ใช้ไม่ได้ขอโดยไม่บอกอะไรเลย)
+  const yearBe = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : NaN;
   const chosen = Number.isFinite(yearBe) && yearBe >= 2500 && yearBe <= current.yearBe + 1
     ? fiscalYearRange(`${yearBe - 543 - 1}-10-01`)
     : current;

@@ -587,7 +587,7 @@ describe('ACL: ยกเลิก/จัดเก็บ/มอบหมาย �
     const doc = makeDoc({ title: 'ห้ามให้คนอื่นมอบหมาย' });
     assert.throws(
       () => assignStep({ documentId: doc.id, assigneeId: teacherUser.id, actorUser: teacherUser }),
-      /เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบ/,
+      /เฉพาะผู้บันทึกเอกสาร เจ้าหน้าที่ธุรการ หรือผู้ดูแลระบบ/,
     );
   });
 
@@ -610,6 +610,49 @@ describe('ACL: ยกเลิก/จัดเก็บ/มอบหมาย �
     const other = makeDoc({ title: 'แอดมินจัดการได้' });
     voidDocument({ documentId: other.id, reason: 'แอดมินสั่ง', actorUser: adminUser });
     assert.equal(getDocument(other.id).status, 'voided');
+  });
+
+  // ใครก็ตามที่ล็อกอินอยู่ลงทะเบียนหนังสือเข้าได้ (ครูที่รับหนังสือมาจากมือผู้ส่งแล้วพิมพ์เข้าระบบให้)
+  // พอครูเป็นผู้บันทึก ธุรการเคย "ไม่เห็นการ์ดเสนอเลย" และยิง API ตรงๆ ก็ได้ 403 หนังสือฉบับนั้นจึง
+  // ค้างรอครูมากดเสนอเอง ทั้งที่ครูไม่รู้ว่าต้องกด — และระบบยังไปชี้ให้ธุรการทำสิ่งที่ทำไม่ได้ด้วย
+  // (โผล่ในกอง "ยังไม่ได้เสนอใคร" บนแดชบอร์ด ในชิปหน้าทะเบียน และในเตือนประจำวันทางไลน์)
+  describe('ธุรการเสนอหนังสือรับที่คนอื่นลงทะเบียนไว้ได้', () => {
+    const byTeacher = (over = {}) => makeDoc({
+      title: `ครูเป็นคนลงทะเบียน ${Math.random().toString(36).slice(2, 8)}`,
+      createdBy: teacherUser.id, ...over,
+    });
+
+    test('เสนอต่อได้จริง ทั้งที่ไม่ใช่ผู้บันทึก', () => {
+      const doc = byTeacher();
+      assert.doesNotThrow(() => assignStep({
+        documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: registrarUser,
+      }));
+      assert.equal(currentStep(doc.id).assignee_id, seed.userIds.director01);
+    });
+
+    test('การ์ด "เสนอ / มอบหมายงาน" ต้องขึ้นให้ธุรการเห็นด้วย ไม่ใช่มีแต่สิทธิ์ฝั่งเซิร์ฟเวอร์', async () => {
+      const doc = byTeacher();
+      const page = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+      assert.equal(page.status, 200);
+      assert.match(page.body, /เสนอ \/ มอบหมายงาน/,
+        'ถ้าเซิร์ฟเวอร์ยอมแต่ปุ่มไม่ขึ้น ธุรการก็ยังทำไม่ได้อยู่ดี');
+    });
+
+    test('หนังสือส่งไม่เกี่ยว — เจ้าของเรื่องเป็นคนเขียนและเป็นคนรู้ว่าต้องเสนอใคร', () => {
+      const out = byTeacher({ direction: 'outgoing' });
+      assert.throws(
+        () => assignStep({ documentId: out.id, assigneeId: seed.userIds.director01, actorUser: registrarUser }),
+        /เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบ/,
+      );
+    });
+
+    test('ครูด้วยกันเองยังเสนอหนังสือของคนอื่นไม่ได้เหมือนเดิม', () => {
+      const doc = makeDoc({ title: 'ของธุรการ ครูคนอื่นห้ามเสนอ' });
+      assert.throws(
+        () => assignStep({ documentId: doc.id, assigneeId: seed.userIds.director01, actorUser: teacherUser }),
+        /เฉพาะผู้บันทึกเอกสาร เจ้าหน้าที่ธุรการ หรือผู้ดูแลระบบ/,
+      );
+    });
   });
 });
 
@@ -5124,7 +5167,10 @@ describe('รายงานสรุป: แยกตามปีงบปร�
       // กรองวันก่อนหน้า — ต้องไม่เจอ (ถ้าเทียบด้วย UTC จะไปโผล่ที่วันนี้แทน)
       const miss = await dispatchGet(registrarUser, '/documents',
         { direction: 'incoming', from: '2026-09-30', to: '2026-09-30' });
-      assert.ok(!miss.body.includes('9901/2570'), 'ต้องไม่โผล่ในวันก่อนหน้า');
+      // เทียบด้วย id ของแถว ไม่ใช่เลขหนังสือในตัวหน้า — ปุ่ม "คัดลอกสรุปหนังสือเข้าวันนี้" ฝังเลข
+      // ของหนังสือที่ลงวันนี้ไว้ในหน้าด้วยเสมอ โดยไม่เกี่ยวกับตัวกรอง (ตั้งใจ เพราะเป็นสรุปของ "วันนี้")
+      // ถ้าเทียบด้วยเลขหนังสือ เทสต์จะแดงทุกวันที่ 1 ตุลาคม ทั้งที่ตัวกรองทำงานถูกต้อง
+      assert.ok(!miss.body.includes(`/documents/${docId}`), 'ต้องไม่โผล่ในวันก่อนหน้า');
     });
   });
 
@@ -7348,7 +7394,7 @@ describe('หนังสือที่ค้างอยู่กับคน�
 
     assert.throws(
       () => reassignStuckStep({ stepId, newAssigneeId: seed.userIds.head_acad, actorUser: teacherUser }),
-      /เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบ/,
+      /เฉพาะผู้บันทึกเอกสาร เจ้าหน้าที่ธุรการ หรือผู้ดูแลระบบ/,
       'ครูทั่วไปต้องมอบหมายใหม่ไม่ได้',
     );
     assert.doesNotThrow(() => reassignStuckStep({ stepId, newAssigneeId: seed.userIds.head_acad, actorUser: registrarUser }));
@@ -11564,7 +11610,7 @@ describe('มอบหมายหลายฉบับให้คนเดี�
     assert.equal(res.status, 200);
     assert.equal(res.json.assigned, 0, 'ต้องไม่ผ่านสักฉบับ');
     assert.equal(res.json.failed.length, 2);
-    for (const f of res.json.failed) assert.match(f.error, /ผู้บันทึกเอกสารหรือผู้ดูแลระบบ/);
+    for (const f of res.json.failed) assert.match(f.error, /เฉพาะผู้บันทึกเอกสาร เจ้าหน้าที่ธุรการ หรือผู้ดูแลระบบ/);
     for (const d of docs) assert.equal(stepsOf(d.id).length, 0);
   });
 

@@ -535,7 +535,7 @@ function insertAssignStep({ documentId, assigneeId, instruction, actorUser }) {
   // เดิม route ตรวจแค่ว่า "เห็นเอกสารนี้ได้ไหม" ซึ่งกว้างกว่าที่ UI ตั้งใจไว้มาก (ปุ่ม "เสนอ" ขึ้นเฉพาะผู้บันทึก
   // เอกสาร/แอดมิน) ทำให้ใครก็ตามที่แค่เห็นเอกสารในฝ่ายตัวเองยิง API มอบหมายงานให้ใครก็ได้ — คนในสาย workflow
   // ที่ต้องส่งต่อจริงๆ ใช้ปุ่มอนุมัติ/ส่งต่อ (approveAndForward) ซึ่งมี assertOwnsStep คุมอยู่แล้ว คนละทางกัน
-  assertCanManageDocument(doc, actorUser, 'มอบหมายงานในเอกสาร');
+  assertCanRouteDocument(doc, actorUser, 'มอบหมายงานในเอกสาร');
   if (!['registered', 'returned'].includes(doc.status)) throw httpError(409, 'เอกสารนี้ไม่อยู่ในสถานะที่มอบหมายงานใหม่ได้');
 
   const maxOrder = db.prepare('SELECT COALESCE(MAX(step_order),0) m FROM workflow_steps WHERE document_id = ?').get(documentId).m;
@@ -683,8 +683,9 @@ export function reassignStuckStep({ stepId, newAssigneeId, actorUser }) {
   const step = db.prepare('SELECT * FROM workflow_steps WHERE id = ?').get(stepId);
   if (!step || step.status !== 'waiting') throw httpError(409, 'ขั้นตอนนี้ถูกดำเนินการไปแล้วหรือไม่พบ');
   const doc = documentOfStep(step);
-  // เฉพาะแอดมินหรือผู้บันทึกเอกสาร — เงื่อนไขเดียวกับการมอบหมายงานปกติ
-  assertCanManageDocument(doc, actorUser, 'มอบหมายผู้รับผิดชอบใหม่ในเอกสาร');
+  // เงื่อนไขเดียวกับการมอบหมายงานปกติ (ธุรการได้สิทธิ์ด้วยในหนังสือรับ — ดู canRouteDocument)
+  // เรื่องที่ค้างเพราะคนถือลาออก/ถูกปิดบัญชี เป็นเรื่องที่ธุรการเป็นคนเห็นก่อนและต้องเป็นคนปลดล็อก
+  assertCanRouteDocument(doc, actorUser, 'มอบหมายผู้รับผิดชอบใหม่ในเอกสาร');
 
   // ต้องมี "คนถือเรื่องที่ทำงานไม่ได้จริงๆ" เท่านั้นถึงจะใช้ทางนี้ได้ ไม่งั้นทางนี้จะกลายเป็นช่องให้แอดมิน/
   // ผู้บันทึกดึงเรื่องออกจากมือคนที่กำลังพิจารณาอยู่ได้เงียบๆ ซึ่งข้ามลำดับการบังคับบัญชาใน Workflow
@@ -1074,6 +1075,37 @@ function assertCanManageDocument(doc, actorUser, what) {
   if (doc.created_by === actorUser.id) return;
   if (actorUser.roleCodes.includes('admin')) return;
   throw httpError(403, `${what}ได้เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบเท่านั้น`);
+}
+
+/**
+ * ใครเสนอ/มอบหมายหนังสือฉบับนี้ต่อได้ — ต่างจาก "ยกเลิก/จัดเก็บ" ตรงที่ธุรการได้สิทธิ์ในหนังสือรับด้วย
+ *
+ * เงื่อนไขเดิมคือ "ผู้บันทึกเอกสารหรือแอดมิน" ซึ่งกลับหัวกลับหางกับงานจริงแบบเดียวกับที่เคยเกิดกับ
+ * ตรารับมาแล้ว (ดู canApplyReceivedStamp ใน routes/documents.js): การเสนอหนังสือรับต่อผู้บังคับบัญชา
+ * เป็นหน้าที่ของเจ้าหน้าที่ธุรการตามระเบียบงานสารบรรณ ไม่ใช่หน้าที่ของคนที่บังเอิญเป็นคนพิมพ์เข้าระบบ
+ *
+ * ของจริงที่เกิดขึ้น: ใครก็ตามที่ล็อกอินอยู่ลงทะเบียนหนังสือเข้าได้ (ครูที่รับหนังสือมาจากมือผู้ส่งเอง
+ * แล้วพิมพ์เข้าระบบให้) พอครูเป็นผู้บันทึก ธุรการจะ "ไม่เห็นการ์ดเสนอเลย" และถ้ายิง API ตรงๆ ก็ได้ 403
+ * (ทดสอบยืนยันแล้วทั้งสองทาง) หนังสือฉบับนั้นจึงค้างรอครูคนนั้นมากดเสนอเอง ทั้งที่ครูไม่รู้ว่าต้องกด
+ *
+ * หนักกว่านั้นคือระบบไปชี้ให้ธุรการทำสิ่งที่ทำไม่ได้: ฉบับนั้นโผล่ในกอง "ยังไม่ได้เสนอใคร" ของธุรการ
+ * บนแดชบอร์ด ในชิปบนหน้าทะเบียน และในข้อความเตือนประจำวันทางไลน์ทุกเช้า — กดเข้าไปแล้วไม่มีปุ่ม
+ *
+ * ให้เฉพาะหนังสือรับ เพราะหนังสือส่งคือจดหมายที่เจ้าของเรื่องเป็นคนเขียนและเป็นคนรู้ว่าต้องเสนอใคร
+ * ธุรการเป็นผู้ออกเลขให้เท่านั้น (ดู services/outgoingRequest.js)
+ */
+export function canRouteDocument(user, doc) {
+  if (!doc) return false;
+  if (doc.created_by === user.id) return true;
+  if (user.roleCodes.includes('admin')) return true;
+  return doc.direction === 'incoming' && user.roleCodes.includes('registrar');
+}
+
+function assertCanRouteDocument(doc, actorUser, what) {
+  if (canRouteDocument(actorUser, doc)) return;
+  throw httpError(403, doc.direction === 'incoming'
+    ? `${what}ได้เฉพาะผู้บันทึกเอกสาร เจ้าหน้าที่ธุรการ หรือผู้ดูแลระบบเท่านั้น`
+    : `${what}ได้เฉพาะผู้บันทึกเอกสารหรือผู้ดูแลระบบเท่านั้น`);
 }
 
 export function voidDocument({ documentId, reason, actorUser }) {

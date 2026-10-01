@@ -5,10 +5,10 @@
 // สำเนาของวันไหนยังต้องเก็บไว้ — แต่การลบเป็นสิ่งที่ย้อนกลับไม่ได้ จึงบังคับยืนยัน PIN ทุกครั้ง
 // เหมือนการลงนาม/ทำลายหนังสือในระบบ
 import { router, html, json } from '../router.js';
-import { layout, esc, fmtDate } from '../render.js';
+import { layout, esc, fmtDate, fmtCount } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { audit } from '../db.js';
-import { isBackupEnabled, readBackupFolders, readBackupDayFiles, deleteBackupNode, getBackupStatus } from '../services/dbBackup.js';
+import { isBackupEnabled, readBackupFolders, readBackupDayFiles, deleteBackupNode, getBackupStatus, inspectBackup } from '../services/dbBackup.js';
 
 const CAN_MANAGE = ['admin', 'registrar'];
 
@@ -148,17 +148,44 @@ router.get('/admin/backups', requireRole(...CAN_MANAGE)(requirePage(async (ctx) 
           if (!res.ok) throw new Error(data.error || 'อ่านรายการไม่สำเร็จ');
           if (!data.files.length) { box.textContent = 'ไม่มีไฟล์ในวันนี้'; return; }
           box.outerHTML = data.files.map(function (f) {
+            var q = function (v) { return JSON.stringify(v).replace(/"/g, '&quot;'); };
             return '<div class="backup-file"><span>💾 ' + f.timeLabel +
               ' <span class="text-muted">' + f.sizeLabel + '</span></span>' +
+              '<button class="btn btn-outline btn-sm" onclick="checkBackup(' + q(f.id) + ', this)">🔍 ตรวจสอบ</button>' +
               '<button class="btn btn-outline btn-sm" style="color:var(--danger);border-color:var(--danger)" ' +
-              'onclick="removeBackup(' + JSON.stringify(f.id).replace(/"/g, '&quot;') + ', ' +
-              JSON.stringify(label + ' ').replace(/"/g, '&quot;') + ' + ' + JSON.stringify(f.timeLabel).replace(/"/g, '&quot;') +
-              ', \\'ไฟล์นี้\\')">🗑️ ลบไฟล์นี้</button></div>';
+              'onclick="removeBackup(' + q(f.id) + ', ' +
+              q(label + ' ') + ' + ' + q(f.timeLabel) +
+              ', \\'ไฟล์นี้\\')">🗑️ ลบไฟล์นี้</button>' +
+              '<div class="backup-check help-text" hidden style="flex-basis:100%"></div></div>';
           }).join('');
         } catch (e) {
           box.textContent = 'อ่านรายการไม่สำเร็จ: ' + e.message;
           el.dataset.loaded = '';
         }
+      }
+
+      // ตรวจว่าสำเนาไฟล์นี้กู้คืนได้จริงไหม — รายชื่อไฟล์บอกได้แค่ชื่อกับขนาด ซึ่งไม่ได้แปลว่ากู้ได้
+      // ไฟล์ที่อัปโหลดขาดกลางคันก็ยังขึ้นขนาดเท่าเดิมในรายการเหมือนกัน
+      async function checkBackup(id, btn) {
+        var out = btn.parentElement.querySelector('.backup-check');
+        out.hidden = false;
+        out.textContent = 'กำลังตรวจ...';
+        window.setBtnLoading(btn, 'กำลังตรวจ...');
+        try {
+          var res = await fetch('/admin/backups/inspect', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }),
+          });
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'ตรวจไม่สำเร็จ');
+          if (data.ok) {
+            out.innerHTML = '<span style="color:var(--success)">✅ ' + data.summary + '</span><br/>' + data.dataUpTo;
+          } else {
+            out.innerHTML = '<span style="color:var(--danger)">❌ สำเนานี้ใช้กู้คืนไม่ได้ — ' + data.error + '</span>';
+          }
+        } catch (e) {
+          out.innerHTML = '<span style="color:var(--danger)">ตรวจไม่สำเร็จ: ' + e.message + '</span>';
+        }
+        window.restoreBtn(btn);
       }
 
       async function removeBackup(id, label, what) {
@@ -200,6 +227,36 @@ router.get('/admin/backups/day/:dayId', requireApi(async (ctx) => {
     id: f.id, timeLabel: fileLabel(f.name), sizeLabel: sizeLabel(f.size),
   }));
   json(ctx, 200, { files });
+}));
+
+/**
+ * ตรวจสำเนาหนึ่งไฟล์ว่ากู้คืนได้จริงไหม และข้างในมีข้อมูลถึงวันไหน
+ *
+ * อ่านอย่างเดียว ทำงานบนไฟล์ชั่วคราว ไม่แตะฐานข้อมูลที่ใช้งานอยู่ จึงไม่ต้องยืนยัน PIN
+ * (ต่างจากการลบ ซึ่งย้อนกลับไม่ได้)
+ */
+router.post('/admin/backups/inspect', requireApi(async (ctx) => {
+  if (!ctx.user.roleCodes.some((r) => CAN_MANAGE.includes(r))) {
+    return json(ctx, 403, { error: 'เฉพาะธุรการ/ผู้ดูแลระบบเท่านั้น' });
+  }
+  if (!ctx.body.id) return json(ctx, 400, { error: 'ไม่ได้ระบุไฟล์ที่จะตรวจ' });
+  try {
+    const r = await inspectBackup(ctx.body.id);
+    audit({ userId: ctx.user.id, action: 'backup_inspected', tableName: 'google_drive', recordId: ctx.body.id,
+      detail: { ok: true, documents: r.documents } });
+    json(ctx, 200, {
+      ok: true,
+      // สรุปเป็นประโยคเดียวที่ตอบคำถามจริงของคนกด: "กู้จากไฟล์นี้แล้วจะเสียงานไปกี่วัน"
+      summary: `กู้คืนได้ — มีหนังสือ ${fmtCount(r.documents ?? 0)} ฉบับ · ผู้ใช้ ${fmtCount(r.users ?? 0)} คน`
+        + (r.attachments != null ? ` · ไฟล์แนบ ${fmtCount(r.attachments)} รายการ` : ''),
+      dataUpTo: r.latestDocumentAt ? `ข้อมูลใหม่ถึง ${fmtDate(r.latestDocumentAt)}` : 'ยังไม่มีหนังสือในสำเนานี้',
+    });
+  } catch (err) {
+    audit({ userId: ctx.user.id, action: 'backup_inspected', tableName: 'google_drive', recordId: ctx.body.id,
+      detail: { ok: false, error: err.message } });
+    // 200 พร้อม ok:false ไม่ใช่ 5xx — "ตรวจแล้วพบว่าไฟล์เสีย" คือผลการตรวจที่สำเร็จ ไม่ใช่ระบบขัดข้อง
+    json(ctx, 200, { ok: false, error: err.message });
+  }
 }));
 
 router.post('/admin/backups/delete', requireApi(async (ctx) => {

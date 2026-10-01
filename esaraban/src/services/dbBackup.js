@@ -480,14 +480,92 @@ function assertUsableSqlite(file) {
 
   // เปิดจริงแล้วให้ SQLite ตรวจโครงสร้างเอง — ใช้ quick_check ไม่ใช่ integrity_check เพราะจับการ
   // ขาดหาย/โครงสร้างพังได้เหมือนกันแต่เร็วกว่ามาก และนี่อยู่บนเส้นทางเปิดระบบซึ่งต้องไม่ถ่วง
-  const probe = new DatabaseSync(file, { readOnly: true });
+  // SQLite โยนข้อความอังกฤษดิบๆ ("database disk image is malformed") ซึ่งเดิมไปโผล่แค่ใน log
+  // ของเซิร์ฟเวอร์ แต่ตอนนี้ไปโผล่บนหน้าจอผู้ดูแลด้วย (ปุ่มตรวจสอบสำเนา) — ต้องแปลให้อ่านรู้เรื่อง
+  // โดยยังพ่วงข้อความเดิมไว้ในวงเล็บ เผื่อต้องเอาไปค้นต่อ
+  let probe;
   try {
-    const row = probe.prepare('PRAGMA quick_check').get();
-    const verdict = row ? Object.values(row)[0] : null;
+    probe = new DatabaseSync(file, { readOnly: true });
+  } catch (err) {
+    throw new Error(`เปิดไฟล์สำเนาเป็นฐานข้อมูลไม่ได้ — ไฟล์น่าจะเสียหายหรือดาวน์โหลดมาไม่ครบ (${err.message})`);
+  }
+  try {
+    let verdict;
+    try {
+      const row = probe.prepare('PRAGMA quick_check').get();
+      verdict = row ? Object.values(row)[0] : null;
+    } catch (err) {
+      throw new Error(`ตรวจความสมบูรณ์ของไฟล์สำเนาไม่ผ่าน — ไฟล์เสียหาย (${err.message})`);
+    }
     if (verdict !== 'ok') throw new Error(`ฐานข้อมูลในสำเนาเสียหาย (${verdict || 'ตรวจไม่ผ่าน'})`);
     // ต้องมีตารางของระบบอยู่จริง ไม่ใช่ไฟล์ SQLite เปล่าๆ ที่บังเอิญผ่าน quick_check
     const users = probe.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table' AND name='users'").get().c;
     if (!users) throw new Error('ไฟล์สำเนาไม่มีตารางของระบบอยู่เลย');
+  } finally {
+    probe.close();
+  }
+}
+
+/**
+ * เปิดสำเนาบน Drive ขึ้นมาตรวจว่า "กู้คืนได้จริงไหม และข้างในมีข้อมูลถึงวันไหน"
+ *
+ * ทำไมต้องมี: การกู้คืนอัตโนมัติตอนเปิดระบบทำงานเฉพาะตอนที่ไฟล์ฐานข้อมูลหายไปแล้ว ซึ่งก็คือ
+ * "ตอนที่สายไปแล้ว" — ถ้าสำเนาทุกไฟล์บน Drive ใช้ไม่ได้ (สิทธิ์ Drive หมดอายุตั้งแต่เดือนก่อน
+ * อัปโหลดขาดกลางคัน พื้นที่เต็ม) โรงเรียนจะรู้ตัวตอนเปิดเว็บมาแล้วเจอทะเบียนเปล่าเท่านั้น
+ *
+ * ก่อนหน้านี้หน้าจัดการสำเนาบอกได้แค่ "มีไฟล์ชื่ออะไร ขนาดเท่าไร" ซึ่งไม่ได้แปลว่ากู้คืนได้
+ * ไฟล์ขนาด 2 MB ที่ดาวน์โหลดมาไม่ครบก็ยังขึ้นเป็น 2 MB ในรายการเหมือนกัน
+ *
+ * ตัวนี้ใช้ด่านตรวจชุดเดียวกับตอนกู้คืนจริง (assertUsableSqlite) แล้วอ่านต่ออีกนิดว่าข้างในมีหนังสือ
+ * กี่ฉบับและลงทะเบียนล่าสุดเมื่อไหร่ เพื่อตอบคำถามที่สำคัญกว่าคำว่า "ผ่าน": ถ้าต้องกู้จากไฟล์นี้จริง
+ * จะเสียงานไปกี่วัน
+ *
+ * อ่านอย่างเดียวและทำงานบนไฟล์ชั่วคราวเสมอ ไม่แตะฐานข้อมูลที่ใช้งานอยู่เลย
+ */
+export async function inspectBackup(fileId) {
+  if (!isBackupEnabled()) throw new Error('ยังไม่ได้เปิดใช้การสำรองขึ้น Google Drive');
+  const tmp = path.join(os.tmpdir(), `esaraban-inspect-${process.pid}-${Date.now()}.db`);
+  try {
+    const stream = await downloadFileStream(fileId);
+    if (!stream) throw new Error('เปิดไฟล์บน Google Drive ไม่ได้');
+    const chunks = [];
+    for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
+    fs.writeFileSync(tmp, Buffer.concat(chunks));
+    return inspectBackupFile(tmp);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+/**
+ * ด่านตรวจ + อ่านสรุป บนไฟล์ที่อยู่ในเครื่องแล้ว — แยกออกมาเพื่อให้ทดสอบได้โดยไม่ต้องมี Google Drive
+ * ใช้ assertUsableSqlite ตัวเดียวกับเส้นทางกู้คืนจริง จะได้ไม่มีทางที่ "ตรวจผ่าน แต่กู้จริงไม่ผ่าน"
+ */
+export function inspectBackupFile(file) {
+  assertUsableSqlite(file);
+  return { ok: true, sizeBytes: fs.statSync(file).size, ...readBackupContents(file) };
+}
+
+/**
+ * อ่านสรุปเนื้อในของไฟล์สำเนา — ต้องทนกับสำเนาเก่าที่ยังไม่มีตารางใหม่ๆ
+ *
+ * สำเนาของปีที่แล้วถูกสร้างตอนที่ระบบยังไม่มีตาราง school_orders/announcements ถ้าถามตรงๆ จะโยน
+ * "no such table" แล้วไฟล์ที่กู้คืนได้จริงจะถูกรายงานว่าใช้ไม่ได้ ซึ่งแย่กว่าไม่มีปุ่มตรวจเสียอีก
+ */
+function readBackupContents(file) {
+  const probe = new DatabaseSync(file, { readOnly: true });
+  try {
+    const has = (t) => Boolean(probe.prepare("SELECT 1 x FROM sqlite_master WHERE type='table' AND name=?").get(t));
+    const count = (t, where = '') => (has(t) ? probe.prepare(`SELECT COUNT(*) c FROM ${t} ${where}`).get().c : null);
+    return {
+      documents: count('documents', 'WHERE deleted_at IS NULL'),
+      users: count('users', "WHERE deleted_at IS NULL AND status = 'active'"),
+      attachments: count('attachments', 'WHERE destroyed_at IS NULL'),
+      // "ข้อมูลในสำเนานี้ใหม่ถึงเมื่อไหร่" — ตอบคำถามว่ากู้จากไฟล์นี้แล้วจะเสียงานไปกี่วัน
+      latestDocumentAt: has('documents')
+        ? (probe.prepare('SELECT MAX(created_at) m FROM documents WHERE deleted_at IS NULL').get().m || null)
+        : null,
+    };
   } finally {
     probe.close();
   }

@@ -3,7 +3,7 @@
 // ต้องแยกโปรเซส เพราะเทสต์ชุดหลักใช้ไฟล์ฐานข้อมูลร่วมกันทั้งชุดและเปิดค้างไว้ตลอด จะลบทิ้งกลางคัน
 // เพื่อจำลอง "ดิสก์ถูกล้าง" ไม่ได้ — และการแยกโปรเซสยังได้ทดสอบลำดับการบูตจริงไปด้วยในตัว
 //
-// รับชื่อสถานการณ์ทาง argv[2]: ok | download-fails | truncated | fallback | no-backup | guard
+// รับชื่อสถานการณ์ทาง argv[2]: ok | download-fails | truncated | fallback | no-backup | guard | inspect | inspect-bad
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -103,6 +103,23 @@ try {
   }
   out.filesOnDrive = drive.backupFiles().length;
   out.folderNames = drive.folderNames();
+
+  // --- 2.5) ปุ่ม "ตรวจสอบสำเนา" บนหน้าจัดการ: ดาวน์โหลดจาก Drive มาตรวจจริงโดยไม่แตะฐานข้อมูลที่ใช้อยู่ ---
+  if (scenario === 'inspect' || scenario === 'inspect-bad') {
+    if (scenario === 'inspect-bad') drive.faults.truncateDownload = true;
+    const tempBefore = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('esaraban-inspect-')).length;
+    try {
+      const r = await backupMod.inspectBackup(drive.backupFiles()[0].id);
+      out.inspect = { ok: r.ok, documents: r.documents, users: r.users, latestDocumentAt: r.latestDocumentAt };
+    } catch (err) {
+      out.inspectError = err.message;
+    }
+    out.inspectTempLeft = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('esaraban-inspect-')).length - tempBefore;
+    // ฐานข้อมูลที่ใช้งานอยู่ต้องไม่ถูกแตะเลย
+    out.liveDbStillThere = fs.existsSync(dbPath);
+    out.liveDocsAfterInspect = db.prepare('SELECT COUNT(*) c FROM documents').get().c;
+    drive.faults.truncateDownload = false;
+  }
 
   // --- 3) จำลองว่าโฮสต์ล้างดิสก์: ปิดฐานข้อมูลแล้วลบไฟล์ทิ้งให้หมด ---
   db.close();

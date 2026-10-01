@@ -9396,6 +9396,138 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
       assert.equal(r.dbExistsAfter, false);
     });
 
+    // การกู้คืนอัตโนมัติทำงานเฉพาะตอนที่ไฟล์ฐานข้อมูลหายไปแล้ว ซึ่งก็คือ "ตอนที่สายไปแล้ว" —
+    // ถ้าสำเนาบน Drive ใช้ไม่ได้ทั้งหมด (สิทธิ์หมดอายุตั้งแต่เดือนก่อน อัปโหลดขาด พื้นที่เต็ม)
+    // โรงเรียนจะรู้ตัวตอนเปิดเว็บมาเจอทะเบียนเปล่าเท่านั้น หน้าจัดการเดิมบอกได้แค่ชื่อไฟล์กับขนาด
+    // ซึ่งไม่ได้แปลว่ากู้คืนได้ — ไฟล์ที่อัปโหลดขาดกลางคันก็ขึ้นขนาดเท่าเดิมในรายการเหมือนกัน
+    describe('ตรวจสำเนาได้ล่วงหน้าว่ากู้คืนได้จริงไหม', () => {
+      let BK;
+      before(async () => { BK = await import('../src/services/dbBackup.js'); });
+      const tmpFile = (name) => path.join(os.tmpdir(), `esaraban-test-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.db`);
+
+      test('สำเนาที่ดี ต้องบอกได้ว่ามีหนังสือกี่ฉบับและข้อมูลใหม่ถึงเมื่อไหร่', () => {
+        const file = tmpFile('good');
+        const d = new DatabaseSync(file);
+        try {
+          d.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, deleted_at TEXT, status TEXT);
+            CREATE TABLE documents (id TEXT PRIMARY KEY, deleted_at TEXT, created_at TEXT);
+            CREATE TABLE attachments (id TEXT PRIMARY KEY, destroyed_at TEXT);
+            INSERT INTO users VALUES ('u1', NULL, 'active'), ('u2', NULL, 'active'), ('u3', NULL, 'inactive');
+            INSERT INTO documents VALUES ('d1', NULL, '2026-09-30T03:00:00.000Z'), ('d2', NULL, '2026-10-01T02:00:00.000Z'), ('d3', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+            INSERT INTO attachments VALUES ('a1', NULL), ('a2', '2020-01-01T00:00:00.000Z');`);
+        } finally { d.close(); }
+        try {
+          const r = BK.inspectBackupFile(file);
+          assert.equal(r.ok, true);
+          assert.equal(r.documents, 2, 'ต้องไม่นับฉบับที่ถูกลบแล้ว');
+          assert.equal(r.users, 2, 'ต้องนับเฉพาะบัญชีที่ยังใช้งานอยู่');
+          assert.equal(r.attachments, 1, 'ต้องไม่นับไฟล์ที่ถูกทำลายตามระเบียบไปแล้ว');
+          assert.equal(r.latestDocumentAt, '2026-10-01T02:00:00.000Z',
+            'ต้องตอบได้ว่ากู้จากไฟล์นี้แล้วจะเสียงานไปถึงวันไหน');
+          assert.ok(r.sizeBytes > 0);
+        } finally { fs.rmSync(file, { force: true }); }
+      });
+
+      // สำเนาของปีที่แล้วถูกสร้างตอนที่ระบบยังไม่มีตารางใหม่ๆ ถ้าถามตรงๆ จะโยน "no such table"
+      // แล้วไฟล์ที่กู้คืนได้จริงจะถูกรายงานว่าใช้ไม่ได้ ซึ่งแย่กว่าไม่มีปุ่มตรวจเสียอีก
+      test('สำเนาเก่าที่ยังไม่มีตารางใหม่ๆ ต้องไม่ถูกตัดสินว่าใช้ไม่ได้', () => {
+        const file = tmpFile('old');
+        const d = new DatabaseSync(file);
+        try {
+          d.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, deleted_at TEXT, status TEXT);
+            INSERT INTO users VALUES ('u1', NULL, 'active');`);
+        } finally { d.close(); }
+        try {
+          const r = BK.inspectBackupFile(file);
+          assert.equal(r.ok, true, 'ยังถือว่ากู้คืนได้');
+          assert.equal(r.users, 1);
+          assert.equal(r.documents, null, 'ตารางที่ยังไม่มีต้องคืนค่าว่าง ไม่ใช่โยน error');
+          assert.equal(r.latestDocumentAt, null);
+        } finally { fs.rmSync(file, { force: true }); }
+      });
+
+      test('ไฟล์ที่ดาวน์โหลดมาไม่ครบ/ไม่ใช่ฐานข้อมูล ต้องถูกจับได้ด้วยด่านเดียวกับตอนกู้คืนจริง', () => {
+        const junk = tmpFile('junk');
+        fs.writeFileSync(junk, Buffer.alloc(4096, 0x41));
+        try {
+          assert.throws(() => BK.inspectBackupFile(junk), /ไม่ใช่ฐานข้อมูล SQLite/);
+        } finally { fs.rmSync(junk, { force: true }); }
+
+        const small = tmpFile('small');
+        fs.writeFileSync(small, 'SQLite format 3\0');
+        try {
+          assert.throws(() => BK.inspectBackupFile(small), /เล็กผิดปกติ/);
+        } finally { fs.rmSync(small, { force: true }); }
+
+        // ไฟล์ SQLite จริงแต่ไม่มีตารางของระบบเลย = ไม่ใช่สำเนาของระบบนี้
+        const empty = tmpFile('empty');
+        const d = new DatabaseSync(empty);
+        try { d.exec('CREATE TABLE junk (x TEXT); INSERT INTO junk VALUES (' + "'" + 'x'.repeat(600) + "'" + ');'); } finally { d.close(); }
+        try {
+          assert.throws(() => BK.inspectBackupFile(empty), /ไม่มีตารางของระบบ/);
+        } finally { fs.rmSync(empty, { force: true }); }
+      });
+
+      test('ไม่ทิ้งไฟล์ชั่วคราวไว้ และไม่แตะฐานข้อมูลที่ใช้งานอยู่', () => {
+        const before = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('esaraban-inspect-')).length;
+        const file = tmpFile('keep');
+        const d = new DatabaseSync(file);
+        try { d.exec("CREATE TABLE users (id TEXT PRIMARY KEY, deleted_at TEXT, status TEXT); INSERT INTO users VALUES ('u1', NULL, 'active');"); } finally { d.close(); }
+        try {
+          BK.inspectBackupFile(file);
+          assert.ok(fs.existsSync(file), 'ตัวตรวจต้องอ่านอย่างเดียว ไม่ลบไฟล์ที่ส่งเข้ามา');
+          assert.equal(fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('esaraban-inspect-')).length, before,
+            'ต้องไม่ทิ้งไฟล์ชั่วคราวค้างไว้');
+        } finally { fs.rmSync(file, { force: true }); }
+      });
+
+      // วงรอบจริงผ่าน Drive (จำลอง): ดาวน์โหลด → ตรวจ → รายงาน โดยฐานข้อมูลที่ใช้งานอยู่ต้องไม่ถูกแตะ
+      test('ดาวน์โหลดจาก Drive มาตรวจได้จริง และไม่แตะฐานข้อมูลที่ใช้งานอยู่', () => {
+        const r = run('inspect');
+        assert.ok(!r.fatal, r.fatal);
+        assert.ok(!r.inspectError, `ต้องตรวจผ่าน แต่ได้: ${r.inspectError}`);
+        assert.equal(r.inspect.ok, true);
+        assert.equal(r.inspect.documents, r.docsBefore, 'จำนวนหนังสือในสำเนาต้องตรงกับของจริงตอนสำรอง');
+        assert.ok(r.inspect.users > 0, 'ต้องอ่านจำนวนผู้ใช้ได้');
+        assert.ok(r.inspect.latestDocumentAt, 'ต้องบอกได้ว่าข้อมูลในสำเนาใหม่ถึงเมื่อไหร่');
+        assert.equal(r.inspectTempLeft, 0, 'ต้องไม่ทิ้งไฟล์ชั่วคราวค้างไว้');
+        assert.equal(r.liveDbStillThere, true, 'ฐานข้อมูลที่ใช้งานอยู่ต้องยังอยู่');
+        assert.equal(r.liveDocsAfterInspect, r.docsBefore, 'และข้อมูลต้องไม่เปลี่ยน');
+      });
+
+      test('สำเนาที่ดาวน์โหลดมาไม่ครบ ต้องรายงานเป็นภาษาไทยที่อ่านรู้เรื่อง', () => {
+        const r = run('inspect-bad');
+        assert.ok(!r.fatal, r.fatal);
+        assert.ok(r.inspectError, 'ต้องตรวจไม่ผ่าน');
+        assert.match(r.inspectError, /ไฟล์เสียหาย|ไม่ครบ|เสียหาย/,
+          'SQLite โยนข้อความอังกฤษดิบๆ ซึ่งผู้ดูแลโรงเรียนอ่านไม่รู้เรื่อง ต้องแปลก่อนขึ้นหน้าจอ');
+        assert.equal(r.inspectTempLeft, 0, 'ตรวจไม่ผ่านก็ต้องเก็บกวาดไฟล์ชั่วคราวเหมือนกัน');
+        assert.equal(r.liveDbStillThere, true, 'และต้องไม่กระทบฐานข้อมูลที่ใช้งานอยู่');
+      });
+
+      describe('ด่านฝั่งเซิร์ฟเวอร์ของปุ่มตรวจสอบ', () => {
+        test('ครูยิง API เองไม่ได้', async () => {
+          const res = await dispatchPost(loadUserForTest(seed.userIds.teacher001), '/admin/backups/inspect', { id: 'x' });
+          assert.equal(res.status, 403);
+        });
+
+        test('ไม่ระบุไฟล์ต้องบอกให้ชัด', async () => {
+          const res = await dispatchPost(registrarUser, '/admin/backups/inspect', {});
+          assert.equal(res.status, 400);
+          assert.match(res.body, /ไม่ได้ระบุไฟล์/);
+        });
+
+        // "ตรวจแล้วพบว่าไฟล์เสีย" คือผลการตรวจที่สำเร็จ ไม่ใช่ระบบขัดข้อง — ถ้าตอบ 5xx หน้าเว็บจะ
+        // ขึ้นว่า "ตรวจไม่สำเร็จ" ซึ่งอ่านแล้วเข้าใจว่าปุ่มเสีย ทั้งที่คำตอบคือสำเนาใช้ไม่ได้
+        test('ตรวจแล้วใช้ไม่ได้ ต้องตอบเป็นผลการตรวจ ไม่ใช่ error ของระบบ', async () => {
+          const res = await dispatchPost(registrarUser, '/admin/backups/inspect', { id: 'ไม่มีไฟล์นี้' });
+          assert.equal(res.status, 200, 'ต้องไม่ใช่ 5xx');
+          assert.match(res.body, /"ok":false/);
+          assert.match(res.body, /"error":"[^"]+"/, 'ต้องบอกสาเหตุให้ผู้ดูแลอ่านรู้เรื่อง');
+        });
+      });
+    });
+
     // กับดักของการย้ายเซิร์ฟเวอร์: เครื่องใหม่เริ่มด้วยฐานข้อมูลเปล่าและกู้คืนไม่สำเร็จ ถ้าปล่อยให้
     // สำรองต่อ ความว่างเปล่าจะทับสำเนาที่ใช้กู้คืนได้จนหมดภายในชั่วโมงเดียว (สำรองทุก 5 นาที
     // เก็บวันละ 12 ชุด) — ข้อนี้ทดสอบทั้งเส้นจริง ไม่ใช่แค่ตัวตัดสินใจล้วนๆ

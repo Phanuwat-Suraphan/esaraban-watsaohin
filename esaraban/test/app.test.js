@@ -12696,6 +12696,44 @@ describe('กล่องเตือนบนหน้าแรกต้อง�
       blocking ? 'ข้อที่ทำให้ข้อมูลหาย/ใครก็เข้าได้ ต้องกางค้างไว้' : 'ข้อที่แค่แนะนำ ต้องพับได้');
   });
 
+  // วัดจริงบน iPhone 13 ด้วยบัญชีครู: กล่องชวนติดตั้งแอปสูง 534px และอยู่บนสุดเริ่มที่ 76px
+  // ผลคือหน้าจอแรกที่ครูเห็นทุกวันคือคำชวนติดตั้ง ส่วนงานที่รอตัวเองอยู่ถูกดันไปที่ 1,079px
+  // (1.6 หน้าจอ) ครูที่ไม่เคยกด "ไม่ต้องแสดงอีก" ก็เจอแบบนี้ทุกวันตลอดไป
+  describe('คำชวนติดตั้งแอป ต้องไม่บังงานของเจ้าของหน้า', () => {
+    test('ต้องอยู่หลังการ์ดงานของฉัน ไม่ใช่บนสุด', async () => {
+      const page = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/');
+      const hint = page.body.indexOf('id="installHint"');
+      const work = page.body.indexOf('งานของฉัน — ต้องดำเนินการ');
+      const kpi = page.body.indexOf('class="kpi-grid"');
+      assert.ok(hint > 0 && work > 0 && kpi > 0, 'หาองค์ประกอบบนหน้าแรกไม่เจอ');
+      assert.ok(hint > work && hint > kpi,
+        'ของที่ครูมาดู (ตัวเลขสรุปและงานของตัวเอง) ต้องมาก่อนของที่ระบบอยากชวนให้ทำ');
+    });
+
+    test('ต้องพับไว้และซ่อนไว้ก่อน ไม่ใช่กางเต็มทุกครั้งที่เปิดหน้าแรก', async () => {
+      const page = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/');
+      const at = page.body.indexOf('id="installHint"');
+      const tag = page.body.slice(page.body.lastIndexOf('<', at), page.body.indexOf('>', at) + 1);
+      assert.match(tag, /^<details /, 'ต้องพับได้');
+      assert.match(tag, /\shidden[\s>]/, 'ต้องซ่อนไว้ก่อน แล้วให้สคริปต์เปิดเฉพาะบนมือถือที่ยังไม่ได้ติดตั้ง');
+      assert.ok(!/\sopen[\s>]/.test(tag), 'และต้องไม่กางมาตั้งแต่แรก');
+      assert.match(page.body, /onclick="dismissInstallHint\(\)"/, 'ปุ่มปิดถาวรต้องยังอยู่');
+    });
+
+    // โหมดส่วนตัว/เบราว์เซอร์ที่ปิดการเก็บข้อมูลเว็บ โยน error ตั้งแต่บรรทัดที่เรียก localStorage
+    // ตอนอ่านจะทำให้สคริปต์ทั้งก้อนหยุด ตอนเขียนจะทำให้กดปุ่มปิดแล้วไม่มีอะไรเกิดขึ้น
+    test('การจำว่ากดปิดแล้ว ต้องไม่ทำให้หน้าพังเมื่อเบราว์เซอร์ไม่ให้เก็บข้อมูล', () => {
+      const src = fs.readFileSync(new URL('../src/routes/dashboard.js', import.meta.url), 'utf8');
+      const at = src.indexOf('esaraban_install_hint_dismissed');
+      const block = src.slice(at - 300, at + 600);
+      for (const call of ['localStorage.getItem', 'localStorage.setItem']) {
+        const i = block.indexOf(call);
+        assert.ok(i > 0, `ไม่พบ ${call}`);
+        assert.match(block.slice(Math.max(0, i - 60), i), /try \{/, `${call} ต้องอยู่ใน try/catch`);
+      }
+    });
+  });
+
   test('สถานะเปิด/ปิดของแต่ละกล่องต้องถูกจำไว้ที่เครื่องผู้ใช้', () => {
     const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
     const at = app.indexOf("querySelectorAll('details[data-fold]')");

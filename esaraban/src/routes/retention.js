@@ -17,9 +17,12 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
   const canManage = ctx.user.roleCodes.some((r) => CAN_MANAGE.includes(r));
   const canApprove = ctx.user.roleCodes.some((r) => CAN_APPROVE.includes(r));
 
+  // ช่องติ๊กขึ้นเฉพาะคนที่เสนอบัญชีขอทำลายได้จริง — ผู้บริหารเป็นผู้พิจารณาอนุมัติ ไม่ใช่ผู้เสนอ
+  // (ตามระเบียบฯ ธุรการเป็นผู้จัดทำบัญชีหนังสือขอทำลาย แล้วหัวหน้าส่วนราชการจึงพิจารณา)
+  // เดิมช่องติ๊กขึ้นให้ทุกคน ผู้บริหารจึงติ๊กไปยี่สิบรายการแล้วเลื่อนลงไปหาปุ่ม ซึ่งไม่มี
   const eligibleRows = eligible.map((d) => `
     <tr>
-      <td><input type="checkbox" class="destroy-check" value="${d.id}" /></td>
+      ${canManage ? `<td><input type="checkbox" class="destroy-check" value="${d.id}" /></td>` : ''}
       <td>${esc(d.doc_number_display)}</td>
       <td>${esc(d.title)}</td>
       <td>${esc(d.dept_name)}</td>
@@ -49,9 +52,9 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
         ทำลายได้ครั้งละไม่เกิน 500 ฉบับอยู่แล้ว เมื่อจัดการชุดนี้เสร็จ ฉบับที่เหลือจะขึ้นมาแทน
       </div>` : ''}
       ${eligible.length ? `
-        <form id="batchForm">
+        ${canManage ? '<form id="batchForm">' : ''}
           <div class="table-wrap"><table>
-            <thead><tr><th></th><th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ครบกำหนด</th></tr></thead>
+            <thead><tr>${canManage ? '<th></th>' : ''}<th>เลขที่</th><th>เรื่อง</th><th>ฝ่าย</th><th>ครบกำหนด</th></tr></thead>
             <tbody>${eligibleRows}</tbody>
           </table></div>
           ${canManage ? `
@@ -64,8 +67,9 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
             <textarea name="reason" placeholder="เช่น เอกสารการเงินประจำปี 2558 ครบกำหนดเก็บ 5 ปีตามระเบียบ"></textarea>
           </div>
           <button class="btn btn-danger" type="submit">เสนอขอทำลาย (รายการที่เลือก)</button>
-          ` : '<p class="text-muted">เฉพาะธุรการ/ผู้ดูแลระบบเท่านั้นที่เสนอบัญชีขอทำลายได้</p>'}
         </form>
+          ` : `<p class="text-muted" style="margin-top:.6rem">รายการนี้รอให้เจ้าหน้าที่ธุรการจัดทำเป็น
+            "บัญชีหนังสือขอทำลาย" เสนอขึ้นมา แล้วท่านจึงพิจารณาอนุมัติได้ที่หัวข้อด้านล่าง</p>`}
       ` : '<p class="text-muted">ยังไม่มีเอกสารที่ครบกำหนดอายุการเก็บในขณะนี้</p>'}
     </div>
 
@@ -76,7 +80,7 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
         <tbody>${batchRows}</tbody></table></div>` : '<p class="text-muted">ยังไม่มีบัญชีขอทำลายหนังสือ</p>'}
     </div>
 
-    <script>
+    ${!canManage ? '' : `<script>
       var bf = document.getElementById('batchForm');
       if (bf) bf.addEventListener('submit', function(e){
         e.preventDefault();
@@ -88,7 +92,7 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
           .then(function(res){ if(!res.ok) throw new Error(res.d.error); location.href = res.d.redirect; })
           .catch(function(e){ toast(e.message, 'danger'); });
       });
-    </script>`;
+    </script>`}`;
 
   html(ctx, 200, layout({ user: ctx.user, title: 'อายุการเก็บ/ทำลายหนังสือ', path: '/retention', content }));
 })));

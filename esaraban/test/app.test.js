@@ -1361,6 +1361,41 @@ describe('ทำลายหนังสือ: ผู้เสนอกับ�
     return { docId: doc.id, batchId };
   }
 
+  // ตามระเบียบฯ ธุรการเป็นผู้จัดทำบัญชีหนังสือขอทำลาย แล้วหัวหน้าส่วนราชการจึงพิจารณา — ฝั่งเซิร์ฟเวอร์
+  // บังคับถูกอยู่แล้ว แต่หน้าเว็บโชว์ช่องติ๊กให้ผู้บริหารด้วย ผู้บริหารจึงติ๊กไปยี่สิบรายการแล้วเลื่อนลงไป
+  // หาปุ่ม ซึ่งไม่มี (เจอจากการกวาดหา "ปุ่มที่โผล่มาแล้วกดไม่ได้" ทุกบทบาท)
+  describe('หน้าอายุการเก็บ: ใครเสนอได้เห็นช่องติ๊ก ใครอนุมัติได้เห็นแต่รายการ', () => {
+    // ต้องมีฉบับที่ "ครบกำหนดและยังไม่ถูกเสนอ" ค้างอยู่จริง ไม่ใช่สร้างบัญชีไปแล้ว ไม่งั้นตารางจะว่าง
+    // แล้วเทสต์จะผ่าน/ไม่ผ่านด้วยเหตุผลคนละเรื่องกับที่ตั้งใจตรวจ
+    const eligibleDoc = () => {
+      const doc = makeDoc({ title: `เอกสารครบกำหนดรอเสนอทำลาย ${Math.random().toString(36).slice(2, 8)}` });
+      const oldYearBe = beYear() - 20;
+      db.prepare("UPDATE documents SET status = 'completed', year_be = ?, retention_until = ? WHERE id = ?")
+        .run(oldYearBe, computeRetentionUntil(oldYearBe, 'normal_10y'), doc.id);
+      return doc;
+    };
+
+    test('ผู้บริหารต้องไม่เห็นช่องติ๊กและฟอร์มเสนอ แต่ต้องรู้ว่ารออะไรอยู่', async () => {
+      eligibleDoc();
+      const page = await dispatchGet(loadUserForTest(seed.userIds.director01), '/retention');
+      assert.equal(page.status, 200);
+      assert.ok(!page.body.includes('class="destroy-check"'), 'ติ๊กไปก็ไม่มีปุ่มให้กด');
+      assert.ok(!page.body.includes('id="batchForm"'), 'ฟอร์มเสนอต้องไม่ขึ้น');
+      assert.ok(!page.body.includes("fetch('/retention/batches'"),
+        'สคริปต์ส่งฟอร์มก็ไม่ต้องส่งไปให้คนที่ไม่มีฟอร์ม');
+      assert.match(page.body, /รอให้เจ้าหน้าที่ธุรการจัดทำ/, 'ต้องบอกว่ารออะไรอยู่ ไม่ใช่เงียบ');
+    });
+
+    test('ธุรการยังเห็นช่องติ๊กและฟอร์มครบเหมือนเดิม', async () => {
+      eligibleDoc();
+      const page = await dispatchGet(registrarUser, '/retention');
+      assert.equal(page.status, 200);
+      assert.match(page.body, /class="destroy-check"/);
+      assert.match(page.body, /id="batchForm"/);
+      assert.match(page.body, /เสนอขอทำลาย \(รายการที่เลือก\)/);
+    });
+  });
+
   // ระเบียบสำนักนายกฯ ว่าด้วยงานสารบรรณกำหนดให้คณะกรรมการจัดทำ "บัญชีหนังสือขอทำลาย" (แบบที่ 25)
   // เสนอหัวหน้าส่วนราชการพิจารณา แล้วเก็บไว้เป็นหลักฐาน — ระบบบันทึกครบแล้วแต่เดิมพิมพ์ออกมาไม่ได้
   // ทั้งที่ส่วนอื่น (ทะเบียนหนังสือ ใบลา) มีหน้าพิมพ์หมด โรงเรียนจึงต้องพิมพ์บัญชีขึ้นใหม่เองด้วยมือ
@@ -13296,6 +13331,67 @@ describe('บัญชีแจ้งเวียน — ใครอ่าน�
       circular();
       const page = await dispatchGet(teacher(), '/');
       assert.ok(!page.body.includes('id="broadcastPending"'));
+    });
+  });
+
+  // อีกด้านของเรื่องเดียวกัน: ที่ทำไว้ก่อนหน้านี้มองจากฝั่งคนแจ้งเวียนล้วนๆ ("เหลือใครยังไม่อ่าน")
+  // ฝั่งครูไม่มีอะไรเลย — รู้ว่ามีหนังสือเวียนได้ทางเดียวคือบังเอิญเห็นแจ้งเตือนตอนที่มันถูกส่ง
+  // ถ้าวันนั้นไม่ได้เปิดเว็บหรือกดปัดทิ้ง ก็ไม่มีที่ไหนบอกอีกเลยว่าค้างอ่านอยู่
+  describe('ฝั่งครู: ฉันค้างอ่านหนังสือเวียนอะไรบ้าง', () => {
+    const mine = (u) => BR.myUnreadBroadcasts(u.id, { limit: 500 });
+
+    test('หนังสือเวียนที่ยังไม่ได้เปิด ต้องอยู่ในรายการของครูคนนั้น', () => {
+      const doc = circular();
+      const before = mine(teacher());
+      assert.ok(before.docs.some((d) => d.id === doc.id), 'ต้องอยู่ในรายการ');
+      assert.ok(before.total >= 1);
+    });
+
+    test('เปิดอ่านแล้วหลุดออกเอง ไม่ต้องมีปุ่ม "อ่านแล้ว" ให้กดทิ้ง', async () => {
+      const doc = circular();
+      assert.ok(mine(teacher()).docs.some((d) => d.id === doc.id));
+      await dispatchGet(teacher(), `/documents/${doc.id}`);
+      assert.ok(!mine(teacher()).docs.some((d) => d.id === doc.id),
+        'ปุ่ม "อ่านแล้ว" คือปุ่มที่คนกดโดยไม่อ่านเสมอ — ใช้การเปิดหน้าจริงเป็นตัวนับแทน');
+    });
+
+    test('คนที่แจ้งเวียนเองไม่ต้องมานั่งอ่านของตัวเอง', () => {
+      const doc = circular();
+      assert.ok(!mine(reg()).docs.some((d) => d.id === doc.id),
+        'ผู้แจ้งเวียนไม่ได้อยู่ในวงผู้รับอยู่แล้ว จึงต้องไม่โผล่ในรายการค้างอ่านของตัวเอง');
+    });
+
+    // ถ้าสองฝั่งใช้เงื่อนไขคนละชุด ธุรการจะทวงฉบับที่ไม่ขึ้นในหน้าของครู แล้วครูจะหาไม่เจอว่าต้องอ่านอะไร
+    test('หนังสือที่ยกเลิกแล้วต้องหายไปจากทั้งสองฝั่งพร้อมกัน', () => {
+      const doc = circular();
+      assert.ok(mine(teacher()).docs.some((d) => d.id === doc.id), 'ตั้งค่าเทสต์ผิดถ้ายังไม่อยู่ในรายการ');
+      assert.ok(BR.pendingBroadcasts(500).docs.some((d) => d.id === doc.id));
+      // แจ้งเวียนแล้วสถานะเป็น in_progress ซึ่ง voidDocument ปฏิเสธโดยตั้งใจ (ห้ามยกเลิกเรื่องที่
+      // กำลังเดินอยู่) — ตั้งสถานะตรงๆ เพราะเทสต์นี้ตรวจ "ตัวกรองสถานะ" ไม่ใช่เส้นทางการยกเลิก
+      db.prepare("UPDATE documents SET status = 'voided' WHERE id = ?").run(doc.id);
+      assert.ok(!mine(teacher()).docs.some((d) => d.id === doc.id), 'ฝั่งครูต้องไม่เหลือ');
+      assert.ok(!BR.pendingBroadcasts(500).docs.some((d) => d.id === doc.id), 'ฝั่งธุรการก็ต้องไม่เหลือ');
+    });
+
+    test('แดชบอร์ดของครูขึ้นกล่องค้างอ่าน พับไว้ พร้อมจำนวนบนหัวข้อ', async () => {
+      const doc = circular();
+      const page = await dispatchGet(teacher(), '/');
+      const at = page.body.indexOf('id="myUnreadBroadcasts"');
+      assert.ok(at > 0, 'ต้องมีกล่องค้างอ่านของครู');
+      const tag = page.body.slice(page.body.lastIndexOf('<', at), page.body.indexOf('>', at) + 1);
+      assert.match(tag, /^<details /, 'ต้องพับได้');
+      assert.ok(!/\sopen[\s>]/.test(tag), 'ต้องพับมาเป็นค่าเริ่มต้นเหมือนกล่องอื่น');
+      const sum = page.body.slice(page.body.indexOf('<summary>', at) + 9, page.body.indexOf('</summary>', at));
+      assert.match(sum, /หนังสือเวียนที่คุณยังไม่ได้อ่าน \d+ ฉบับ/, 'จำนวนต้องอยู่บนหัวข้อ');
+      assert.ok(page.body.includes(`/documents/${doc.id}`), 'ต้องกดเข้าไปอ่านได้เลย');
+    });
+
+    test('อ่านครบแล้วกล่องต้องหายไปจากแดชบอร์ด ไม่ค้างเป็นศูนย์', async () => {
+      // ล้างของค้างทั้งหมดของครูคนนี้ แล้วตรวจว่ากล่องหายจริง
+      db.prepare(`UPDATE document_broadcast_reads SET opened_at = ?
+        WHERE user_id = ? AND opened_at IS NULL`).run(nowIso(), seed.userIds.teacher001);
+      const page = await dispatchGet(teacher(), '/');
+      assert.ok(!page.body.includes('id="myUnreadBroadcasts"'));
     });
 
     test('อ่านครบแล้วต้องหลุดออกจากการ์ดรวม ไม่ค้างเป็นเสียงรบกวน', async () => {

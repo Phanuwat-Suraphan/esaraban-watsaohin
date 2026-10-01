@@ -9,7 +9,7 @@ import { appShortName } from '../services/settings.js';
 import { pendingChaseGroups } from '../services/documentQuery.js';
 import { unassignedIncoming } from '../services/unassigned.js';
 import { unstampedIncoming } from '../services/unstamped.js';
-import { pendingBroadcasts } from '../services/broadcastReads.js';
+import { pendingBroadcasts, myUnreadBroadcasts } from '../services/broadcastReads.js';
 // เงื่อนไข "งานของฉัน" กับลำดับของคิว อยู่ที่ services/myQueue.js ที่เดียว เพราะหน้านี้ ตัวบอกตำแหน่ง
 // บนหน้าเอกสาร ("ฉบับที่ 3 จาก 8") และการเด้งไปฉบับถัดไปหลังกดเสร็จ ต้องเรียงเหมือนกันเป๊ะ
 import { MY_OR_DELEGATED_STEP_SQL, MAX_TASK_ROWS, myWaitingTasks } from '../services/myQueue.js';
@@ -338,6 +338,34 @@ router.get('/', requirePage((ctx) => {
       </div>`,
   });
 
+  /**
+   * หนังสือเวียนที่ "ฉัน" ยังไม่ได้อ่าน — อีกด้านของกล่องข้างบน
+   *
+   * กล่องข้างบนเป็นของคนแจ้งเวียน ("เหลือใครยังไม่อ่านบ้าง") กล่องนี้เป็นของทุกคน ("ฉันค้างอ่านอะไร")
+   * ที่ผ่านมามีแต่ด้านแรก ครูจึงรู้ว่ามีหนังสือเวียนได้ทางเดียวคือบังเอิญเห็นแจ้งเตือนตอนที่มันถูกส่ง
+   * ถ้าวันนั้นไม่ได้เปิดเว็บหรือกดปัดทิ้งไป ก็ไม่มีที่ไหนบอกอีกเลย — การตามให้ครบจึงตกเป็นภาระของ
+   * ธุรการฝ่ายเดียว ทั้งที่ครูส่วนใหญ่ยินดีอ่านถ้ารู้ว่ามีอะไรค้าง
+   *
+   * เปิดหนังสือฉบับนั้นแล้วระบบนับว่าอ่านแล้วทันที (markBroadcastRead ในหน้าเอกสาร) กล่องนี้จึง
+   * หายไปเองโดยไม่ต้องมีปุ่ม "อ่านแล้ว" ให้กดทิ้ง ซึ่งเป็นปุ่มที่คนกดโดยไม่อ่านเสมอ
+   */
+  const myCirculars = myUnreadBroadcasts(user.id);
+  const myCircularAlert = !myCirculars.total ? '' : foldAlert({
+    id: 'myUnreadBroadcasts',
+    tone: 'info',
+    summary: `📬 หนังสือเวียนที่คุณยังไม่ได้อ่าน ${fmtCount(myCirculars.total)} ฉบับ`,
+    body: `
+      <ul style="margin:0;padding-left:1.1rem;font-size:.9rem">
+        ${myCirculars.docs.map((d) => `<li style="margin-bottom:.2rem">
+          <a href="/documents/${d.id}">${esc(d.number)} — ${esc(d.title)}</a>
+          ${d.priority !== 'normal' ? priorityBadge(d.priority) : ''}
+          <span class="text-muted">· เวียนเมื่อ ${fmtDate(d.sentAt)}</span>
+        </li>`).join('')}
+        ${myCirculars.hiddenCount ? `<li class="text-muted">และอีก ${fmtCount(myCirculars.hiddenCount)} ฉบับ</li>` : ''}
+      </ul>
+      <div class="help-text" style="margin-top:.3rem">เปิดอ่านแล้วรายการจะหายไปเอง ไม่ต้องกดอะไรเพิ่ม</div>`,
+  });
+
   // รายการตั้งค่าที่ยังไม่เสร็จ — เฉพาะแอดมิน เพราะเป็นคนเดียวที่กดทำได้จริง และหายไปเองเมื่อครบทุกข้อ
   const checklist = user.roleCodes.includes('admin') ? setupChecklist() : null;
   // ข้อที่ถ้าไม่ทำแล้วข้อมูลหาย/ใครก็เข้าเป็นใครก็ได้ ต้องกางค้างไว้เสมอ ส่วน "ที่แนะนำ" พับได้
@@ -372,6 +400,7 @@ router.get('/', requirePage((ctx) => {
     ${stampAlert}
     ${unassignedAlert}
     ${unstampedAlert}
+    ${myCircularAlert}
     ${circularAlert}
     ${checklistHtml}
     ${ctx.query.warn ? `<div class="alert alert-warning">⚠️ ${esc(ctx.query.warn)}</div>` : ''}

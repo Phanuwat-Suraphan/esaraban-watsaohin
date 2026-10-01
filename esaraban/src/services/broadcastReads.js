@@ -105,6 +105,7 @@ export function pendingBroadcasts(limit = MAX_PENDING_BROADCASTS) {
     JOIN documents d ON d.id = b.document_id
     JOIN users u ON u.id = r.user_id
     WHERE d.deleted_at IS NULL AND u.deleted_at IS NULL AND u.status = 'active'
+      AND d.status NOT IN ('voided', 'destroyed')
       AND b.created_at >= ?
     GROUP BY d.id
     HAVING read_count < total
@@ -119,6 +120,45 @@ export function pendingBroadcasts(limit = MAX_PENDING_BROADCASTS) {
     docs: rows.slice(0, limit).map((r) => ({
       id: r.id, number: r.doc_number_display, title: r.title,
       readCount: r.read_count, totalCount: r.total, unread: r.total - r.read_count, lastSent: r.last_sent,
+    })),
+    hiddenCount: Math.max(0, rows.length - limit),
+  };
+}
+
+
+/**
+ * หนังสือเวียนที่ "คนนี้" ยังไม่ได้เปิดอ่าน — อีกด้านหนึ่งของเรื่องเดียวกัน
+ *
+ * ระบบตามอ่านที่ทำไว้ก่อนหน้านี้มองจากฝั่งคนแจ้งเวียนล้วนๆ: นับได้ว่าใครยังไม่อ่าน และคัดลอกข้อความ
+ * ไปทวงในกลุ่มไลน์ได้ แต่ฝั่งครูไม่มีอะไรเลย — ครูรู้ว่ามีหนังสือเวียนได้ทางเดียวคือบังเอิญเห็น
+ * แจ้งเตือนตอนที่มันถูกส่ง ถ้าวันนั้นไม่ได้เปิดเว็บ หรือกดปัดทิ้งไป ก็ไม่มีที่ไหนบอกอีกเลยว่าค้างอ่านอยู่
+ *
+ * ผลคือการ "ตามให้ครบ" ตกเป็นภาระของธุรการฝ่ายเดียว ทั้งที่ครูส่วนใหญ่ยินดีอ่านถ้ารู้ว่ามีอะไรค้าง
+ *
+ * ใช้ช่วงเวลาเดียวกับ pendingBroadcasts เพื่อให้สองฝั่งเห็นกองเดียวกันเสมอ — ถ้าคนละช่วง ธุรการจะ
+ * ทวงฉบับที่ไม่ขึ้นในหน้าของครู แล้วครูจะหาไม่เจอว่าต้องอ่านอะไร
+ */
+export const MAX_MY_UNREAD = 10;
+
+export function myUnreadBroadcasts(userId, { limit = MAX_MY_UNREAD } = {}) {
+  const since = new Date(Date.now() - RECENT_DAYS * 86400000).toISOString();
+  const rows = db.prepare(`
+    SELECT d.id, d.doc_number_display, d.title, d.priority, d.secret_level,
+      MAX(b.created_at) AS sent_at
+    FROM document_broadcast_reads r
+    JOIN document_broadcasts b ON b.id = r.broadcast_id
+    JOIN documents d ON d.id = b.document_id
+    WHERE r.user_id = :uid AND r.opened_at IS NULL
+      AND d.deleted_at IS NULL AND d.status NOT IN ('voided', 'destroyed')
+      AND b.created_at >= :since
+    GROUP BY d.id
+    ORDER BY sent_at DESC
+  `).all({ uid: userId, since });
+  return {
+    total: rows.length,
+    docs: rows.slice(0, limit).map((r) => ({
+      id: r.id, number: r.doc_number_display, title: r.title, priority: r.priority,
+      secret: ['secret', 'top_secret'].includes(r.secret_level), sentAt: r.sent_at,
     })),
     hiddenCount: Math.max(0, rows.length - limit),
   };

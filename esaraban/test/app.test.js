@@ -10861,6 +10861,172 @@ describe('หน้าที่แสดงรายการยาวต้อ�
 // ดาวน์โหลดไฟล์ไปส่งออกทีหลังจึงไม่มีทางรู้ — และคนที่เห็นคำเตือนคือผู้ตัดสินใจ ไม่ใช่คนที่เอาไฟล์ไปใช้
 //
 // เครื่องที่รันเทสต์ไม่มี chromium/qpdf การประทับจึงล้มเหลวเสมอ ซึ่งพอดีกับที่ต้องการทดสอบ
+// ช่องติ๊กตราธุรการ "เสนอ ผอ." เคยมีอยู่สองที่เท่านั้น คือในการ์ดเสนอ (ซึ่งหายไปทันทีที่กดเสนอ)
+// และในการ์ดดำเนินการตอนธุรการถือขั้นตอนอยู่เอง พอเสนอขึ้นไปแล้วจึงไม่เหลือทางไหนให้ปั๊มเลย
+// ทั้งที่ฝั่งเซิร์ฟเวอร์ไม่เคยห้าม — ผอ. เปิดหนังสือขึ้นมาแล้วไม่มีตรา "เพื่อโปรดทราบและพิจารณา"
+// อยู่บนนั้น ซึ่งเป็นสิ่งที่บอกท่านว่าธุรการกลั่นกรองแล้วเสนออะไรมา (ผู้ใช้แจ้งเข้ามาเอง)
+describe('ธุรการลืมติ๊กตราเสนอ ผอ. — ต้องกลับมาปั๊มตามหลังได้', () => {
+  const pdfB64 = Buffer.from(`%PDF-1.4\n${'x'.repeat(2000)}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
+  let n = 0;
+  // ลงทะเบียนผ่าน endpoint จริงเพื่อให้ได้ไฟล์แนบ PDF ติดมาด้วยเหมือนการใช้งานจริง
+  const registerWithPdf = async (over = {}) => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      direction: 'incoming', title: `หนังสือสำหรับตราธุรการ ${++n} ${Math.random().toString(36).slice(2, 8)}`,
+      correspondentName: 'สพป.', departmentId: deptId, allowDuplicate: true,
+      fileName: 'letter.pdf', fileType: 'application/pdf', fileDataBase64: pdfB64, ...over,
+    });
+    assert.equal(res.status, 201, res.body);
+    return /\/documents\/([0-9a-f-]{36})/.exec(res.body)[1];
+  };
+  const proposeToDirector = (docId) => assignStep({
+    documentId: docId, assigneeId: seed.userIds.director01, instruction: 'เพื่อโปรดพิจารณา', actorUser: registrarUser,
+  });
+  const commentsOf = (docId) => db.prepare('SELECT message FROM comments WHERE document_id = ?').all(docId);
+
+  test('ก่อนเสนอ ยังไม่ต้องมีการ์ดนี้ — ช่องติ๊กอยู่ในการ์ดเสนออยู่แล้ว', async () => {
+    const id = await registerWithPdf();
+    const page = await dispatchGet(registrarUser, `/documents/${id}`);
+    assert.match(page.body, /assignRegMark/, 'การ์ดเสนอต้องมีช่องติ๊กอยู่');
+    assert.ok(!page.body.includes('lateRegMark'), 'ไม่ควรมีช่องกรอกเรื่องเดียวกันสองที่ในหน้าเดียว');
+  });
+
+  test('เสนอไปแล้วโดยลืมติ๊ก ต้องมีการ์ดให้ปั๊มตามหลัง พร้อมบอกว่า ผอ. ยังไม่ได้กดอะไร', async () => {
+    const id = await registerWithPdf();
+    proposeToDirector(id);
+    const page = await dispatchGet(registrarUser, `/documents/${id}`);
+    assert.ok(!page.body.includes('assignRegMark'), 'ตั้งค่าเทสต์ผิดถ้าการ์ดเสนอยังอยู่');
+    assert.match(page.body, /lateRegMark/, 'ต้องมีทางปั๊มตามหลัง');
+    assert.match(page.body, /id="lateRegistrarWarn"/);
+    assert.match(page.body, /ผอ\. ยังไม่ได้กดอะไรกับเรื่องนี้/, 'ต้องบอกว่ายังทันปั๊มก่อนท่านเปิดอ่าน');
+  });
+
+  test('ปั๊มตามหลังแล้วบันทึกในระบบว่าเสนออะไร แม้เครื่องนี้ปั๊มลงไฟล์จริงไม่ได้', async () => {
+    const id = await registerWithPdf();
+    proposeToDirector(id);
+    assert.equal(commentsOf(id).length, 0, 'ตั้งค่าเทสต์ผิดถ้ามีความเห็นอยู่ก่อนแล้ว');
+    const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+      pin: userPin('reg001'), registrarMarks: ['เพื่อโปรดทราบและพิจารณา', 'เพื่อแจ้งฝ่ายงาน'],
+      registrarUnit: 'ฝ่ายวิชาการ', registrarNote: '',
+    });
+    assert.equal(res.status, 200, res.body);
+    const msgs = commentsOf(id).map((c) => c.message);
+    assert.equal(msgs.length, 1, 'ต้องเหลือบันทึกไว้ว่าใครเสนออะไร ถึงการปั๊มลงไฟล์จะล้มก็ตาม');
+    assert.match(msgs[0], /เรียน ผู้อำนวยการ/);
+    assert.match(msgs[0], /เพื่อโปรดทราบและพิจารณา/);
+    assert.match(msgs[0], /เพื่อแจ้งฝ่ายงาน ฝ่ายวิชาการ/, 'ข้อที่มีเส้นประต้องเติมค่าที่กรอกมาด้วย');
+  });
+
+  // เครื่องที่รันเทสต์ไม่มี chromium/qpdf การเขียนลงไฟล์จึงล้มเสมอ ซึ่งพอดีกับอีกกรณีที่ต้องตรวจ:
+  // กดไปแล้วแต่เขียนลงไฟล์ไม่สำเร็จ ต้องไม่เตือนว่า "ยังไม่ได้ปั๊ม" ซ้ำอีก เพราะระบบเก็บเนื้อหาไว้แล้ว
+  // และมีปุ่ม "ประทับใหม่" ของมันเองอยู่ — ถ้าเตือนซ้ำ ธุรการจะกรอกใหม่แล้วได้ความเห็นซ้ำสองชุด
+  test('กดแล้วแต่เขียนลงไฟล์ไม่สำเร็จ ต้องชี้ไปที่ปุ่มประทับใหม่ ไม่ใช่ชวนให้กรอกซ้ำ', async () => {
+    const id = await registerWithPdf();
+    proposeToDirector(id);
+    await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+      pin: userPin('reg001'), registrarMarks: ['เพื่อโปรดทราบและพิจารณา'],
+    });
+    const att = db.prepare('SELECT stamp_retry_json FROM attachments WHERE document_id = ?').get(id);
+    assert.match(String(att.stamp_retry_json), /"kind":"registrar"/, 'ตั้งค่าเทสต์ผิดถ้าไม่มีคิวประทับใหม่ค้างอยู่');
+    const page = await dispatchGet(registrarUser, `/documents/${id}`);
+    assert.ok(!page.body.includes('id="lateRegistrarWarn"'), 'ต้องไม่เตือนเหมือนยังไม่เคยกด');
+    assert.match(page.body, /ประทับใหม่อีกครั้ง/, 'ต้องชี้ไปที่ปุ่มซ่อมที่มีอยู่แล้ว');
+    assert.equal(commentsOf(id).length, 1, 'และต้องไม่เกิดความเห็นซ้ำ');
+  });
+
+  // ใจความของเรื่องทั้งหมด: ตราต้อง "ขึ้นจริงบนไฟล์" ไม่ใช่แค่บันทึกไว้ในระบบ — ดักที่ตัววาดตรา
+  // ด้วยช่องทดสอบของ pdfStamp (เครื่องนี้ไม่มี chromium/qpdf จึงรันทั้งกระบวนการจริงไม่ได้)
+  test('ตราที่ปั๊มตามหลังต้องมีข้อที่ติ๊กไว้จริง และหัวตราเป็นชื่อโรงเรียน', async () => {
+    const stamp = await import('../src/services/pdfStamp.js');
+    const id = await registerWithPdf();
+    proposeToDirector(id);
+    let html = '';
+    stamp._setStampHtmlSinkForTest((build) => { html = build(0); return Buffer.from('%PDF-'); });
+    try {
+      const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+        pin: userPin('reg001'), registrarMarks: ['เพื่อโปรดทราบและพิจารณา', 'เพื่อแจ้งฝ่ายงาน'],
+        registrarUnit: 'ฝ่ายวิชาการ',
+      });
+      assert.equal(res.status, 200, res.body);
+    } finally {
+      stamp._setStampHtmlSinkForTest(null);
+    }
+    assert.match(html, /เรียน ผู้อำนวยการ/, 'ต้องเป็นตราเสนอ ผอ. จริง');
+    assert.match(html, /เพื่อโปรดทราบและพิจารณา/);
+    assert.match(html, /ฝ่ายวิชาการ/, 'ข้อที่มีเส้นประต้องเติมค่าที่กรอกมา');
+    assert.equal((html.match(/<span class="rb"><i><\/i><\/span>/g) || []).length, 2, 'ต้องฝนเฉพาะสองข้อที่ติ๊ก');
+
+    // ปั๊มสำเร็จแล้ว การ์ดต้องเลิกเตือนและบอกจำนวนครั้งแทน
+    const page = await dispatchGet(registrarUser, `/documents/${id}`);
+    assert.ok(!page.body.includes('id="lateRegistrarWarn"'));
+    assert.match(page.body, /ปั๊มลงไฟล์ไปแล้ว 1 ครั้ง/);
+  });
+
+  describe('ด่านฝั่งเซิร์ฟเวอร์', () => {
+    test('ครูยิง API เองไม่ได้ — ตรานี้เป็นของธุรการ', async () => {
+      const id = await registerWithPdf();
+      proposeToDirector(id);
+      const res = await dispatchPost(loadUserForTest(seed.userIds.teacher001), `/documents/${id}/registrar-stamp`, {
+        pin: userPin('teacher001'), registrarMarks: ['เพื่อโปรดทราบและพิจารณา'],
+      });
+      assert.equal(res.status, 403);
+      assert.match(res.body, /เฉพาะธุรการ/);
+    });
+
+    test('PIN ผิดต้องไม่ผ่าน — เป็นการแก้ไฟล์หนังสือฉบับจริง', async () => {
+      const id = await registerWithPdf();
+      proposeToDirector(id);
+      const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+        pin: '000000', registrarMarks: ['เพื่อโปรดทราบและพิจารณา'],
+      });
+      assert.equal(res.status, 401);
+      assert.equal(commentsOf(id).length, 0, 'PIN ผิดต้องไม่ทิ้งบันทึกอะไรไว้เลย');
+    });
+
+    test('ไม่ติ๊กและไม่พิมพ์อะไรเลย ต้องบอกให้ชัด ไม่ใช่ปั๊มตราเปล่า', async () => {
+      const id = await registerWithPdf();
+      proposeToDirector(id);
+      const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, { pin: userPin('reg001') });
+      assert.equal(res.status, 400);
+      assert.match(res.body, /ติ๊กอย่างน้อยหนึ่งข้อ/);
+    });
+
+    // "เพื่อโปรดพิจารณา" บนเรื่องที่จบไปแล้ว อ่านแล้วเหมือนยังรอ ผอ. อยู่ และไฟล์ที่เก็บเข้าแฟ้ม
+    // จะขัดกับทะเบียนที่บอกว่าปิดเรื่องแล้ว
+    test('เรื่องที่ปิดไปแล้ว ปั๊มเพิ่มไม่ได้', async () => {
+      const id = await registerWithPdf();
+      proposeToDirector(id);
+      db.prepare("UPDATE documents SET status = 'completed' WHERE id = ?").run(id);
+      const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+        pin: userPin('reg001'), registrarMarks: ['เพื่อโปรดทราบและพิจารณา'],
+      });
+      assert.equal(res.status, 409);
+      assert.match(res.body, /ปิดไปแล้ว/);
+      const page = await dispatchGet(registrarUser, `/documents/${id}`);
+      assert.ok(!page.body.includes('lateRegMark'), 'และต้องไม่มีปุ่มให้กดด้วย');
+    });
+
+    test('หนังสือที่ไม่มีไฟล์ PDF ปั๊มไม่ได้ และไม่มีการ์ดให้กด', async () => {
+      const doc = makeDoc({ title: `ไม่มีไฟล์แนบสำหรับตราธุรการ ${++n}` });
+      proposeToDirector(doc.id);
+      const res = await dispatchPost(registrarUser, `/documents/${doc.id}/registrar-stamp`, {
+        pin: userPin('reg001'), registrarMarks: ['เพื่อโปรดทราบและพิจารณา'],
+      });
+      assert.equal(res.status, 409);
+      assert.match(res.body, /ยังไม่มีไฟล์ PDF/);
+      const page = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+      assert.ok(!page.body.includes('lateRegMark'));
+    });
+
+    test('ผอ. ไม่เห็นการ์ดนี้ — ท่านมีกล่องความเห็นของท่านเองอยู่แล้ว', async () => {
+      const id = await registerWithPdf();
+      proposeToDirector(id);
+      const page = await dispatchGet(loadUserForTest(seed.userIds.director01), `/documents/${id}`);
+      assert.equal(page.status, 200);
+      assert.ok(!page.body.includes('lateRegMark'));
+    });
+  });
+});
+
 describe('ประทับลงไฟล์ไม่สำเร็จ ต้องเตือนค้างไว้ ไม่ใช่เตือนแวบเดียว', () => {
   const attachmentOf = (documentId) =>
     db.prepare('SELECT * FROM attachments WHERE document_id = ?').get(documentId);

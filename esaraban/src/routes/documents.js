@@ -2270,6 +2270,87 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
     </script>` : '';
 
+  /**
+   * ปั๊มตราธุรการ "เสนอ ผอ." ตามหลัง — สำหรับเรื่องที่เสนอขึ้นไปแล้วโดยลืมติ๊กตรา
+   *
+   * ช่องติ๊กตรานี้เคยมีอยู่สองที่เท่านั้น คือในการ์ด "เสนอ / มอบหมายงาน" (ซึ่งหายไปทันทีที่กดเสนอ
+   * เพราะสถานะกลายเป็น in_progress) และในการ์ด "ดำเนินการ" ตอนที่ธุรการถือขั้นตอนอยู่เอง
+   * พอเสนอขึ้นไปแล้วจึงไม่เหลือทางไหนให้ปั๊มเลย ทั้งที่ฝั่งเซิร์ฟเวอร์ไม่เคยห้าม — ผอ. เปิดหนังสือ
+   * ขึ้นมาแล้วไม่มีตรา "เพื่อโปรดทราบและพิจารณา" อยู่บนนั้น ซึ่งเป็นสิ่งที่บอกท่านว่าธุรการ
+   * กลั่นกรองแล้วเสนออะไรมา (ผู้ใช้แจ้งเข้ามาเอง)
+   *
+   * ขึ้นเฉพาะตอนที่ไม่มีช่องติ๊กที่อื่นแล้ว จะได้ไม่มีช่องกรอกเรื่องเดียวกันสองที่ในหน้าเดียว
+   */
+  const registrarStampCount = stampAtt ? db.prepare(
+    "SELECT COUNT(*) c FROM audit_logs WHERE action = 'attachment_registrar_stamped' AND record_id = ?",
+  ).get(stampAtt.id).c : 0;
+  // ปั๊มไปแล้วแต่เขียนลงไฟล์ไม่สำเร็จ ค้างรอกด "ประทับใหม่" อยู่ — ต้องไม่เตือนว่า "ยังไม่ได้ปั๊ม"
+  // เพราะระบบเก็บเนื้อหาที่จะปั๊มไว้แล้วและมีปุ่มซ่อมของมันเองอยู่ในการ์ดไฟล์แนบ ถ้าเตือนซ้ำที่นี่
+  // ธุรการจะกรอกใหม่อีกรอบแล้วได้ความเห็นซ้ำสองชุดบนหนังสือฉบับเดียว
+  const registrarRestampPending = pendingRestamp(stampAtt)?.kind === 'registrar';
+  const docOpen = !CLOSED_STATUSES.includes(doc.status);
+  const canLateRegistrarStamp = Boolean(stampAtt) && docOpen && !canAssign && !isRegistrarComment
+    && ctx.user.roleCodes.includes('registrar');
+  // ยังไม่มีใครในสายกดอะไรเลย = ยังทันปั๊มก่อนที่ ผอ. จะเปิดอ่าน ซึ่งเป็นเหตุผลทั้งหมดของกล่องนี้
+  const nobodyActedYet = steps.length > 0 && steps.every((s) => s.status === 'waiting');
+  const lateRegistrarBox = !canLateRegistrarStamp ? '' : `
+    <div class="card" ${registrarStampCount || registrarRestampPending ? '' : 'style="border-color:var(--primary)"'}>
+      <h3 class="mt-0">✍️ ตราธุรการ เสนอ ผอ.</h3>
+      ${registrarRestampPending ? `<div class="help-text" style="margin-top:-.3rem">
+        เคยกดปั๊มไว้แล้วแต่เขียนลงไฟล์ไม่สำเร็จ — ระบบเก็บข้อความที่จะปั๊มไว้ให้แล้ว
+        <strong>ให้กด "ประทับใหม่อีกครั้ง" ที่การ์ดไฟล์แนบ</strong> ไม่ต้องกรอกใหม่ที่นี่
+        (กรอกใหม่จะได้ความเห็นซ้ำสองชุดบนหนังสือฉบับเดียว)
+      </div>` : registrarStampCount ? `<div class="help-text" style="margin-top:-.3rem">
+        ปั๊มลงไฟล์ไปแล้ว ${fmtCount(registrarStampCount)} ครั้ง — ปั๊มเพิ่มได้ ระบบจะวางกล่องใหม่เหนือกล่องเดิมไม่ให้ทับกัน
+      </div>` : `<div class="alert alert-warning" id="lateRegistrarWarn" style="margin-top:.2rem">
+        <strong>เสนอขึ้นไปแล้วแต่ยังไม่ได้ปั๊มตรานี้</strong>
+        <div style="margin-top:.3rem;font-size:.9rem">
+          ${nobodyActedYet
+    ? 'ผอ. ยังไม่ได้กดอะไรกับเรื่องนี้ — ปั๊มตอนนี้ยังทันก่อนที่ท่านจะเปิดอ่าน'
+    : 'มีผู้รับเรื่องกดดำเนินการไปแล้ว — ปั๊มได้อยู่ แต่ท่านอาจเปิดไฟล์ที่ยังไม่มีตรานี้ไปแล้ว'}
+        </div>
+      </div>`}
+      <div class="stack">
+        <div class="field">
+          <div class="help-text" style="margin-bottom:.4rem">ฝนเลือกข้อที่ต้องการ — ตรงกับตรายางจริงของโรงเรียน ติ๊กได้หลายข้อ</div>
+          ${REGISTRAR_MARK_OPTIONS.map((m) => `<label class="check-inline" style="display:block;margin:.15rem 0">
+            <input type="checkbox" class="lateRegMark" value="${esc(m.value)}" />
+            <span>${esc(m.label)}</span>
+          </label>`).join('')}
+          <input type="text" id="lateRegistrarUnit" maxlength="60" style="margin-top:.4rem"
+                 placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)" />
+          <textarea id="lateRegistrarNote" style="margin-top:.4rem"
+                    placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)"></textarea>
+        </div>
+        <button class="btn btn-primary" type="button" onclick="doLateRegistrarStamp(this)">✍️ ปั๊มตราเสนอ ผอ. ลงไฟล์</button>
+        <div class="help-text">ปั๊มลงไฟล์ PDF จริงที่มุมซ้ายล่าง และบันทึกไว้ในระบบว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่
+          — ต้องยืนยัน PIN เพราะเป็นการแก้ไฟล์หนังสือฉบับจริง</div>
+      </div>
+    </div>
+    <script>
+      async function doLateRegistrarStamp(btn){
+        var marks = Array.prototype.slice.call(document.querySelectorAll('.lateRegMark:checked')).map(function (el) { return el.value; });
+        var note = document.getElementById('lateRegistrarNote').value.trim();
+        var unit = document.getElementById('lateRegistrarUnit').value.trim();
+        if (!marks.length && !note) { window.toast('กรุณาติ๊กอย่างน้อยหนึ่งข้อ หรือพิมพ์ความเห็นที่จะเสนอ ผอ.', 'warning'); return; }
+        var pin = await window.askPin('ยืนยัน PIN เพื่อปั๊มตราธุรการลงไฟล์');
+        if (!pin) return;
+        var body = { pin: pin, registrarNote: note };
+        if (marks.length) body.registrarMarks = marks;
+        if (unit) body.registrarUnit = unit;
+        window.setBtnLoading(btn, 'กำลังปั๊มตรา...');
+        fetch('/documents/${doc.id}/registrar-stamp', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
+          .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, d: d}; }); })
+          .then(function(res){
+            if (!res.ok) throw new Error(res.d.error || 'ปั๊มตราไม่สำเร็จ');
+            if (res.d.warning) { window.toast(res.d.warning, 'warning'); setTimeout(function(){ location.reload(); }, 2500); return; }
+            window.toast('ปั๊มตราเสนอ ผอ. ลงไฟล์เรียบร้อย', 'success');
+            setTimeout(function(){ location.reload(); }, 900);
+          })
+          .catch(function(e){ window.restoreBtn(btn); window.toast(e.message, 'danger'); });
+      }
+    </script>`;
+
   // ป้าย "เลยกำหนด/อีกกี่วัน" ขึ้นไปอยู่บนหัวเรื่องเลย เพราะเป็นข้อมูลที่ตัดสินใจว่าจะทำก่อนหรือหลัง —
   // เดิมวันครบกำหนดซ่อนอยู่กลางตารางรายละเอียด และแสดงเป็นวันที่ดิบ (2026-08-25) ไม่มีบอกว่าเหลือกี่วัน
   const docStillOpen = !['completed', 'archived', 'voided', 'destroyed', 'rejected'].includes(doc.status);
@@ -3001,6 +3082,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${adminFixBox}
         ${actionBox}
         ${assignBox}
+        ${lateRegistrarBox}
         ${broadcastBox}
         <div class="card">
           <h3>Timeline การเดินหนังสือ</h3>
@@ -3033,6 +3115,49 @@ router.post('/documents/:id/assign', requireApi(async (ctx) => {
   assertStampTextFits({ registrarNote });
 
   assignStep({ documentId: doc.id, assigneeId: ctx.body.assigneeId, instruction: ctx.body.instruction, actorUser: ctx.user });
+  const warning = await stampRegistrarCommentIfApplicable({
+    documentId: doc.id, stepId: null, actorUser: ctx.user, comment: registrarNote,
+    registrarMarks: ctx.body.registrarMarks, registrarUnit: ctx.body.registrarUnit,
+    registrarX: parsePercent(ctx.body.registrarX), registrarY: parsePercent(ctx.body.registrarY),
+  });
+  json(ctx, 200, { ok: true, warning });
+}));
+
+/**
+ * ปั๊มตราธุรการ "เสนอ ผอ." ลงไฟล์ ทั้งที่เสนอเรื่องขึ้นไปแล้ว
+ *
+ * เดิมตรานี้ติ๊กได้ "ที่เดียวและครั้งเดียว" คือตอนกดเสนอ พอกดเสนอไปแล้วการ์ดเสนอก็หายไป (สถานะ
+ * กลายเป็น in_progress) และธุรการก็ไม่ได้ถือขั้นตอนไหนอยู่ จึงไม่มีทางกลับมาปั๊มได้อีกเลย —
+ * ผลคือ ผอ. เปิดหนังสือขึ้นมาแล้วไม่มีตรา "เพื่อโปรดทราบและพิจารณา" อยู่บนนั้น ทั้งที่ตรานี้คือ
+ * สิ่งที่บอกท่านว่าธุรการกลั่นกรองแล้วเสนออะไรมา (ผู้ใช้แจ้งเข้ามาเอง)
+ *
+ * ธุรการลืมติ๊กเป็นเรื่องที่เกิดง่ายมาก เพราะช่องติ๊กอยู่ใต้ช่อง "ข้อความ/คำสั่ง" ในการ์ดเดียวกับ
+ * ปุ่มเสนอ ซึ่งเป็นปุ่มที่กดเร็วที่สุดในระบบ — ทางเดิมทางเดียวคือยกเลิกหนังสือแล้วลงใหม่ทั้งฉบับ
+ *
+ * ยังต้องยืนยัน PIN เหมือนตอนเสนอ เพราะเป็นการแก้ไฟล์หนังสือราชการฉบับจริง และระบบบันทึกไว้ว่า
+ * ใครเป็นผู้เสนอเรื่องนี้ขึ้นไปและเสนอว่าอะไร
+ */
+router.post('/documents/:id/registrar-stamp', requireApi(async (ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  if (!canWriteRegistrarComment(null, ctx.user)) throw httpError(403, 'เฉพาะธุรการเท่านั้นที่ประทับตราเสนอ ผอ. ได้');
+  // เรื่องที่ปิดไปแล้วห้ามปั๊ม "เพื่อโปรดพิจารณา" ตามหลัง — อ่านแล้วเหมือนยังรอ ผอ. พิจารณาอยู่
+  // ทั้งที่จบไปแล้ว และไฟล์ที่เก็บเข้าแฟ้มจะขัดกับทะเบียนที่บอกว่าปิดเรื่องแล้ว
+  if (CLOSED_STATUSES.includes(doc.status)) {
+    throw httpError(409, 'เรื่องนี้ปิดไปแล้ว จึงประทับตราเสนอ ผอ. เพิ่มไม่ได้');
+  }
+  const registrarNote = typeof ctx.body.registrarNote === 'string' ? ctx.body.registrarNote.trim() : '';
+  const marks = parseRegistrarMarks(ctx.body.registrarMarks);
+  if (!registrarNote && !marks.length) {
+    throw httpError(400, 'กรุณาติ๊กอย่างน้อยหนึ่งข้อ หรือพิมพ์ความเห็นที่จะเสนอ ผอ.');
+  }
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
+  assertStampTextFits({ registrarNote });
+  if (!stampTargetAttachment(doc.id)) {
+    throw httpError(409, 'หนังสือฉบับนี้ยังไม่มีไฟล์ PDF ให้ประทับตรา — แนบตัวหนังสือเป็นไฟล์ PDF ก่อน');
+  }
+
   const warning = await stampRegistrarCommentIfApplicable({
     documentId: doc.id, stepId: null, actorUser: ctx.user, comment: registrarNote,
     registrarMarks: ctx.body.registrarMarks, registrarUnit: ctx.body.registrarUnit,

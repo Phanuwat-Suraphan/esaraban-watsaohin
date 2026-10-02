@@ -842,6 +842,9 @@ export function migrate() {
     ON documents(year_be, direction) WHERE deleted_at IS NULL;
   -- ประวัติการดำเนินการ: ตารางนี้โตเร็วที่สุดในระบบ (ทุกการกระทำเพิ่มหนึ่งแถว) และเรียงตามเวลาเสมอ
   CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+  -- "เหตุการณ์ชนิดนี้เกิดครั้งล่าสุดเมื่อไหร่" — ใช้ตอบว่าไดรฟ์ยังเต็มอยู่ไหม (ดู driveFullSince)
+  -- ซึ่งถูกถามทุกครั้งที่เปิดแดชบอร์ด ถ้าไม่มีดัชนีนี้จะกลายเป็นการไล่อ่าน audit log ทั้งตารางต่อการเปิดหน้าหนึ่งครั้ง
+  CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id, created_at DESC);
   -- หน้าแจ้งเตือน: เดิมมีดัชนี (user_id, is_read) ซึ่งใช้กรองได้ แต่ยังต้องเรียงด้วย temp B-tree
   CREATE INDEX IF NOT EXISTS idx_notifications_user_time ON notifications(user_id, created_at DESC);

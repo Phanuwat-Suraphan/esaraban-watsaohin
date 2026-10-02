@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { db, uuid, nowIso, audit } from '../db.js';
 import { httpError } from './validate.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
-import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile } from './googleDrive.js';
-import { activeDriveId, activeDriveToken, BOOTSTRAP_DRIVE_ID } from './driveAccounts.js';
+import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, isDriveFullError } from './googleDrive.js';
+import { activeDriveId, activeDriveToken, recordDriveFull, BOOTSTRAP_DRIVE_ID } from './driveAccounts.js';
 import { truncateFilename } from '../router.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -150,7 +150,14 @@ export async function saveAttachment({ documentId, fileName, fileType, fileDataB
     `).get(documentId);
     const refreshToken = activeDriveToken();
     const folderId = await ensureCategoryFolder({ yearBe: doc.year_be, typeName: doc.type_name, refreshToken });
-    driveFileId = await uploadFile({ buffer: buf, filename: `${safeName}__${fileName || `document.${kind.ext}`}`, mimeType: fileType, folderId, refreshToken });
+    try {
+      driveFileId = await uploadFile({ buffer: buf, filename: `${safeName}__${fileName || `document.${kind.ext}`}`, mimeType: fileType, folderId, refreshToken });
+    } catch (err) {
+      // ไดรฟ์เต็มต่างจากความล้มเหลวอื่นตรงที่ "ไม่หายเอง" — คนที่เจอคือครู/ธุรการที่แนบไฟล์ ซึ่งแก้ไม่ได้
+      // ส่วนคนที่แก้ได้คือผู้ดูแล ซึ่งไม่มีทางรู้จนกว่าจะมีคนเดินไปบอก จดไว้ให้แดชบอร์ดของเขาเตือนเอง
+      if (isDriveFullError(err)) recordDriveFull({ userId: uploader?.id || null });
+      throw err;
+    }
     const active = activeDriveId();
     driveAccountId = active === BOOTSTRAP_DRIVE_ID ? null : active;
     storageProvider = 'google_drive';

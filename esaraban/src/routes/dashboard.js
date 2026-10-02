@@ -5,6 +5,8 @@ import { db, todayInBangkok } from '../db.js';
 import { setupChecklist } from '../services/setupChecklist.js';
 import { canUserSeeDocument, visibleDocumentsSqlFilter, canBroadcast } from '../services/workflow.js';
 import { getBackupStatus } from '../services/dbBackup.js';
+import { driveFullSince } from '../services/driveAccounts.js';
+import { isGoogleDriveEnabled } from '../services/googleDrive.js';
 import { appShortName } from '../services/settings.js';
 import { pendingChaseGroups } from '../services/documentQuery.js';
 import { unassignedIncoming } from '../services/unassigned.js';
@@ -394,8 +396,33 @@ router.get('/', requirePage((ctx) => {
       </div>
     </details>`;
 
+  /**
+   * ไดรฟ์เต็มจนแนบไฟล์ไม่ได้ — ไม่พับ และอยู่บนสุดเหนือทุกแถบ
+   *
+   * ระหว่างที่ค้างอยู่ ทั้งโรงเรียนแนบไฟล์ไม่ได้สักฉบับและการสำรองฐานข้อมูลก็หยุดไปด้วยเงียบๆ
+   * คนที่เจอข้อความตอนแนบไฟล์คือครู/ธุรการซึ่งแก้ไม่ได้ ส่วนผู้ดูแลไม่มีทางรู้จนกว่าจะมีคนเดินไปบอก
+   * — เป็นสถานะที่ยิ่งค้างนานยิ่งเสียหาย จึงเตือนแรงกว่าแถบอื่นและกดพับเก็บไม่ได้
+   *
+   * หายเองเมื่อมีไฟล์อัปโหลดสำเร็จอีกครั้ง ไม่ต้องมีใครมากดรับทราบ (ดู driveFullSince)
+   */
+  // เช็ค isGoogleDriveEnabled ด้วย เพราะโรงเรียนที่เลิกใช้ Drive กลับไปเก็บไฟล์ลงดิสก์ จะมีรายการ
+  // เก่าค้างใน audit log อยู่ตลอด แล้วแถบนี้จะเตือนเรื่องที่ไม่เกี่ยวกับใครอีกต่อไปไม่มีวันหาย
+  const driveFullAt = canFixBackup && isGoogleDriveEnabled() ? driveFullSince() : null;
+  const driveFullAlert = !driveFullAt ? '' : `
+    <div class="alert alert-danger" id="driveFullAlert">
+      <strong>🚨 พื้นที่ Google Drive เต็ม — ตอนนี้แนบไฟล์เข้าระบบไม่ได้เลย</strong>
+      <div style="margin-top:.35rem;font-size:.9rem">
+        เริ่มเมื่อ ${esc(fmtDate(driveFullAt))} · ทั้งการแนบไฟล์และการสำรองฐานข้อมูลหยุดพร้อมกัน
+        <br/>แก้โดยเพิ่มไดรฟ์ใหม่อีกบัญชี ใช้เวลาไม่กี่นาที — <strong>ไฟล์เดิมทั้งหมดยังอยู่ครบและเปิดได้ตามปกติ</strong>
+        ไม่มีอะไรถูกย้ายหรือถูกลบ
+        <br/>หนังสือที่ลงทะเบียนไว้ช่วงนี้ยังอยู่ครบและได้เลขแล้ว เหลือแค่กลับไปแนบไฟล์ให้ทีหลัง
+      </div>
+      <a class="btn btn-primary btn-sm" style="margin-top:.6rem" href="/admin/google-drive">เพิ่มไดรฟ์ใหม่เดี๋ยวนี้</a>
+    </div>`;
+
   const greeting = timeGreeting();
   const content = `
+    ${driveFullAlert}
     ${backupAlert}
     ${stampAlert}
     ${unassignedAlert}

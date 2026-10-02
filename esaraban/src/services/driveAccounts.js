@@ -188,6 +188,39 @@ export function removeDriveAccount(id, actorUser) {
   audit({ userId: actorUser?.id || null, action: 'drive_account_removed', tableName: 'drive_accounts', recordId: id, detail: { label: row.label } });
 }
 
+// ---------------- ไดรฟ์เต็มจริงแล้ว (ไม่ใช่แค่ใกล้เต็ม) ----------------
+//
+// คนที่เจอ "ไดรฟ์เต็ม" คือครู/ธุรการที่กำลังแนบไฟล์ ซึ่งแก้เองไม่ได้ ส่วนคนที่แก้ได้คือผู้ดูแล ซึ่งไม่มี
+// ทางรู้เลยจนกว่าจะมีคนเดินไปบอก — ระหว่างนั้นทั้งโรงเรียนแนบไฟล์ไม่ได้สักฉบับ และการสำรองฐานข้อมูล
+// ก็หยุดไปด้วยเงียบๆ จึงต้องเด้งขึ้นแดชบอร์ดของผู้ดูแลเองทันทีที่เกิดครั้งแรก
+//
+// เก็บเป็นรายการใน audit log ไม่ใช่ตารางสถานะแยก ด้วยเหตุผลเดียว: สถานะที่เก็บแยกต้องมีคนไปล้าง
+// และถ้าลืมล้างก็จะค้างเตือนทั้งที่แก้ไปแล้ว — ส่วนวิธีนี้ "หายเอง" เมื่อมีไฟล์อัปโหลดสำเร็จอีกครั้ง
+// ซึ่งเป็นนิยามที่ตรงกับความจริงที่สุดว่าปัญหาจบแล้ว (ไม่ว่าจะจบเพราะเพิ่มไดรฟ์ สลับไดรฟ์ หรือลบไฟล์ทิ้ง)
+export const DRIVE_FULL_ACTION = 'drive_storage_full';
+
+/** จดไว้ว่าไดรฟ์ที่ใช้เก็บไฟล์ใหม่เต็มแล้ว — เรียกตอนที่ Google ตีกลับจริงเท่านั้น */
+export function recordDriveFull({ userId = null, driveId = null } = {}) {
+  audit({
+    userId, action: DRIVE_FULL_ACTION, tableName: 'drive_accounts',
+    recordId: driveId || activeDriveId(), detail: null,
+  });
+}
+
+/**
+ * เวลาที่เจอไดรฟ์เต็มครั้งล่าสุด ถ้ายังไม่มีไฟล์ไหนอัปโหลดสำเร็จหลังจากนั้น — ไม่งั้นคืน null
+ *
+ * ใช้ดัชนี (action, created_at DESC) ทั้งสองคำขอ เพราะตัวนี้ถูกเรียกทุกครั้งที่เปิดแดชบอร์ด
+ */
+export function driveFullSince() {
+  const last = db.prepare('SELECT created_at FROM audit_logs WHERE action = ? ORDER BY created_at DESC LIMIT 1')
+    .get(DRIVE_FULL_ACTION);
+  if (!last) return null;
+  const ok = db.prepare("SELECT created_at FROM audit_logs WHERE action = 'attachment_uploaded' ORDER BY created_at DESC LIMIT 1")
+    .get();
+  return ok && ok.created_at >= last.created_at ? null : last.created_at;
+}
+
 /** เตือนเมื่อพื้นที่เหลือน้อย — ตัวเลขนี้คือสิ่งที่บอกว่าถึงเวลาเพิ่มไดรฟ์ใหม่แล้ว */
 export const DRIVE_NEARLY_FULL_PERCENT = 85;
 

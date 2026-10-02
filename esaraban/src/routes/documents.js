@@ -800,8 +800,18 @@ router.post('/documents', requireApi(async (ctx) => {
   if (isEmptyUpload(b)) {
     warnParts.push(EMPTY_UPLOAD_MESSAGE);
   } else if (b.fileDataBase64) {
-    const att = await saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploader: ctx.user });
-    if (att?.duplicateWarning) warnParts.push(att.duplicateWarning);
+    // เลขที่หนังสือออกไปแล้วตรงนี้และใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ ถ้าการแนบไฟล์ที่ตามมาทีหลังโยน
+    // error ทิ้งทั้งคำขอ ธุรการจะเห็นแค่ "ผิดพลาด" แล้วเข้าใจว่าไม่ได้บันทึกอะไรเลย จึงกรอกใหม่อีกรอบ
+    // = ได้หนังสือซ้ำสองฉบับ กินเลขทะเบียนไปสองเลข ทั้งที่ไฟล์ก็ยังแนบไม่ได้อยู่ดี
+    //
+    // วัดจริงตอนไดรฟ์เต็ม: ตอบ 502 พร้อมสตริงอังกฤษของ Google แต่หนังสือถูกบันทึกไปแล้วเรียบร้อย
+    // — เป็นสภาพที่แย่ที่สุดคือ "ทำสำเร็จแต่บอกว่าพัง" รับไว้เป็นคำเตือนแทน แล้วบอกให้ชัดว่าเหลืออะไร
+    try {
+      const att = await saveAttachment({ documentId: doc.id, fileName: b.fileName, fileType: b.fileType, fileDataBase64: b.fileDataBase64, uploader: ctx.user });
+      if (att?.duplicateWarning) warnParts.push(att.duplicateWarning);
+    } catch (err) {
+      warnParts.push(`บันทึกหนังสือและออกเลขเรียบร้อยแล้ว แต่แนบไฟล์ไม่สำเร็จ: ${err.message} — ไม่ต้องลงทะเบียนซ้ำ กด "แนบไฟล์" ที่หน้านี้ใหม่ได้เลยเมื่อแก้เรียบร้อย`);
+    }
   }
   const warn = warnParts.length ? `&warn=${encodeURIComponent(warnParts.join(' / '))}` : '';
   json(ctx, 201, { redirect: `/documents/${doc.id}?created=1${warn}` });

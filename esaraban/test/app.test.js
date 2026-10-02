@@ -9277,6 +9277,92 @@ describe('ตราประทับ: สามช่องแถบล่า�
       });
     });
 
+    // ไดรฟ์เต็มคือปลายทางที่ฟีเจอร์หลายไดรฟ์ทั้งหมดมีไว้รับมือ — ต้องแน่ใจว่าตอนถึงวันนั้นจริง ระบบ
+    // พูดภาษาที่ธุรการเข้าใจและไม่ทำงานที่กรอกมาแล้วหาย
+    describe('ไดรฟ์เต็ม', () => {
+      let GD;
+      before(async () => { GD = await import('../src/services/googleDrive.js'); });
+      afterEach(() => GD._setDriveFetchForTest(null));
+
+      const driveAnswering = (status, body) => {
+        GD._setDriveFetchForTest(async (url) => {
+          if (String(url).includes('oauth2.googleapis.com/token')) {
+            return Response.json({ access_token: 'access', expires_in: 3600 });
+          }
+          return Response.json(body, { status });
+        });
+      };
+
+      test('Google บอกว่าพื้นที่เต็ม ต้องกลายเป็นข้อความไทยที่บอกทางแก้ ไม่ใช่สตริงอังกฤษ', async () => {
+        driveAnswering(403, {
+          error: {
+            code: 403,
+            message: "The user's Drive storage quota has been exceeded.",
+            errors: [{ reason: 'storageQuotaExceeded', domain: 'usageLimits' }],
+          },
+        });
+        const err = await GD.uploadFile({ buffer: Buffer.from('x'), filename: 'a.pdf', mimeType: 'application/pdf', folderId: 'f', refreshToken: 't' })
+          .then(() => null, (e) => e);
+        assert.ok(err, 'ต้องล้มเหลว');
+        assert.equal(err.statusCode, 507, 'พื้นที่หมดจริง ไม่ใช่ปลายทางเสีย');
+        assert.ok(GD.isDriveFullError(err), 'ต้องติดธงให้ฝั่งที่เรียกแยกออกจากเน็ตล่ม/โทเคนหมดอายุได้');
+        assert.match(err.message, /เต็มแล้ว/);
+        assert.match(err.message, /เพิ่มไดรฟ์ใหม่/, 'ต้องบอกทางแก้ ไม่ใช่บอกแค่ว่าพัง');
+        assert.ok(!/storage quota/i.test(err.message), 'ห้ามเหลือสตริงอังกฤษของ Google ไว้ให้ผู้ใช้อ่าน');
+      });
+
+      // เน็ตล่มกับโทเคนหมดอายุเดี๋ยวก็หายเอง ไดรฟ์เต็มไม่หายจนกว่าจะมีคนไปเพิ่มไดรฟ์ — ถ้าแยกไม่ออก
+      // จะไปเตือนผู้ดูแลว่า "ไดรฟ์เต็ม" ทุกครั้งที่เน็ตโรงเรียนสะดุด แล้วคำเตือนก็จะถูกมองข้ามไปเลย
+      test('ความล้มเหลวแบบอื่น ต้องไม่ถูกตีความว่าไดรฟ์เต็ม', async () => {
+        for (const [status, body] of [
+          [500, { error: { message: 'Backend Error' } }],
+          [403, { error: { message: 'Rate Limit Exceeded', errors: [{ reason: 'rateLimitExceeded' }] } }],
+          [404, { error: { message: 'File not found' } }],
+        ]) {
+          driveAnswering(status, body);
+          const err = await GD.uploadFile({ buffer: Buffer.from('x'), filename: 'a.pdf', mimeType: 'application/pdf', folderId: 'f', refreshToken: 't' })
+            .then(() => null, (e) => e);
+          assert.ok(err, `HTTP ${status} ต้องล้มเหลว`);
+          assert.ok(!GD.isDriveFullError(err), `HTTP ${status} (${body.error.message}) ไม่ใช่ไดรฟ์เต็ม`);
+        }
+      });
+
+      // วงรอบจริงทั้งเส้น: ธุรการลงรับหนังสือด่วนตอนไดรฟ์เต็มพอดี
+      //
+      // วัดก่อนแก้: ตอบ 502 พร้อมสตริงอังกฤษของ Google ทั้งที่หนังสือถูกบันทึกและออกเลขไปแล้ว
+      // ธุรการเห็นแค่ "ผิดพลาด" จึงกรอกใหม่ = หนังสือซ้ำสองฉบับ กินเลขทะเบียนสองเลข ไฟล์ก็ยังไม่ได้แนบ
+      test('วงรอบจริง: ลงทะเบียนตอนไดรฟ์เต็ม งานต้องไม่หาย และผู้ดูแลต้องรู้เอง', () => {
+        const out = execFileSync(process.execPath, ['--no-warnings', 'test/driveFull.mjs'], {
+          cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 60_000,
+        });
+        const r = JSON.parse(out.trim().split('\n').pop());
+        assert.ok(!r.fatal, r.fatal + '\n' + (r.stack || ''));
+
+        // หัวใจ: เลขทะเบียนออกไปแล้วและใช้ซ้ำไม่ได้ จะทิ้งหนังสือทั้งใบเพราะแนบไฟล์ไม่ได้ไม่ได้
+        assert.equal(r.createStatus, 201, 'ต้องไม่ตอบว่าล้มเหลวทั้งคำขอ ทั้งที่หนังสือถูกบันทึกไปแล้ว');
+        assert.equal(r.documentSaved, true);
+        assert.equal(r.hasDocNumber, true);
+        assert.equal(r.docsAdded, 1, 'ต้องได้หนังสือใบเดียว ไม่ใช่ลงซ้ำเพราะเข้าใจว่าไม่สำเร็จ');
+        assert.equal(r.attachmentCount, 0, 'ไฟล์แนบไม่ขึ้นจริง — ต้องไม่บันทึกแถวไฟล์ลวงไว้');
+
+        assert.equal(r.saysFull, true, 'ต้องบอกว่าไดรฟ์เต็ม');
+        assert.equal(r.saysWhatToDo, true, 'และบอกว่าต้องทำอะไรต่อ');
+        assert.equal(r.saysDocSaved, true, 'ต้องบอกให้ชัดว่าหนังสือบันทึกและออกเลขแล้ว');
+        assert.equal(r.saysNoRetry, true, 'และบอกตรงๆ ว่าไม่ต้องลงทะเบียนซ้ำ');
+        assert.equal(r.leaksEnglish, false, 'ห้ามเหลือสตริงอังกฤษของ Google');
+
+        // คนที่เจอข้อความตอนแนบไฟล์แก้ไม่ได้ คนที่แก้ได้ต้องรู้เองโดยไม่ต้องรอใครเดินไปบอก
+        assert.equal(r.adminWarned, true, 'แดชบอร์ดผู้ดูแลต้องขึ้นเตือน');
+        assert.equal(r.adminHasLink, true, 'พร้อมทางไปแก้');
+        assert.equal(r.teacherNotWarned, true, 'ครูทั่วไปแก้ไม่ได้ เห็นแล้วตกใจเปล่า');
+
+        assert.equal(r.retryStatus, 200, 'พอมีที่ว่างแล้ว แนบไฟล์ซ้ำที่หนังสือใบเดิมได้');
+        assert.equal(r.attachmentAfterRetry, 1);
+        assert.equal(r.warningCleared, true,
+          'คำเตือนต้องหายเองเมื่ออัปโหลดสำเร็จอีกครั้ง ไม่ต้องมีใครมากดรับทราบ (กดลืมแล้วค้างเตือนถาวร)');
+      });
+    });
+
     describe('ด่านฝั่งเซิร์ฟเวอร์', () => {
       // เส้นทางเพิ่มไดรฟ์ถาม Google ว่าโทเคนใบนี้เป็นของบัญชีไหน (กันเพิ่มบัญชีเดิมซ้ำ ซึ่งเทียบจาก
       // ตัวโทเคนอย่างเดียวกันไม่ได้) จึงต้องมี Google จำลองที่ตอบ "คนละบัญชี" ตาม refresh token

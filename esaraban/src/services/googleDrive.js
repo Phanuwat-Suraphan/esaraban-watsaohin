@@ -210,6 +210,34 @@ export async function listFilesInFolder(folderId, { limit = 100, refreshToken } 
 }
 
 // อัปโหลดไฟล์ด้วย resumable upload (รองรับไฟล์ได้ถึง 10MB ตามเพดานของระบบอย่างน่าเชื่อถือ)
+/**
+ * "ไดรฟ์เต็ม" ต้องเป็นข้อความที่คนอ่านแล้วรู้ว่าต้องทำอะไรต่อ ไม่ใช่สตริงอังกฤษของ Google
+ *
+ * ของเดิมส่ง "The user's Drive storage quota has been exceeded." ขึ้นหน้าตรงๆ ซึ่งธุรการที่กำลัง
+ * ลงรับหนังสือด่วนอ่านแล้วทำอะไรต่อไม่ถูก ทั้งที่ระบบมีทางแก้พร้อมอยู่แล้ว (เพิ่มไดรฟ์ใหม่) และคนที่
+ * เจอข้อความนี้มักไม่ใช่คนที่มีสิทธิ์แก้ จึงต้องบอกด้วยว่าให้ไปบอกใครและเขาต้องไปกดตรงไหน
+ *
+ * ติดธง driveFull ไว้ที่ตัว error เพื่อให้ฝั่งที่เรียกแยกออกจาก "เน็ตล่ม/โทเคนหมดอายุ" ได้ —
+ * สองอย่างนั้นเดี๋ยวก็หายเอง แต่ไดรฟ์เต็มจะไม่หายจนกว่าจะมีคนไปเพิ่มไดรฟ์ จึงต้องบันทึกไว้เตือนผู้ดูแล
+ */
+export const DRIVE_FULL_MESSAGE = 'พื้นที่ Google Drive ของบัญชีที่ใช้เก็บไฟล์ใหม่เต็มแล้ว จึงแนบไฟล์ไม่ได้ — แจ้งผู้ดูแลระบบให้เพิ่มไดรฟ์ใหม่ที่ ตั้งค่า → เชื่อมต่อ Google Drive (ใช้เวลาไม่กี่นาที ไฟล์เดิมทั้งหมดยังอยู่ครบและเปิดได้ตามปกติ)';
+
+export function isDriveFullError(err) {
+  return Boolean(err?.driveFull);
+}
+
+/** คืน error ของ "ไดรฟ์เต็ม" ถ้าคำตอบของ Google เข้าข่าย ไม่งั้นคืน null ให้ไปใช้ข้อความทั่วไป */
+function driveFullErrorFrom(status, data) {
+  if (status !== 403) return null;
+  const reason = data?.error?.errors?.[0]?.reason || '';
+  const message = data?.error?.message || '';
+  if (reason !== 'storageQuotaExceeded' && !/storage quota/i.test(message)) return null;
+  // 507 Insufficient Storage — ไม่ใช่ 502 เพราะไม่ใช่ปลายทางเสีย แต่เป็นพื้นที่หมดจริงๆ
+  const err = httpError(507, DRIVE_FULL_MESSAGE);
+  err.driveFull = true;
+  return err;
+}
+
 export async function uploadFile({ buffer, filename, mimeType, folderId, refreshToken }) {
   const token = await getAccessToken(refreshToken);
   const initRes = await httpFetch(`${UPLOAD_BASE}?uploadType=resumable`, {
@@ -224,7 +252,9 @@ export async function uploadFile({ buffer, filename, mimeType, folderId, refresh
   });
   if (!initRes.ok) {
     const errData = await initRes.json().catch(() => ({}));
-    throw httpError(502, `เริ่มอัปโหลดไป Google Drive ไม่สำเร็จ: ${errData.error?.message || initRes.statusText}`);
+    // Google ตีกลับเรื่องพื้นที่เต็มตั้งแต่ขั้นขอเริ่มอัปโหลด (ยังไม่ทันส่งไบต์ไหนขึ้นไป)
+    throw driveFullErrorFrom(initRes.status, errData)
+      || httpError(502, `เริ่มอัปโหลดไป Google Drive ไม่สำเร็จ: ${errData.error?.message || initRes.statusText}`);
   }
   const uploadUrl = initRes.headers.get('Location');
   if (!uploadUrl) throw httpError(502, 'Google Drive ไม่ส่ง upload session URL กลับมา');
@@ -235,7 +265,11 @@ export async function uploadFile({ buffer, filename, mimeType, folderId, refresh
     body: buffer,
   });
   const putData = await putRes.json().catch(() => ({}));
-  if (!putRes.ok) throw httpError(502, `อัปโหลดไฟล์ไป Google Drive ไม่สำเร็จ: ${putData.error?.message || putRes.statusText}`);
+  // พื้นที่อาจเพิ่งเต็มระหว่างส่งไบต์ (ไฟล์อื่นแย่งที่ไปก่อน) จึงต้องดักซ้ำที่ขั้นนี้ด้วย
+  if (!putRes.ok) {
+    throw driveFullErrorFrom(putRes.status, putData)
+      || httpError(502, `อัปโหลดไฟล์ไป Google Drive ไม่สำเร็จ: ${putData.error?.message || putRes.statusText}`);
+  }
   return putData.id; // Google Drive file ID
 }
 

@@ -14,7 +14,7 @@ import { unstampedIncoming } from '../services/unstamped.js';
 import { pendingBroadcasts, myUnreadBroadcasts } from '../services/broadcastReads.js';
 // เงื่อนไข "งานของฉัน" กับลำดับของคิว อยู่ที่ services/myQueue.js ที่เดียว เพราะหน้านี้ ตัวบอกตำแหน่ง
 // บนหน้าเอกสาร ("ฉบับที่ 3 จาก 8") และการเด้งไปฉบับถัดไปหลังกดเสร็จ ต้องเรียงเหมือนกันเป๊ะ
-import { MY_OR_DELEGATED_STEP_SQL, MAX_TASK_ROWS, myWaitingTasks } from '../services/myQueue.js';
+import { MY_OR_DELEGATED_STEP_SQL, TASKS_PAGE_SIZE, myWaitingTasks } from '../services/myQueue.js';
 import { pendingDigestText, lineShareBlock } from '../services/line.js';
 
 
@@ -527,15 +527,30 @@ router.get('/', requirePage((ctx) => {
 }));
 
 router.get('/tasks', requirePage((ctx) => {
-  const { rows, truncated: tasksTruncated } = myWaitingTasks(ctx.user);
+  // แบ่งหน้าแทนการตัดทิ้งที่ 300 ฉบับ — ของเดิมเทแถวทั้งเพดานลงหน้าเดียวได้ 260KB ต่อการเปิดหนึ่งครั้ง
+  // (หนักที่สุดในระบบ และเป็นหน้าที่คนทำงานเปิดบ่อยที่สุด) แล้วยังบอกให้ไปดูส่วนที่เหลือที่หน้าทะเบียน
+  // ซึ่งเรียงคนละแบบและไม่ได้กรองว่าเป็นงานของเรา = ไปถึงแล้วก็หาไม่เจออยู่ดี
+  const total0 = myWaitingTasks(ctx.user, { limit: 0 }).total;
+  const totalPages = Math.max(1, Math.ceil(total0 / TASKS_PAGE_SIZE));
+  const page = Math.min(totalPages, Math.max(1, Math.floor(Number(ctx.query.page) || 1)));
+  const offset = (page - 1) * TASKS_PAGE_SIZE;
+  const { rows, total } = myWaitingTasks(ctx.user, { limit: TASKS_PAGE_SIZE, offset });
   const overdueCount = rows.filter((d) => daysUntil(d.due_date) < 0).length;
+  const pager = totalPages > 1 ? `
+    <div class="flex items-center justify-between gap-2 flex-wrap" style="margin-top:1rem">
+      ${page > 1 ? `<a class="btn btn-outline btn-sm" href="/tasks${page > 2 ? `?page=${page - 1}` : ''}">← ด่วนกว่า</a>` : '<span></span>'}
+      <span class="text-muted" style="font-size:.85rem">
+        แสดงฉบับที่ ${fmtCount(offset + 1)}–${fmtCount(Math.min(offset + TASKS_PAGE_SIZE, total))} จาก ${fmtCount(total)} ฉบับ
+      </span>
+      ${page < totalPages ? `<a class="btn btn-outline btn-sm" href="/tasks?page=${page + 1}">ครบกำหนดทีหลัง →</a>` : '<span></span>'}
+    </div>` : '';
 
   const content = `
     <div class="card-header">
       <div>
         <h2 class="mt-0">📌 งานของฉัน</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
-          ${rows.length ? `รอคุณดำเนินการ${tasksTruncated ? 'มากกว่า' : ''} ${rows.length} ฉบับ${overdueCount ? ` · <strong style="color:var(--danger)">เลยกำหนดแล้ว ${overdueCount}</strong>` : ''} — เรียงตามวันครบกำหนด กดที่แถวเพื่อเปิดเอกสาร`
+          ${total ? `รอคุณดำเนินการ ${fmtCount(total)} ฉบับ${overdueCount ? ` · <strong style="color:var(--danger)">หน้านี้เลยกำหนดแล้ว ${overdueCount}</strong>` : ''} — เรียงตามวันครบกำหนด กดที่แถวเพื่อเปิดเอกสาร`
             : 'ไม่มีงานค้างอยู่ในมือคุณตอนนี้'}
         </p>
       </div>
@@ -543,11 +558,10 @@ router.get('/tasks', requirePage((ctx) => {
             จนหมดกอง (ดู /documents/:id/next-task) ไม่ต้องกลับมาหาบรรทัดถัดไปในตารางนี้อีก */ ''}
       ${rows.length > 1 ? `<div class="chip-row">
         <a class="btn btn-primary" href="/documents/${rows[0].id}"
-          title="เปิดฉบับแรก แล้วระบบจะพาไปฉบับถัดไปเองทุกครั้งที่กดเสร็จ จนหมดกอง">▶️ เริ่มไล่ทีละฉบับ (${rows.length} ฉบับ)</a>
+          title="เปิดฉบับแรก แล้วระบบจะพาไปฉบับถัดไปเองทุกครั้งที่กดเสร็จ จนหมดกอง">▶️ เริ่มไล่ทีละฉบับ (${fmtCount(total)} ฉบับ)</a>
       </div>` : ''}
     </div>
     <div class="card">
-      ${tasksTruncated ? `<div class="alert alert-warning">⚠️ มีงานค้างมากกว่า ${MAX_TASK_ROWS} ฉบับ หน้านี้แสดงเฉพาะ ${MAX_TASK_ROWS} ฉบับที่ใกล้ครบกำหนดที่สุด — ดูทั้งหมดได้ที่<a href="/documents?direction=all&status=in_progress">ทะเบียนหนังสือ</a></div>` : ''}
       ${rows.length ? `<div class="table-wrap table-cards"><table>
         <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>ครบกำหนด</th><th>มอบหมายเมื่อ</th></tr></thead>
         <tbody>${rows.map((d) => {
@@ -559,7 +573,7 @@ router.get('/tasks', requirePage((ctx) => {
             <td data-label="ครบกำหนด">${dueCell(d.due_date)}</td>
             <td data-label="มอบหมายเมื่อ" class="text-muted">${fmtDate(d.assigned_at)}</td></tr>`;
         }).join('')}</tbody>
-      </table></div>` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
+      </table></div>${pager}` : illustratedEmptyState('allClear', 'ไม่มีงานค้างสำหรับคุณเลยครับ พักผ่อนสบายๆ ได้เลยครับ ☕')}
     </div>`;
   html(ctx, 200, layout({ user: ctx.user, title: 'งานของฉัน', path: '/tasks', content }));
 }));

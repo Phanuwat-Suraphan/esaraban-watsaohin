@@ -4252,6 +4252,49 @@ describe('หน้ารายการต้องไม่โตตามป�
     }
   });
 
+  /**
+   * งบขนาดหน้าต้องวัด "ทุกบทบาท" ไม่ใช่เฉพาะผู้ดูแล
+   *
+   * เจอจริง: ด่านข้างบนวัดด้วยบัญชีผู้ดูแลอย่างเดียว ซึ่งไม่มีงานค้างอยู่ในมือเลยสักฉบับ หน้า
+   * "งานของฉัน" จึงวัดได้ 11KB ตลอดกาล ทั้งที่ของ ผอ. ที่มีเรื่องจ่อคิวจริงหนัก 260KB —
+   * หนักที่สุดในระบบ และเป็นหน้าที่คนทำงานเปิดบ่อยที่สุดด้วย
+   *
+   * บทเรียนคือ "วัดด้วยบัญชีที่ไม่มีงาน" เท่ากับไม่ได้วัดอะไรเลย จึงต้องไล่ให้ครบทุกบทบาท
+   * โดยแจกงานค้างให้ทุกคนก่อน
+   */
+  test('งบขนาดหน้าต้องไม่หลุด ไม่ว่าเปิดด้วยบทบาทไหน', async () => {
+    const made = seedThreeYears();
+    const steps = [];
+    try {
+      // แจกเรื่องค้างให้ทุกบทบาทคนละ 400 ฉบับ — มากกว่าเพดานของหน้า "งานของฉัน" เพื่อวัดที่เพดานจริง
+      const insStep = db.prepare(`INSERT INTO workflow_steps (id, document_id, step_order, assignee_id, instruction, status, created_at)
+        VALUES (?, ?, 1, ?, 'โปรดพิจารณาดำเนินการตามที่เห็นสมควร', 'waiting', ?)`);
+      const codes = ['admin', 'director01', 'vicedir01', 'head_acad', 'reg001', 'teacher001'];
+      codes.forEach((code, ci) => {
+        for (let i = 0; i < 400; i++) {
+          const sid = uuid();
+          steps.push(sid);
+          insStep.run(sid, made.docs[(ci * 400 + i) % made.docs.length], seed.userIds[code], nowIso());
+        }
+      });
+
+      const over = [];
+      for (const code of codes) {
+        const who = loadUserForTest(seed.userIds[code]);
+        for (const path of LIST_PAGES) {
+          const res = await dispatchGet(who, path, {});
+          if (res.status !== 200) continue; // บางหน้าเปิดได้เฉพาะบางบทบาท — ความครบถ้วนมีด่านอื่นคุมอยู่
+          const kb = Buffer.byteLength(res.body) / 1024;
+          if (kb > PAGE_BUDGET_KB) over.push(`${path} ในบทบาท ${code} (${kb.toFixed(0)} KB)`);
+        }
+      }
+      assert.deepEqual(over, [], `หน้าที่หนักเกิน ${PAGE_BUDGET_KB} KB เมื่อผู้ใช้มีงานค้างจริง`);
+    } finally {
+      for (const id of steps) db.prepare('DELETE FROM workflow_steps WHERE id = ?').run(id);
+      cleanup(made);
+    }
+  });
+
   test('หน้าที่จำกัดจำนวนต้องบอกด้วยว่ายังมีของเก่าอยู่ ไม่ใช่ตัดทิ้งเงียบๆ', async () => {
     const made = seedThreeYears();
     try {
@@ -11517,7 +11560,12 @@ describe('หน้าที่แสดงรายการยาวต้อ�
   });
 
   describe('หน้า "งานของฉัน"', () => {
+    // คั่นหลักพันแบบเดียวกับ fmtCount ของหน้าเว็บ (อย่าใช้ toLocaleString — มีด่านกวาดหาอยู่)
+    const fmtCountForTest = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     const MAX_TASK_ROWS = 300;
+    const TASKS_PAGE_SIZE = 50;
+    let Q;
+    before(async () => { Q = await import('../src/services/myQueue.js'); });
     let stepIds = [];
     before(() => {
       // เรื่องค้างสะสมอยู่ที่คนเดียวได้จริง เช่นคนที่ย้ายออกไปแล้วแต่ยังมีเรื่องจ่อคิว
@@ -11539,14 +11587,60 @@ describe('หน้าที่แสดงรายการยาวต้อ�
       stepIds = [];
     });
 
-    test('งานค้างเยอะเกินเพดาน ต้องตัดและบอกว่าตัด พร้อมทางไปดูทั้งหมด', async () => {
-      const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/tasks', {});
+    // เดิมตัดทิ้งที่ 300 ฉบับแล้วบอกให้ไปดูที่เหลือที่หน้าทะเบียน ซึ่งเรียงคนละแบบและไม่ได้กรองว่า
+    // เป็นงานของเรา = ไปถึงแล้วก็หาไม่เจออยู่ดี และ 300 แถวบนหน้าเดียวหนัก 260KB ต่อการเปิดหนึ่งครั้ง
+    const teacher = () => loadUserForTest(seed.userIds.teacher001);
+    const rowsOn = (body) => (body.match(/<tr data-href="\/documents\//g) || []).length;
+
+    // ตัวเลขที่ยืนยันต้องอ่านจากหน้าเอง ไม่ใช่ปักไว้ตายตัว — ชุดเทสต์รันหลาย describe พร้อมกัน
+    // และชุดอื่นก็แจกงานให้ครูคนเดียวกันนี้ด้วย ตัวเลขรวมจึงไม่คงที่
+    const headerTotal = (body) => Number(/รอคุณดำเนินการ ([\d,]+) ฉบับ/.exec(body)?.[1]?.replace(/,/g, ''));
+
+    test('งานค้างเยอะ ต้องแบ่งหน้า ไม่ใช่เทลงหน้าเดียวหรือตัดทิ้ง', async () => {
+      const res = await dispatchGet(teacher(), '/tasks', {});
       assert.equal(res.status, 200);
-      const shown = (res.body.match(/<tr data-href="\/documents\//g) || []).length;
-      assert.ok(shown <= MAX_TASK_ROWS, `แสดง ${shown} แถว เกินเพดาน ${MAX_TASK_ROWS}`);
-      assert.match(res.body, new RegExp(`มีงานค้างมากกว่า ${MAX_TASK_ROWS}`), 'ไม่ได้บอกว่างานค้างถูกตัด');
-      assert.match(res.body, /href="\/documents\?direction=all&status=in_progress"/,
-        'ตัดแล้วต้องบอกทางไปดูทั้งหมดด้วย ไม่ใช่ตัดทิ้งเฉยๆ');
+      assert.equal(rowsOn(res.body), TASKS_PAGE_SIZE, `หน้าแรกต้องมี ${TASKS_PAGE_SIZE} แถวพอดี`);
+      assert.ok(Buffer.byteLength(res.body) / 1024 < 100,
+        `หน้าหนัก ${(Buffer.byteLength(res.body) / 1024).toFixed(0)} KB — เปิดบ่อยที่สุดในระบบ ต้องเบา`);
+      // จำนวนที่บอกต้องเป็นของทั้งกอง ไม่ใช่ของหน้านี้ ไม่งั้นคนอ่านจะนึกว่างานเหลือแค่ 50
+      const total = headerTotal(res.body);
+      assert.ok(total > MAX_TASK_ROWS, `ต้องบอกจำนวนทั้งกอง (อ่านได้ ${total})`);
+      assert.match(res.body, new RegExp(`เริ่มไล่ทีละฉบับ \\(${fmtCountForTest(total)} ฉบับ\\)`),
+        'ปุ่มไล่ฉบับต้องบอกจำนวนเดียวกับหัวข้อ');
+      assert.match(res.body, new RegExp(`จาก ${fmtCountForTest(total)} ฉบับ`), 'แถบแบ่งหน้าต้องบอกจำนวนเดียวกัน');
+      assert.match(res.body, /href="\/tasks\?page=2"/, 'ต้องมีทางไปหน้าถัดไป');
+      assert.ok(!/มีงานค้างมากกว่า/.test(res.body), 'ไม่ตัดทิ้งแล้ว จึงต้องไม่เหลือคำเตือนว่าตัด');
+    });
+
+    test('หน้าถัดไปต้องต่อจากหน้าแรกจริง ไม่ซ้ำและไม่ข้าม', async () => {
+      const p1 = await dispatchGet(teacher(), '/tasks', {});
+      const p2 = await dispatchGet(teacher(), '/tasks', { page: '2' });
+      assert.equal(p2.status, 200);
+      const ids = (body) => [...body.matchAll(/<tr data-href="\/documents\/([^"]+)"/g)].map((m) => m[1]);
+      const a = ids(p1.body);
+      const b = ids(p2.body);
+      assert.equal(b.length, TASKS_PAGE_SIZE);
+      assert.equal(new Set([...a, ...b]).size, a.length + b.length, 'หน้า 2 ต้องไม่ซ้ำกับหน้า 1');
+      assert.match(p2.body, /href="\/tasks"/, 'ต้องมีทางกลับหน้าแรก');
+    });
+
+    // ขอหน้าที่ไม่มีอยู่ (พิมพ์เอง หรือกดลิงก์เก่าหลังเคลียร์งานไปแล้ว) ต้องไม่ได้หน้าว่างเปล่าที่
+    // อ่านเหมือน "ไม่มีงานค้าง" ทั้งที่ยังมีอยู่เต็มไปหมด
+    test('ขอหน้าที่เกินจำนวนจริง ต้องเด้งไปหน้าสุดท้ายที่มีของ', async () => {
+      const res = await dispatchGet(teacher(), '/tasks', { page: '9999' });
+      assert.equal(res.status, 200);
+      assert.ok(rowsOn(res.body) > 0, 'ต้องไม่ใช่หน้าว่าง');
+      // หน้าสุดท้ายรู้ได้จากการที่ไม่มีปุ่ม "ครบกำหนดทีหลัง" ให้กดต่อ
+      assert.ok(!/ครบกำหนดทีหลัง/.test(res.body), 'ต้องเป็นหน้าสุดท้ายจริง');
+      assert.match(res.body, /href="\/tasks(\?page=\d+)?"[^>]*>← ด่วนกว่า/, 'และต้องมีทางย้อนกลับ');
+    });
+
+    // ตัวไล่ฉบับ ("ฉบับที่ 3 จาก 8" และการเด้งไปฉบับถัดไป) ใช้คิวทั้งกอง ไม่ใช่แค่หน้าเดียว
+    // ถ้าเผลอให้มันเห็นแค่ 50 ฉบับแรก พอทำครบ 50 แล้วจะหยุดเด้งทั้งที่ยังเหลืออีกเป็นร้อย
+    test('การแบ่งหน้าต้องไม่ทำให้ตัวไล่ฉบับมองเห็นแค่หน้าเดียว', async () => {
+      const all = Q.myWaitingTasks(teacher());
+      assert.ok(all.total > MAX_TASK_ROWS, `ต้องนับงานค้างได้ครบทั้งกอง (ได้ ${all.total})`);
+      assert.equal(all.rows.length, MAX_TASK_ROWS, 'ค่าเริ่มต้นต้องดึงมาทั้งคิวตามเพดาน ไม่ใช่แค่หนึ่งหน้า');
     });
   });
 });

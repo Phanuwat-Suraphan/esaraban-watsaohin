@@ -10,7 +10,7 @@
 // ไฟล์นี้ทำให้คิวมีลำดับที่แน่นอนหนึ่งชุด ใช้ร่วมกันทั้งหน้า "งานของฉัน" ตัวบอกตำแหน่งบนหน้าเอกสาร
 // ("ฉบับที่ 3 จาก 8") และการเด้งไปฉบับถัดไปหลังกดเสร็จ — ถ้าสามที่นี้เรียงคนละแบบ ตัวเลขที่บอกจะโกหก
 import { db, todayInBangkok } from '../db.js';
-import { canUserSeeDocument } from './workflow.js';
+import { canUserSeeDocument, visibleDocumentsSqlFilter } from './workflow.js';
 
 /**
  * งานของฉัน = ขั้นที่มอบหมายถึงเราตรงๆ + ขั้นของคนที่มอบให้เรารักษาการแทน (ที่ยัง active วันนี้)
@@ -22,46 +22,55 @@ export const MY_OR_DELEGATED_STEP_SQL = `(ws.assignee_id = :me OR ws.assignee_id
   WHERE delegate_id = :me AND cancelled_at IS NULL AND start_date <= :today AND end_date >= :today
 ))`;
 
-// เพดานแถวของหน้า "งานของฉัน" — ปกติงานค้างของคนหนึ่งคนมีไม่กี่สิบฉบับ แต่ถ้าเรื่องไปค้างสะสมอยู่ที่
-// ใครคนหนึ่ง (เช่นคนที่ย้ายออกไปแล้วแต่ยังมีเรื่องจ่อคิว) หน้าจะโตขึ้นเรื่อยๆ ไม่มีที่สิ้นสุด
+// เพดานแถวที่ดึงมาคำนวณคิวในหนึ่งครั้ง — ใช้กับตัวไล่ฉบับ (queuePosition / nextInQueue) ซึ่งต้องรู้
+// ลำดับทั้งคิว ไม่ใช่แค่หน้าเดียว ปกติงานค้างของคนหนึ่งคนมีไม่กี่สิบฉบับ แต่ถ้าเรื่องไปค้างสะสมอยู่ที่
+// ใครคนหนึ่ง (เช่นคนที่ย้ายออกไปแล้วแต่ยังมีเรื่องจ่อคิว) ต้องมีเพดานไว้ ไม่งั้นโตไม่มีที่สิ้นสุด
 export const MAX_TASK_ROWS = 300;
+
+// จำนวนแถวต่อหน้าของ "งานของฉัน" — เท่ากับทะเบียนหนังสือ (ดู PAGE_SIZE ใน routes/documents.js)
+//
+// วัดจริง: หน้านี้เคยเทแถวทั้งเพดาน 300 แถวลงหน้าเดียว ได้ 260KB ต่อการเปิดหนึ่งครั้ง ซึ่งหนักที่สุด
+// ในระบบ และเป็นหน้าที่คนทำงานเปิดบ่อยที่สุดด้วย — ที่แย่กว่าขนาดคือ 300 แถวบนมือถือหาอะไรไม่เจอเลย
+export const TASKS_PAGE_SIZE = 50;
 
 /**
  * ลำดับของคิว — เรียงตามวันครบกำหนดก่อน แล้วค่อยตามเวลาที่ถูกมอบหมาย
  *
  * ฉบับที่ไม่มีวันครบกำหนดไปอยู่ท้ายสุดเสมอ ไม่ใช่ขึ้นก่อนเพราะค่าว่างเรียงมาก่อนใน SQL —
  * เดิมหน้านี้เรียงตามชั้นความเร็วอย่างเดียว ทำให้หนังสือ "ปกติ" ที่เลยกำหนดมา 5 วันไปจมอยู่ท้ายตาราง
+ *
+ * ต้องเรียงใน SQL ไม่ใช่เรียงใน JS หลังดึงมา: พอแบ่งหน้าแล้ว การเรียงทีหลังจะเรียงได้แค่ภายในหน้า
+ * ทำให้หน้า 2 ไม่ได้ต่อจากหน้า 1 จริง และของเดิมก็เพี้ยนอยู่แล้ว — SQL ตัดที่เพดานโดยเรียงตาม
+ * "ชั้นความเร็ว" แต่หน้าเว็บบอกผู้ใช้ว่าตัดโดยเอา "ที่ใกล้ครบกำหนดที่สุด" ไว้ ซึ่งคนละเกณฑ์กัน
  */
-function byDueThenAssigned(a, b) {
-  const da = a.due_date || '';
-  const dbb = b.due_date || '';
-  if (!da && dbb) return 1;
-  if (!dbb && da) return -1;
-  if (da && dbb && da !== dbb) return da < dbb ? -1 : 1;
-  return String(a.assigned_at).localeCompare(String(b.assigned_at));
-}
+const QUEUE_ORDER_SQL = `
+  CASE WHEN d.due_date IS NULL OR d.due_date = '' THEN 1 ELSE 0 END ASC,
+  d.due_date ASC,
+  ws.created_at ASC`;
 
 /**
- * แถวงานที่รอผู้ใช้คนนี้อยู่ พร้อมธงว่าถูกตัดเพราะเกินเพดานหรือไม่
+ * แถวงานที่รอผู้ใช้คนนี้อยู่ พร้อมจำนวนทั้งหมด (ไม่ใช่แค่จำนวนที่อยู่บนหน้านี้)
  *
- * กรองชั้นความลับซ้ำอีกชั้นเสมอ — ปกติคนที่ถูกมอบหมายก็เห็นอยู่แล้ว แต่ถ้าชั้นความลับของเอกสารถูก
- * ยกระดับขึ้นทีหลัง แถวเก่าต้องหายไปด้วย ไม่ใช่ยังโชว์ชื่อเรื่องค้างไว้
+ * กรองชั้นความลับทั้งใน SQL และซ้ำอีกชั้นใน JS — ชั้น SQL ทำให้ตัวเลข total ถูกต้องและแบ่งหน้าได้
+ * ตรง ส่วนชั้น JS กันกรณีที่สองตัวนี้เลื่อนจากกันในอนาคต (แนวเดียวกับหน้าทะเบียนหนังสือ)
  */
-export function myWaitingTasks(user, { today = todayInBangkok() } = {}) {
-  const rawRows = db.prepare(`
+export function myWaitingTasks(user, { today = todayInBangkok(), limit = MAX_TASK_ROWS, offset = 0 } = {}) {
+  const vis = visibleDocumentsSqlFilter(user);
+  const where = `${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' AND d.deleted_at IS NULL AND ${vis.sql}`;
+  const params = { me: user.id, today, ...vis.params };
+  const total = db.prepare(`
+    SELECT COUNT(*) c FROM workflow_steps ws JOIN documents d ON d.id = ws.document_id WHERE ${where}
+  `).get(params).c;
+  const rows = db.prepare(`
     SELECT d.*, dt.name as type_name, ws.id as step_id, ws.created_at as assigned_at, (ws.assignee_id != :me) as is_delegated
     FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
-    WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' AND d.deleted_at IS NULL
-    ORDER BY d.priority DESC, ws.created_at ASC
-    LIMIT ${MAX_TASK_ROWS + 1}
-  `).all({ me: user.id, today });
-  // ดึงมาเกินหนึ่งแถวเพื่อรู้ว่าถูกตัดหรือเปล่า แล้วบอกผู้ใช้ตรงๆ ไม่ใช่ตัดทิ้งเงียบๆ
-  const truncated = rawRows.length > MAX_TASK_ROWS;
-  const rows = rawRows.slice(0, MAX_TASK_ROWS)
-    .filter((d) => canUserSeeDocument(user, d))
-    .sort(byDueThenAssigned);
-  return { rows, truncated };
+    WHERE ${where}
+    ORDER BY ${QUEUE_ORDER_SQL}
+    LIMIT :lim OFFSET :off
+  `).all({ ...params, lim: limit, off: offset })
+    .filter((d) => canUserSeeDocument(user, d));
+  return { rows, total, truncated: total > rows.length + offset };
 }
 
 /**

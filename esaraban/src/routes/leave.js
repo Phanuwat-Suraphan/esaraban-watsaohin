@@ -16,6 +16,7 @@ import {
   listLeaveApprovers, leaveStatsForFiscalYear, countMyLeaveRequests,
 } from '../services/leave.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream } from '../services/googleDrive.js';
+import { activeDriveId, activeDriveToken, driveTokenFor, BOOTSTRAP_DRIVE_ID } from '../services/driveAccounts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -554,10 +555,13 @@ router.post('/leave/:id/attachments', requireApi(async (ctx) => {
   const hash = crypto.createHash('sha256').update(buffer).digest('hex');
   const safeName = `${id}.${ext}`;
   if (isGoogleDriveEnabled()) {
-    const folderId = await ensureCategoryFolder({ yearBe: beYear(new Date()), typeName: 'ใบลา-หลักฐานแนบ' });
-    const driveFileId = await uploadFile({ buffer, filename: `${id}__${fileName || safeName}`, mimeType: fileType, folderId });
+    const refreshToken = activeDriveToken();
+    const folderId = await ensureCategoryFolder({ yearBe: beYear(new Date()), typeName: 'ใบลา-หลักฐานแนบ', refreshToken });
+    const driveFileId = await uploadFile({ buffer, filename: `${id}__${fileName || safeName}`, mimeType: fileType, folderId, refreshToken });
+    const active = activeDriveId();
     insertLeaveAttachment({ id, leaveRequestId: req.id, filename: truncateFilename(fileName) || safeName, storageProvider: 'google_drive',
-      driveFileId, filesize: buffer.length, mimeType: fileType, hash, uploadedBy: ctx.user.id });
+      driveFileId, driveAccountId: active === BOOTSTRAP_DRIVE_ID ? null : active,
+      filesize: buffer.length, mimeType: fileType, hash, uploadedBy: ctx.user.id });
   } else {
     fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buffer);
     insertLeaveAttachment({ id, leaveRequestId: req.id, filename: truncateFilename(fileName) || safeName, storageProvider: 'local',
@@ -575,7 +579,8 @@ router.get('/leave-files/:attId', requirePage(async (ctx) => {
 
   let buffer;
   if (att.storage_provider === 'google_drive') {
-    const stream = await downloadFileStream(att.drive_file_id);
+    // เปิดด้วยบัญชีไดรฟ์ที่ไฟล์นั้นอยู่จริง ไม่ใช่บัญชีที่ใช้งานอยู่ตอนนี้ (ดู services/driveAccounts.js)
+    const stream = await downloadFileStream(att.drive_file_id, driveTokenFor(att.drive_account_id));
     if (!stream) throw httpError(404, 'เปิดไฟล์บน Google Drive ไม่ได้');
     const chunks = [];
     for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);

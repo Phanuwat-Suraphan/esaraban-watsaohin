@@ -1,5 +1,6 @@
 import { db, uuid, nowIso, audit, todayInBangkok, computeRetentionUntil } from '../db.js';
 import { isGoogleDriveEnabled, deleteFile as deleteDriveFile } from './googleDrive.js';
+import { driveTokenFor } from './driveAccounts.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -189,11 +190,13 @@ export async function approveDestructionBatch({ batchId, actorUser, note }) {
       // คงรายการทะเบียน/เลขที่ไว้เป็นหลักฐานว่าเคยมีและถูกทำลายแล้วตามระเบียบ (ไม่ใช้เลขซ้ำ)
       const atts = db.prepare('SELECT * FROM attachments WHERE document_id = ?').all(doc.id);
       for (const att of atts) {
-        if (att.storage_provider === 'google_drive' && att.drive_file_id) driveFilesToDelete.push(att.drive_file_id);
+        // เก็บบัญชีไดรฟ์ไปด้วย — ไฟล์ของปีเก่าอยู่บนไดรฟ์เดิมที่เลิกใช้เก็บของใหม่แล้ว ถ้าลบด้วยบัญชี
+        // ที่ใช้งานอยู่จะลบไม่โดน แล้วไฟล์ที่คณะกรรมการมีมติให้ทำลายจะยังอยู่บน Drive ต่อไป
+        if (att.storage_provider === 'google_drive' && att.drive_file_id) driveFilesToDelete.push({ id: att.drive_file_id, account: att.drive_account_id });
         else if (att.filepath) localFilesToDelete.push(att.filepath);
         // สำเนาที่ประทับตราแล้วเป็นคนละไฟล์กับต้นฉบับ ต้องลบด้วย ไม่งั้นเอกสารที่ "ทำลายแล้ว"
         // ยังเหลือฉบับประทับตราค้างอยู่ในเครื่อง ซึ่งขัดกับมติให้ทำลาย
-        if (att.stamped_storage_provider === 'google_drive' && att.stamped_drive_file_id) driveFilesToDelete.push(att.stamped_drive_file_id);
+        if (att.stamped_storage_provider === 'google_drive' && att.stamped_drive_file_id) driveFilesToDelete.push({ id: att.stamped_drive_file_id, account: att.stamped_drive_account_id });
         else if (att.stamped_filepath) localFilesToDelete.push(att.stamped_filepath);
       }
       // ทำเครื่องหมายที่ตัวไฟล์แนบด้วย ไม่ใช่แค่ที่ตัวหนังสือ — เดิมแถวไฟล์แนบยังหน้าตาเหมือนไฟล์ปกติทุกอย่าง
@@ -204,7 +207,8 @@ export async function approveDestructionBatch({ batchId, actorUser, note }) {
       // จะพาไปเปิดของที่ไม่มีอยู่ — แต่คงชื่อไฟล์/ขนาด/ค่าแฮชไว้ เพราะเป็นหลักฐานว่าทำลายอะไรไปบ้าง
       db.prepare(`
         UPDATE attachments SET destroyed_at = ?, filepath = NULL, drive_file_id = NULL,
-          stamped_storage_provider = NULL, stamped_filepath = NULL, stamped_drive_file_id = NULL
+          drive_account_id = NULL, stamped_storage_provider = NULL, stamped_filepath = NULL,
+          stamped_drive_file_id = NULL, stamped_drive_account_id = NULL
         WHERE document_id = ?
       `).run(now, doc.id);
     }
@@ -227,11 +231,11 @@ export async function approveDestructionBatch({ batchId, actorUser, note }) {
     }
   }
   if (isGoogleDriveEnabled()) {
-    for (const fileId of driveFilesToDelete) {
+    for (const f of driveFilesToDelete) {
       try {
-        await deleteDriveFile(fileId);
+        await deleteDriveFile(f.id, driveTokenFor(f.account));
       } catch (e) {
-        audit({ userId: actorUser.id, action: 'destruction_drive_delete_failed', tableName: 'attachments', recordId: fileId, detail: { error: e.message } });
+        audit({ userId: actorUser.id, action: 'destruction_drive_delete_failed', tableName: 'attachments', recordId: f.id, detail: { error: e.message } });
       }
     }
   }

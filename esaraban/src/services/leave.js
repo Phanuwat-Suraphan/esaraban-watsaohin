@@ -424,11 +424,11 @@ export function assertAllowedLeaveFile({ mimeType, buffer }) {
   return spec.ext;
 }
 
-export function insertLeaveAttachment({ id, leaveRequestId, filename, storageProvider, filepath, driveFileId, filesize, mimeType, hash, uploadedBy }) {
+export function insertLeaveAttachment({ id, leaveRequestId, filename, storageProvider, filepath, driveFileId, driveAccountId, filesize, mimeType, hash, uploadedBy }) {
   db.prepare(`
-    INSERT INTO leave_attachments (id, leave_request_id, filename, storage_provider, filepath, drive_file_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, leaveRequestId, filename, storageProvider, filepath || null, driveFileId || null, filesize, mimeType, hash || null, uploadedBy, nowIso());
+    INSERT INTO leave_attachments (id, leave_request_id, filename, storage_provider, filepath, drive_file_id, drive_account_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, leaveRequestId, filename, storageProvider, filepath || null, driveFileId || null, driveAccountId || null, filesize, mimeType, hash || null, uploadedBy, nowIso());
 }
 
 export function getLeaveAttachment(id) {

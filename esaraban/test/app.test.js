@@ -1,7 +1,7 @@
 // Zero-dependency test suite (node:test, built into Node 22 — no npm packages needed).
 // Uses a throwaway SQLite file per run (DB_PATH) so it never touches data/esaraban.db.
 // Run with: node --test test/
-import { test, describe, before, after } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1156,6 +1156,41 @@ describe('smoke: ทุกหน้าต้องเปิดได้จริ
     }
     assert.deepEqual([...new Set(offenders)], [],
       `สคริปต์ในหน้าเว็บมีไวยากรณ์ผิด (ปุ่มทั้งก้อนจะไม่ทำงาน):\n  ${[...new Set(offenders)].join('\n  ')}`);
+  });
+
+  // ด่านข้างบนไล่หน้าตามสภาพของเครื่องที่รันเทสต์ ซึ่งเก็บไฟล์ลงดิสก์ (ไม่ได้ต่อ Google Drive)
+  // แปลว่าสคริปต์ที่ขึ้น "เฉพาะตอนต่อ Drive แล้ว" ไม่เคยถูกตรวจเลย — และนั่นคือสภาพของเครื่องจริง
+  // ของโรงเรียน เจอจริง: สคริปต์หน้าจัดการหลายไดรฟ์มี \n ที่กลายเป็นขึ้นบรรทัดจริง ทั้งก้อนตาย
+  // แต่ชุดเทสต์เขียวสนิท กว่าจะรู้ก็ตอนเปิดเบราว์เซอร์จริงดู
+  test('สคริปต์ของหน้าที่ขึ้นเฉพาะตอนต่อ Google Drive แล้ว ก็ต้องไม่มีไวยากรณ์ผิด', async () => {
+    const vm = await import('node:vm');
+    const before = {
+      provider: process.env.STORAGE_PROVIDER,
+      token: process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
+      id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+      secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    };
+    process.env.STORAGE_PROVIDER = 'google_drive';
+    process.env.GOOGLE_OAUTH_REFRESH_TOKEN = 'fake-refresh';
+    process.env.GOOGLE_OAUTH_CLIENT_ID = 'fake-client';
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'fake-secret';
+    const offenders = [];
+    try {
+      for (const pathname of ['/admin/google-drive', '/admin/backups']) {
+        const res = await openPage(pathname, userAs('admin'));
+        if (!String(res.headers['Content-Type'] || '').includes('text/html')) continue;
+        for (const m of res.body.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)) {
+          try { new vm.Script(m[1]); } catch (err) { offenders.push(`${pathname}: ${err.message}`); }
+        }
+      }
+    } finally {
+      for (const [k, v] of [['STORAGE_PROVIDER', before.provider], ['GOOGLE_OAUTH_REFRESH_TOKEN', before.token],
+        ['GOOGLE_OAUTH_CLIENT_ID', before.id], ['GOOGLE_OAUTH_CLIENT_SECRET', before.secret]]) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+    assert.deepEqual([...new Set(offenders)], [],
+      `สคริปต์ของหน้าที่ต้องต่อ Drive ก่อนถึงจะขึ้น มีไวยากรณ์ผิด:\n  ${[...new Set(offenders)].join('\n  ')}`);
   });
 
   // ด่านข้างบนตรวจเฉพาะ <script> ซึ่งไม่ครอบคลุม onclick="..." — และตรงนั้นพังได้ง่ายกว่าด้วยซ้ำ
@@ -8929,6 +8964,169 @@ describe('ตราประทับ: สามช่องแถบล่า�
       'ต้องอ่านของเดิม -> บันทึกตัวใหม่ -> ค่อยลบของเดิม (ลบก่อนบันทึกสำเร็จ = เสี่ยงไม่เหลือไฟล์เลย)');
   });
 
+  // Google Drive ฟรีมี 15GB ต่อบัญชี และเป็น 15GB ที่แชร์กับ Gmail/Photos ของเจ้าของบัญชีด้วย
+  // โรงเรียนที่สแกนหนังสือทุกวันเต็มได้จริง — ทางออกเดิมคือแก้ GOOGLE_OAUTH_REFRESH_TOKEN เป็นบัญชี
+  // ใหม่แล้ว redeploy ซึ่งทำให้ "ไฟล์เก่าทุกไฟล์เปิดไม่ได้ทันที" เพราะ scope drive.file ให้แอปเห็น
+  // เฉพาะไฟล์ที่ตัวเองสร้างด้วยบัญชีนั้น ทะเบียนยังอยู่ครบแต่กดเปิดไฟล์แนบไม่ได้สักฉบับ
+  describe('เพิ่มไดรฟ์ใหม่ได้ โดยไฟล์บนไดรฟ์เดิมยังเปิดได้', () => {
+    let DA;
+    before(async () => { DA = await import('../src/services/driveAccounts.js'); });
+    const envBefore = {
+      token: process.env.GOOGLE_OAUTH_REFRESH_TOKEN,
+      id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+      secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    };
+    beforeEach(() => {
+      process.env.GOOGLE_OAUTH_REFRESH_TOKEN = 'token-ของไดรฟ์ตั้งต้น';
+      process.env.GOOGLE_OAUTH_CLIENT_ID = 'fake-client';
+      process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'fake-secret';
+    });
+    afterEach(() => {
+      db.prepare('DELETE FROM drive_accounts').run();
+      for (const [k, v] of [['GOOGLE_OAUTH_REFRESH_TOKEN', envBefore.token],
+        ['GOOGLE_OAUTH_CLIENT_ID', envBefore.id], ['GOOGLE_OAUTH_CLIENT_SECRET', envBefore.secret]]) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    });
+
+    test('ยังไม่เคยเพิ่มไดรฟ์ที่สอง = ใช้ไดรฟ์ตั้งต้น และไฟล์เก่าที่ไม่ได้จดไดรฟ์ไว้ต้องอ่านได้', () => {
+      assert.equal(DA.activeDriveId(), DA.BOOTSTRAP_DRIVE_ID);
+      // ไฟล์ที่บันทึกไว้ก่อนมีระบบหลายไดรฟ์ มีค่าคอลัมน์เป็น NULL — ต้องหมายถึงไดรฟ์ตั้งต้น
+      assert.equal(DA.driveTokenFor(null), 'token-ของไดรฟ์ตั้งต้น');
+      assert.equal(DA.driveTokenFor(DA.BOOTSTRAP_DRIVE_ID), 'token-ของไดรฟ์ตั้งต้น');
+    });
+
+    test('เพิ่มไดรฟ์ใหม่แล้วของใหม่ไปลงไดรฟ์ใหม่ แต่ของเก่ายังอ่านจากไดรฟ์เดิม', () => {
+      const id = DA.addDriveAccount({ label: 'ไดรฟ์โรงเรียน ชุดที่ 2', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
+      assert.equal(DA.activeDriveId(), id, 'ไดรฟ์ใหม่ต้องกลายเป็นตัวที่ใช้เก็บไฟล์ใหม่ทันที');
+      assert.equal(DA.activeDriveToken(), 'token-ไดรฟ์สอง');
+      // หัวใจของเรื่อง: ไฟล์เก่ายังเปิดด้วยกุญแจของไดรฟ์เดิมได้อยู่
+      assert.equal(DA.driveTokenFor(null), 'token-ของไดรฟ์ตั้งต้น', 'ไฟล์เก่าต้องยังเปิดได้จากไดรฟ์เดิม');
+      const list = DA.listDriveAccounts();
+      assert.equal(list.length, 2);
+      assert.equal(list[0].bootstrap, true, 'ไดรฟ์ตั้งต้นต้องอยู่แถวแรกเสมอ');
+      assert.equal(list[0].isActive, false);
+      assert.equal(list[1].isActive, true);
+      assert.equal(list[1].status, 'active');
+      // ห้ามส่ง refresh token ออกไปไหนเด็ดขาด — หลุดครั้งเดียวเท่ากับยกสิทธิ์ทั้งไดรฟ์ให้คนอื่นถาวร
+      assert.ok(!JSON.stringify(list).includes('token-'), 'รายการไดรฟ์ต้องไม่มี refresh token ติดออกไป');
+    });
+
+    test('สลับกลับไปใช้ไดรฟ์ตั้งต้นได้ และสลับไปมาได้ตลอด เพราะไม่มีอะไรถูกย้าย', () => {
+      const id = DA.addDriveAccount({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
+      DA.useDriveForNewFiles(DA.BOOTSTRAP_DRIVE_ID, adminUser);
+      assert.equal(DA.activeDriveId(), DA.BOOTSTRAP_DRIVE_ID);
+      assert.equal(DA.listDriveAccounts().find((a) => a.id === id).status, 'readonly');
+      DA.useDriveForNewFiles(id, adminUser);
+      assert.equal(DA.activeDriveId(), id);
+    });
+
+    test('กันเพิ่มบัญชีเดิมซ้ำ และกันเพิ่มบัญชีเดียวกับไดรฟ์ตั้งต้น', () => {
+      DA.addDriveAccount({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
+      assert.throws(() => DA.addDriveAccount({ label: 'ซ้ำ', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser }), /เพิ่มไว้แล้ว/);
+      assert.throws(() => DA.addDriveAccount({ label: 'ตัวเดิม', refreshToken: 'token-ของไดรฟ์ตั้งต้น', actorUser: adminUser }),
+        /คนละบัญชี/, 'เพิ่มบัญชีเดิมซ้ำไม่ได้แก้ปัญหาพื้นที่เต็มเลย');
+      assert.throws(() => DA.addDriveAccount({ label: '', refreshToken: 'token-x', actorUser: adminUser }), /ตั้งชื่อ/);
+    });
+
+    // ถอดไดรฟ์ที่ยังมีไฟล์อยู่ = ไฟล์เหล่านั้นเปิดไม่ได้ทันทีทั้งที่ยังอยู่บน Drive ครบ
+    // ซึ่งเป็นสิ่งเดียวกับที่ฟีเจอร์นี้ตั้งใจจะป้องกัน
+    test('ถอดไดรฟ์ที่ยังมีไฟล์อยู่ไม่ได้ และถอดไดรฟ์ที่ใช้งานอยู่ก็ไม่ได้', () => {
+      const id = DA.addDriveAccount({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
+      assert.throws(() => DA.removeDriveAccount(id, adminUser), /กำลังใช้เก็บไฟล์ใหม่/);
+      DA.useDriveForNewFiles(DA.BOOTSTRAP_DRIVE_ID, adminUser);
+
+      const doc = makeDoc({ title: 'หนังสือที่ไฟล์อยู่บนไดรฟ์สอง' });
+      db.prepare(`INSERT INTO attachments (id, document_id, filename, storage_provider, drive_file_id, drive_account_id,
+          filesize, mime_type, hash_sha256, uploaded_by, created_at)
+        VALUES (?, ?, 'a.pdf', 'google_drive', 'drive-file-1', ?, 10, 'application/pdf', 'x', ?, ?)`)
+        .run(uuid(), doc.id, id, registrarUser.id, nowIso());
+      assert.equal(DA.listDriveAccounts().find((a) => a.id === id).files, 1, 'ต้องนับไฟล์ที่อยู่บนไดรฟ์นั้นได้');
+      assert.throws(() => DA.removeDriveAccount(id, adminUser), /ยังมีไฟล์ 1 รายการ/);
+
+      db.prepare("DELETE FROM attachments WHERE drive_account_id = ?").run(id);
+      assert.doesNotThrow(() => DA.removeDriveAccount(id, adminUser), 'ไดรฟ์ที่ว่างแล้วถอดออกได้');
+    });
+
+    test('ไฟล์ที่ชี้ไปยังไดรฟ์ที่ถูกถอดไปแล้ว ต้องบอกว่าเป็นเรื่องการตั้งค่า ไม่ใช่ "ไฟล์หาย"', () => {
+      assert.throws(() => DA.driveTokenFor('ไดรฟ์ที่ไม่มีแล้ว'),
+        /เพิ่มบัญชีนั้นกลับเข้ามา/, 'ไฟล์ยังอยู่บน Drive ครบ แค่ระบบไม่มีกุญแจเปิด');
+    });
+
+    test('ไดรฟ์ตั้งต้นถอดออกจากหน้าเว็บไม่ได้ — ต้องแก้ที่ environment variable', () => {
+      assert.throws(() => DA.removeDriveAccount(DA.BOOTSTRAP_DRIVE_ID, adminUser), /environment variable/);
+    });
+
+    // วงรอบจริง: แนบไฟล์บนไดรฟ์ใบแรก → เพิ่มไดรฟ์ใบใหม่ → แนบไฟล์อีกใบ → เปิดได้ทั้งคู่
+    //
+    // ใช้ Google Drive จำลองสองบัญชีที่ "แยกคลังไฟล์กันจริง" เพื่อจำลองสิ่งที่ scope drive.file ทำกับเรา
+    // ในของจริง: บัญชีหนึ่งมองไม่เห็นไฟล์ของอีกบัญชีหนึ่งเลย ถ้าระบบเผลอใช้บัญชีที่ใช้งานอยู่ไปเปิด
+    // ไฟล์เก่า จะได้ 404 ทันที — ซึ่งคือสิ่งที่เกิดขึ้นถ้าแก้ token แล้ว redeploy แบบที่เคยเป็น
+    test('วงรอบจริง: เพิ่มไดรฟ์ใบใหม่แล้วไฟล์เก่ายังเปิดได้ ไฟล์ใหม่ก็เปิดได้', () => {
+      const out = execFileSync(process.execPath, ['--no-warnings', 'test/driveMultiAccount.mjs'], {
+        cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 60_000,
+      });
+      const r = JSON.parse(out.trim().split('\n').pop());
+      assert.ok(!r.fatal, r.fatal + '\n' + (r.stack || ''));
+
+      assert.equal(r.oldOnBootstrap, true, 'ไฟล์ยุคแรกต้องอยู่บนไดรฟ์ตั้งต้น');
+      assert.equal(r.openBeforeStatus, 200);
+      assert.equal(r.openBeforeMatches, true, 'ก่อนเพิ่มไดรฟ์ ไฟล์ต้องเปิดได้ตามปกติ');
+
+      assert.equal(r.addStatus, 201, 'เพิ่มไดรฟ์ใบใหม่ผ่านหน้าเว็บได้');
+      assert.equal(r.activeIsNew, true, 'ไฟล์ใหม่ต้องไปลงไดรฟ์ใบใหม่');
+      assert.equal(r.newOnSecondDrive, true, 'และต้องจดไว้ที่ตัวไฟล์ว่าอยู่ไดรฟ์ไหน');
+
+      // นี่คือข้อที่ผู้ใช้ขอมาตรงๆ: "เพิ่มไดรฟ์ใหม่ได้ โดยข้อมูลไดรฟ์เดิมยังคงอยู่"
+      assert.equal(r.openOldAfterSwitchStatus, 200, 'ไฟล์เก่าต้องยังเปิดได้หลังเปลี่ยนไดรฟ์');
+      assert.equal(r.openOldAfterSwitchMatches, true, 'และต้องเป็นไฟล์เดิมจริงๆ ไม่ใช่ไฟล์อื่นที่ id บังเอิญตรงกัน');
+      assert.equal(r.openNewStatus, 200);
+      assert.equal(r.openNewMatches, true, 'ไฟล์ที่แนบหลังเปลี่ยนไดรฟ์ก็ต้องเปิดได้');
+
+      // ถ้าข้อนี้ไม่ผ่าน แปลว่า Drive จำลองไม่ได้แยกบัญชีกันจริง แล้วข้อข้างบนก็ไม่ได้พิสูจน์อะไรเลย
+      assert.equal(r.oldFileInvisibleToNewDrive, true,
+        'บัญชีใหม่ต้องมองไม่เห็นไฟล์ของบัญชีเก่า (ไม่งั้นเทสต์นี้ผ่านแบบหลอกๆ)');
+
+      assert.equal(r.removeActiveStatus, 400, 'ถอดไดรฟ์ที่กำลังใช้เก็บไฟล์ใหม่ไม่ได้');
+      assert.equal(r.switchBackStatus, 200, 'สลับกลับไปใช้ไดรฟ์ตั้งต้นได้');
+      assert.equal(r.openNewAfterSwitchBackStatus, 200);
+      assert.equal(r.openNewAfterSwitchBackMatches, true,
+        'สลับกลับแล้วไฟล์ที่อยู่บนไดรฟ์ใบสองต้องยังเปิดได้ — สลับไปมาได้ตลอดเพราะไม่มีอะไรถูกย้าย');
+    });
+
+    describe('ด่านฝั่งเซิร์ฟเวอร์', () => {
+      test('ครูยิง API เพิ่ม/สลับ/ถอดไดรฟ์เองไม่ได้', async () => {
+        const teacher = loadUserForTest(seed.userIds.teacher001);
+        for (const [path2, body] of [
+          ['/admin/google-drive/accounts', { label: 'x', refreshToken: 'y' }],
+          ['/admin/google-drive/accounts/use', { id: 'bootstrap' }],
+          ['/admin/google-drive/accounts/remove', { id: 'x' }],
+        ]) {
+          const res = await dispatchPost(teacher, path2, body);
+          assert.equal(res.status, 403, `${path2} ต้องปฏิเสธครู`);
+        }
+      });
+
+      test('แอดมินเพิ่มไดรฟ์ผ่าน API ได้ และหน้าเว็บขึ้นรายการไดรฟ์ทั้งสอง', async () => {
+        const add = await dispatchPost(adminUser, '/admin/google-drive/accounts',
+          { label: 'ไดรฟ์โรงเรียน ชุดที่ 2', refreshToken: 'token-ไดรฟ์สอง' });
+        assert.equal(add.status, 201, add.body);
+        const page = await dispatchGet(adminUser, '/admin/google-drive');
+        assert.equal(page.status, 200);
+        assert.match(page.body, /ไดรฟ์ที่ระบบใช้เก็บไฟล์ \(2\)/);
+        assert.match(page.body, /ไดรฟ์ตั้งต้น/);
+        assert.match(page.body, /ไดรฟ์โรงเรียน ชุดที่ 2/);
+        assert.match(page.body, /กำลังใช้เก็บไฟล์ใหม่/);
+        assert.match(page.body, /อ่านอย่างเดียว \(ไฟล์เก่ายังเปิดได้\)/);
+        assert.match(page.body, /google-drive\/start\?add=1/, 'ต้องมีปุ่มเพิ่มไดรฟ์ใหม่');
+        assert.ok(!page.body.includes('token-ไดรฟ์สอง'), 'refresh token ต้องไม่หลุดลงหน้าเว็บ');
+        // พื้นที่คงเหลือต้องโหลดทีหลัง ไม่ใช่ตอน render — ไม่งั้นหน้าค้างรอเน็ตของ Google ทุกครั้งที่เปิด
+        assert.match(page.body, /class="drive-quota text-muted" data-drive=/, 'ช่องพื้นที่ต้องเป็นที่ว่างรอเติม');
+        assert.match(page.body, /\/admin\/google-drive\/accounts\/quota/, 'ต้องมีตัวโหลดพื้นที่แยกต่างหาก');
+      });
+    });
+  });
+
   test('ล้างไฟล์ที่ไม่มีเจ้าของ ต้องไม่แตะโฟลเดอร์สำเนาฐานข้อมูล', () => {
     // ไฟล์ในโฟลเดอร์สำเนาฐานข้อมูลไม่ได้ผูกกับตาราง attachments จึงเข้าข่าย "ไม่มีเจ้าของ" ทั้งหมด
     // ถ้าเผลอกวาดรวมไปด้วย = ลบสำเนาที่ใช้กู้ทะเบียนหนังสือทั้งเล่มกลับมา ซึ่งเรียกคืนไม่ได้อีกเลย
@@ -8938,7 +9136,7 @@ describe('ตราประทับ: สามช่องแถบล่า�
     assert.match(body, /if \(year\.name === BACKUP_FOLDER_NAME\) continue;/,
       'listAllAttachmentFiles ต้องข้ามโฟลเดอร์สำเนาฐานข้อมูลเสมอ');
     // และต้องหาโฟลเดอร์หลักแบบไม่สร้างใหม่ ไม่งั้นการ "ตรวจ" จะไปสร้างโฟลเดอร์เปล่าทิ้งไว้
-    assert.match(body, /await findFolder\(ROOT_FOLDER_NAME, 'root'\)/,
+    assert.match(body, /await findFolder\(ROOT_FOLDER_NAME, 'root'[,)]/,
       'ต้องใช้ findFolder ที่ไม่สร้างโฟลเดอร์ใหม่');
   });
 
@@ -8949,7 +9147,13 @@ describe('ตราประทับ: สามช่องแถบล่า�
     // เทียบจาก id เท่านั้น — ชื่อไฟล์ซ้ำกันได้ และเดาผิดแปลว่าลบไฟล์แนบของจริงทิ้ง
     assert.match(body, /referenced\.add\(row\.drive_file_id\)/);
     assert.match(body, /referenced\.add\(row\.stamped_drive_file_id\)/);
-    assert.match(body, /files\.filter\(\(f\) => !referenced\.has\(f\.id\)\)/);
+    assert.match(body, /if \(!referenced\.has\(f\.id\)\)/, 'ต้องกรองด้วย id ที่ยังถูกอ้างถึง');
+    // ต้องไล่ทุกไดรฟ์ที่เชื่อมอยู่ ไม่ใช่เฉพาะไดรฟ์ที่ใช้เก็บของใหม่ — ไฟล์ขยะของไดรฟ์เก่า (ซึ่งคือ
+    // ไดรฟ์ที่เต็มจนต้องเพิ่มไดรฟ์ใหม่) จะไม่มีวันถูกตรวจเจออีกเลยถ้าดูแค่ไดรฟ์เดียว
+    assert.match(body, /for \(const acc of listDriveAccounts\(\)\)/, 'ต้องไล่ทุกไดรฟ์ที่เชื่อมอยู่');
+    assert.match(body, /listAllAttachmentFiles\(driveTokenFor\(acc\.id\)\)/, 'ต้องอ่านด้วยบัญชีของไดรฟ์นั้นๆ');
+    // ไฟล์แนบใบลาก็อยู่บน Drive เหมือนกัน ถ้าไม่นับว่า "มีเจ้าของ" จะถูกกวาดลบทิ้งทั้งหมด
+    assert.match(body, /FROM leave_attachments/, 'ต้องนับไฟล์แนบใบลาว่ามีเจ้าของด้วย');
 
     // endpoint ลบต้องตรวจหาใหม่เองฝั่งเซิร์ฟเวอร์ ไม่รับ id จากฝั่งเว็บ (ไม่งั้นสั่งลบไฟล์อะไรก็ได้)
     const del = src.slice(src.indexOf("router.post('/admin/google-drive/orphans/delete'"));

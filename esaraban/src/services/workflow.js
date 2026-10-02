@@ -1138,7 +1138,9 @@ export async function forceDeleteDocument({ documentId, reason, actorUser }) {
   for (const att of attachments) {
     try {
       if (att.storage_provider === 'google_drive' && att.drive_file_id && isGoogleDriveEnabled()) {
-        await deleteDriveFile(att.drive_file_id);
+        // ลบด้วยบัญชีที่ไฟล์นั้นอยู่จริง — ใช้บัญชีที่ใช้งานอยู่จะลบไม่โดน แล้วไฟล์จะค้างกินพื้นที่ต่อไป
+        const { driveTokenFor } = await import('./driveAccounts.js');
+        await deleteDriveFile(att.drive_file_id, driveTokenFor(att.drive_account_id));
       } else if (att.filepath) {
         const filePath = path.join(UPLOAD_DIR, att.filepath);
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);

@@ -14,6 +14,10 @@ import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
 } from '../services/googleDrive.js';
+import {
+  listDriveAccounts, driveTokenFor, addDriveAccount, useDriveForNewFiles, removeDriveAccount,
+  driveQuotaOf, activeDriveId, BOOTSTRAP_DRIVE_ID, MAX_DRIVE_LABEL,
+} from '../services/driveAccounts.js';
 
 /**
  * ไฟล์บน Drive ที่ไม่มีรายการในระบบอ้างถึงแล้ว
@@ -25,13 +29,25 @@ import {
  * เทียบจาก id ตรงๆ ไม่ใช่เดาจากชื่อไฟล์ — ชื่อซ้ำกันได้ และการเดาผิดแปลว่าลบไฟล์แนบของจริงทิ้ง
  */
 async function findOrphanDriveFiles() {
-  const files = await listAllAttachmentFiles();
+  // ไล่ "ทุกไดรฟ์" ที่ระบบเชื่อมอยู่ ไม่ใช่เฉพาะไดรฟ์ที่ใช้เก็บของใหม่ — หลังโรงเรียนเพิ่มไดรฟ์ที่สอง
+  // เพราะไดรฟ์แรกเต็ม ไฟล์ขยะของไดรฟ์แรกจะไม่มีวันถูกตรวจเจออีกเลย ทั้งที่นั่นคือไดรฟ์ที่ต้องการ
+  // พื้นที่คืนมากที่สุด — และต้องจำไว้ด้วยว่าไฟล์ไหนอยู่ไดรฟ์ไหน เพราะตอนลบต้องใช้บัญชีเดียวกับที่สร้าง
   const referenced = new Set();
   for (const row of db.prepare('SELECT drive_file_id, stamped_drive_file_id FROM attachments').all()) {
     if (row.drive_file_id) referenced.add(row.drive_file_id);
     if (row.stamped_drive_file_id) referenced.add(row.stamped_drive_file_id);
   }
-  return files.filter((f) => !referenced.has(f.id));
+  for (const row of db.prepare('SELECT drive_file_id FROM leave_attachments').all()) {
+    if (row.drive_file_id) referenced.add(row.drive_file_id);
+  }
+  const out = [];
+  for (const acc of listDriveAccounts()) {
+    if (!acc.connected) continue;
+    for (const f of await listAllAttachmentFiles(driveTokenFor(acc.id))) {
+      if (!referenced.has(f.id)) out.push({ ...f, driveAccountId: acc.id, driveLabel: acc.label });
+    }
+  }
+  return out;
 }
 
 function oauthRedirectUri(ctx) {
@@ -799,11 +815,16 @@ router.get('/admin/audit', requireRole('admin')(requirePage((ctx) => {
 })));
 
 // ---------------- Google Drive OAuth connection (admin only) ----------------
-router.get('/admin/google-drive', requireRole('admin')(requirePage((ctx) => {
+router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) => {
   let clientConfigured = true;
   try { getOAuthClientConfig(); } catch (e) { clientConfigured = false; }
   const connected = isGoogleDriveConnected();
   const enabled = isGoogleDriveEnabled();
+
+  // พื้นที่คงเหลือของแต่ละไดรฟ์ไม่ได้อ่านตอน render หน้า — การอ่านต้องวิ่งไปหา Google หนึ่งคำขอต่อ
+  // หนึ่งไดรฟ์ ถ้าทำตอนเปิดหน้า หน้าจะค้างรอเน็ตทุกครั้งที่แอดมินเข้ามาดู (และค้างนานขึ้นตามจำนวน
+  // ไดรฟ์) แนวเดียวกับรายชื่อไฟล์สำเนาสำรองที่โหลดตอนกดเปิดเท่านั้น — ดู loadDriveQuotas ฝั่งเว็บ
+  const accounts = connected || db.prepare('SELECT 1 x FROM drive_accounts LIMIT 1').get() ? listDriveAccounts() : [];
 
   const content = `
     <h2>🗂️ เชื่อมต่อ Google Drive</h2>
@@ -816,7 +837,7 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage((ctx) => {
         </tbody>
       </table>
       ${!clientConfigured ? `<div class="alert alert-warning" style="margin-top:1rem">ต้องตั้งค่า <code>GOOGLE_OAUTH_CLIENT_ID</code> และ <code>GOOGLE_OAUTH_CLIENT_SECRET</code> เป็น environment variable ก่อน (ดูขั้นตอนสร้างใน <code>deploy/GOOGLE_DRIVE.md</code>) แล้ว redeploy จึงจะกดเชื่อมต่อได้</div>` : ''}
-      ${clientConfigured ? `<a class="btn btn-primary" style="margin-top:1rem" href="/admin/google-drive/start">${connected ? '🔄 เชื่อมต่อบัญชีใหม่ (เปลี่ยนบัญชี)' : '🔗 เชื่อมต่อบัญชี Google'}</a>` : ''}
+      ${clientConfigured ? `<a class="btn btn-primary" style="margin-top:1rem" href="/admin/google-drive/start">${connected ? '🔄 เชื่อมต่อไดรฟ์ตั้งต้นใหม่ (เปลี่ยนบัญชี)' : '🔗 เชื่อมต่อบัญชี Google'}</a>` : ''}
       <p class="text-muted" style="font-size:.8rem;margin-top:1rem">ไฟล์ที่อัปโหลดหลังเชื่อมต่อจะไปอยู่ในโฟลเดอร์ "ระบบสารบรรณอิเล็กทรอนิกส์ (esaraban)" ในบัญชี Google Drive ที่เชื่อมต่อ นับพื้นที่ในโควตา 15GB ปกติของบัญชีนั้น</p>
     </div>
 
@@ -868,14 +889,126 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage((ctx) => {
         window.restoreBtn(btn);
       };
     </script>` : ''}`;
-  html(ctx, 200, layout({ user: ctx.user, title: 'เชื่อมต่อ Google Drive', path: '/admin/google-drive', content }));
+  const driveCard = !clientConfigured || !connected ? '' : `
+    <div class="card" id="driveAccounts">
+      <div class="card-header"><h3 class="mt-0">💽 ไดรฟ์ที่ระบบใช้เก็บไฟล์ (${accounts.length})</h3></div>
+      <!-- บัญชี Google ฟรีมี 15GB ที่แชร์กับ Gmail และ Photos ของเจ้าของบัญชีด้วย โรงเรียนที่สแกน
+           หนังสือทุกวันเต็มได้จริง — เพิ่มไดรฟ์ใหม่ได้โดยไฟล์เก่ายังอยู่ที่เดิมและเปิดได้ตามปกติ -->
+      <div class="alert alert-danger" id="driveFullWarn" hidden>
+        <strong>ไดรฟ์ที่ใช้เก็บไฟล์ใหม่ใกล้เต็มแล้ว</strong>
+        <div style="margin-top:.3rem;font-size:.9rem">พอเต็มจริง ทั้งการแนบไฟล์และการสำรองฐานข้อมูลจะหยุดพร้อมกัน
+          — เพิ่มไดรฟ์ใหม่ไว้ก่อนได้เลย ไฟล์เก่าทั้งหมดยังอยู่ที่เดิมและเปิดได้ตามปกติ</div>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>ไดรฟ์</th><th>ไฟล์ที่เก็บอยู่</th><th>พื้นที่ที่ใช้ไป</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>${accounts.map((a) => `<tr>
+          <td><strong>${esc(a.label)}</strong>${a.bootstrap
+    ? '<div class="text-muted" style="font-size:.8rem">สำเนาฐานข้อมูลอยู่บนไดรฟ์นี้เสมอ</div>' : ''}</td>
+          <td>${a.files ? `${a.files} รายการ` : '<span class="text-muted">ยังไม่มี</span>'}</td>
+          <td><span class="drive-quota text-muted" data-drive="${esc(a.id)}">${a.connected ? 'กำลังอ่าน...' : 'ยังไม่ได้เชื่อมต่อ'}</span></td>
+          <td>${a.isActive
+    ? '<span class="badge badge-success">กำลังใช้เก็บไฟล์ใหม่</span>'
+    : '<span class="badge badge-muted">อ่านอย่างเดียว (ไฟล์เก่ายังเปิดได้)</span>'}</td>
+          <td class="cell-pick">
+            ${a.isActive || !a.connected ? '' : `<button class="btn btn-outline btn-sm" type="button"
+              onclick="useDrive('${esc(a.id)}', '${esc(a.label).replace(/'/g, '&#39;')}')">ใช้เก็บไฟล์ใหม่</button>`}
+            ${a.bootstrap || a.isActive || a.files ? '' : `<button class="btn btn-outline btn-sm" type="button"
+              style="color:var(--danger);border-color:var(--danger)"
+              onclick="dropDrive('${esc(a.id)}', '${esc(a.label).replace(/'/g, '&#39;')}')">ถอดออก</button>`}
+          </td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="chip-row" style="margin-top:.8rem">
+        <a class="btn btn-primary btn-sm" href="/admin/google-drive/start?add=1">➕ เพิ่มไดรฟ์ใหม่ (บัญชี Google อีกบัญชี)</a>
+      </div>
+      <div class="help-text" style="margin-top:.5rem">
+        เพิ่มไดรฟ์ใหม่แล้ว <strong>ไฟล์เก่าไม่ถูกย้ายและไม่ถูกลบ</strong> — ระบบจำไว้ที่ตัวไฟล์แต่ละไฟล์ว่าอยู่ไดรฟ์ไหน
+        แล้วเปิดจากไดรฟ์เดิมให้เองทุกครั้ง ส่วนไฟล์ที่แนบหลังจากนั้นจะไปลงไดรฟ์ใหม่
+        <br/>ไดรฟ์เก่าต้องเชื่อมต่อค้างไว้ตลอด ห้ามถอดออกถ้ายังมีไฟล์อยู่ (ระบบกันไว้ให้แล้ว)
+        <br/>พื้นที่ที่ใช้ไปเป็นของทั้งบัญชี Google นั้น รวม Gmail และ Google Photos ด้วย ไม่ใช่เฉพาะไฟล์ของระบบ
+      </div>
+    </div>
+    <script>
+      // อ่านพื้นที่คงเหลือหลังหน้าโหลดเสร็จแล้ว ไม่ใช่ตอน render — หน้าจะได้ไม่ค้างรอเน็ตของ Google
+      (async function loadDriveQuotas() {
+        try {
+          var res = await fetch('/admin/google-drive/accounts/quota');
+          var data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'อ่านพื้นที่ไม่สำเร็จ');
+          data.drives.forEach(function (d) {
+            var el = document.querySelector('.drive-quota[data-drive="' + d.id + '"]');
+            if (el) { el.innerHTML = d.html; el.classList.remove('text-muted'); }
+            if (d.activeNearlyFull) document.getElementById('driveFullWarn').hidden = false;
+          });
+        } catch (e) {
+          document.querySelectorAll('.drive-quota').forEach(function (el) { el.textContent = 'อ่านพื้นที่ไม่ได้'; });
+        }
+      })();
+
+      async function useDrive(id, label) {
+        if (!confirm('ให้ไฟล์ที่แนบใหม่ตั้งแต่นี้ไปเก็บไว้ที่ "' + label + '" ใช่ไหม?\\n\\nไฟล์เก่ายังอยู่ที่ไดรฟ์เดิมและเปิดได้ตามปกติ')) return;
+        try {
+          await window.postJson('/admin/google-drive/accounts/use', { id: id });
+          window.toast('เปลี่ยนไดรฟ์ที่ใช้เก็บไฟล์ใหม่เรียบร้อย', 'success');
+          setTimeout(function () { location.reload(); }, 800);
+        } catch (e) { window.toast(e.message, 'danger'); }
+      }
+      async function dropDrive(id, label) {
+        if (!confirm('ถอด "' + label + '" ออกจากระบบ?\\n\\nถอดได้เฉพาะไดรฟ์ที่ไม่มีไฟล์เก็บอยู่เท่านั้น')) return;
+        try {
+          await window.postJson('/admin/google-drive/accounts/remove', { id: id });
+          window.toast('ถอดไดรฟ์ออกเรียบร้อย', 'success');
+          setTimeout(function () { location.reload(); }, 800);
+        } catch (e) { window.toast(e.message, 'danger'); }
+      }
+    </script>`;
+
+  html(ctx, 200, layout({ user: ctx.user, title: 'เชื่อมต่อ Google Drive', path: '/admin/google-drive', content: content + driveCard }));
+})));
+
+// ---------------- หลายไดรฟ์: เพิ่ม / เลือกตัวใช้งาน / ถอดออก ----------------
+//
+// ไม่บังคับ PIN เพราะทั้งสามอย่างนี้ย้อนกลับได้ทันทีและไม่ลบไฟล์อะไรเลย (ถอดออกได้เฉพาะไดรฟ์ที่
+// ไม่มีไฟล์เก็บอยู่ ซึ่งบังคับที่ removeDriveAccount) ต่างจากการลบสำเนาสำรองที่ย้อนกลับไม่ได้
+router.get('/admin/google-drive/accounts/quota', requireRole('admin')(requireApi(async (ctx) => {
+  const gb = (n) => `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  const accounts = listDriveAccounts().filter((a) => a.connected);
+  const drives = await Promise.all(accounts.map(async (a) => {
+    const q = await driveQuotaOf(a.id);
+    let text;
+    if (q.error) text = `<span class="text-muted">อ่านพื้นที่ไม่ได้ (${esc(q.error.slice(0, 60))})</span>`;
+    else if (q.limitBytes == null) text = `ใช้ไป ${gb(q.usageBytes)} <span class="text-muted">(บัญชีนี้ไม่จำกัดพื้นที่)</span>`;
+    else {
+      text = `<span class="${q.nearlyFull ? 'badge badge-danger' : ''}">${q.usedPercent}%</span> `
+        + `<span class="text-muted">${gb(q.usageBytes)} จาก ${gb(q.limitBytes)}</span>`;
+    }
+    // เตือนเฉพาะไดรฟ์ที่กำลังใช้เก็บไฟล์ใหม่ — ไดรฟ์เก่าที่เต็มแล้วเป็นเรื่องปกติและไม่ต้องทำอะไร
+    return { id: a.id, html: text, activeNearlyFull: Boolean(a.isActive && q.nearlyFull) };
+  }));
+  json(ctx, 200, { drives });
+})));
+
+router.post('/admin/google-drive/accounts', requireRole('admin')(requireApi((ctx) => {
+  const id = addDriveAccount({ label: ctx.body.label, refreshToken: ctx.body.refreshToken, actorUser: ctx.user });
+  audit({ userId: ctx.user.id, action: 'drive_account_added', tableName: 'drive_accounts', recordId: id, detail: { label: String(ctx.body.label || '').trim() } });
+  json(ctx, 201, { ok: true, id });
+})));
+
+router.post('/admin/google-drive/accounts/use', requireRole('admin')(requireApi((ctx) => {
+  useDriveForNewFiles(String(ctx.body.id || ''), ctx.user);
+  json(ctx, 200, { ok: true, active: activeDriveId() });
+})));
+
+router.post('/admin/google-drive/accounts/remove', requireRole('admin')(requireApi((ctx) => {
+  removeDriveAccount(String(ctx.body.id || ''), ctx.user);
+  json(ctx, 200, { ok: true });
 })));
 
 router.get('/admin/google-drive/orphans', requireRole('admin')(requireApi(async (ctx) => {
   if (!isGoogleDriveEnabled() || !isGoogleDriveConnected()) return json(ctx, 400, { error: 'ยังไม่ได้เชื่อมต่อ Google Drive' });
   const files = await findOrphanDriveFiles();
   json(ctx, 200, {
-    files: files.map((f) => ({ id: f.id, name: f.name, size: Number(f.size || 0), yearName: f.yearName, categoryName: f.categoryName })),
+    files: files.map((f) => ({ id: f.id, name: f.name, size: Number(f.size || 0), yearName: f.yearName, categoryName: f.categoryName, driveLabel: f.driveLabel })),
     totalBytes: files.reduce((s, f) => s + Number(f.size || 0), 0),
   });
 })));
@@ -892,7 +1025,7 @@ router.post('/admin/google-drive/orphans/delete', requireRole('admin')(requireAp
   let deleted = 0;
   let failed = 0;
   for (const f of files) {
-    try { await deleteFile(f.id); deleted++; } catch { failed++; }
+    try { await deleteFile(f.id, driveTokenFor(f.driveAccountId)); deleted++; } catch { failed++; }
   }
   audit({ userId: ctx.user.id, action: 'drive_orphans_deleted', tableName: 'google_drive', recordId: null, detail: { deleted, failed } });
   json(ctx, 200, { deleted, failed });
@@ -908,6 +1041,9 @@ router.get('/admin/google-drive/start', requireRole('admin')(requirePage((ctx) =
     access_type: 'offline',
     prompt: 'consent', // บังคับให้ Google ส่ง refresh_token กลับมาทุกครั้ง (ปกติส่งแค่ครั้งแรกที่ยินยอม)
   });
+  // ?add=1 = เพิ่มไดรฟ์ใบใหม่เข้าระบบ (เก็บโทเคนไว้ในฐานข้อมูล ไม่ต้อง redeploy)
+  // ไม่ใส่ = เชื่อมไดรฟ์ตั้งต้น ซึ่งโทเคนต้องไปวางเป็น environment variable เองเหมือนเดิม
+  if (ctx.query.add === '1') params.set('state', 'add');
   redirect(ctx, `${AUTH_URL}?${params.toString()}`);
 })));
 
@@ -928,6 +1064,47 @@ router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(asyn
       content: `<div class="alert alert-danger">${esc(err.message)}</div><a class="btn btn-outline" href="/admin/google-drive">กลับ</a>` }));
   }
   audit({ userId: ctx.user.id, action: 'google_drive_connected', tableName: 'system', recordId: null });
+
+  // เพิ่มไดรฟ์ใบใหม่ — เก็บโทเคนไว้ในฐานข้อมูลให้เลย ผู้ดูแลแค่ตั้งชื่อเรียก ไม่ต้องแตะ environment
+  // variable และไม่ต้อง redeploy (ต่างจากไดรฟ์ตั้งต้น ซึ่งต้องอยู่ใน env เพราะใช้กู้ฐานข้อมูลตอนบูต)
+  if (ctx.query.state === 'add') {
+    if (!tokens.refresh_token) {
+      return html(ctx, 400, layout({ user: ctx.user, title: 'เพิ่มไดรฟ์ไม่สำเร็จ', path: '/admin/google-drive',
+        content: `<div class="alert alert-warning">Google ไม่ได้ส่ง refresh token กลับมารอบนี้ (มักเกิดเมื่อบัญชีนี้เคยยินยอมมาก่อนแล้ว) —
+          ไปที่ <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">การอนุญาตของบัญชี Google</a>
+          เพิกถอนสิทธิ์ของแอปนี้ในบัญชีนั้นก่อน แล้วกดเพิ่มไดรฟ์ใหม่อีกครั้ง</div>
+          <a class="btn btn-outline" href="/admin/google-drive">กลับ</a>` }));
+    }
+    const content = `
+      <h2>➕ ตั้งชื่อเรียกไดรฟ์ใหม่</h2>
+      <div class="card">
+        <p>เชื่อมต่อบัญชี Google เรียบร้อยแล้ว เหลือตั้งชื่อเรียกไว้ให้รู้ว่าเป็นไดรฟ์ใบไหน
+          (ระบบขอสิทธิ์เฉพาะไฟล์ที่ตัวเองสร้าง จึงอ่านอีเมลเจ้าของบัญชีมาตั้งชื่อให้เองไม่ได้)</p>
+        <div class="field">
+          <label for="driveLabel">ชื่อเรียกไดรฟ์นี้ *</label>
+          <input type="text" id="driveLabel" maxlength="${MAX_DRIVE_LABEL}" placeholder="เช่น ไดรฟ์โรงเรียน ชุดที่ 2" />
+        </div>
+        <input type="hidden" id="driveToken" value="${esc(tokens.refresh_token)}" />
+        <button class="btn btn-primary" type="button" onclick="saveNewDrive(this)">บันทึกและใช้เก็บไฟล์ใหม่</button>
+        <div class="help-text" style="margin-top:.6rem">
+          บันทึกแล้วไฟล์ที่แนบใหม่จะไปลงไดรฟ์นี้ทันที ส่วนไฟล์เก่ายังอยู่ที่ไดรฟ์เดิมและเปิดได้ตามปกติ
+        </div>
+      </div>
+      <script>
+        async function saveNewDrive(btn) {
+          var label = document.getElementById('driveLabel').value.trim();
+          if (!label) { window.toast('กรุณาตั้งชื่อเรียกไดรฟ์นี้', 'warning'); return; }
+          window.setBtnLoading(btn, 'กำลังบันทึก...');
+          try {
+            await window.postJson('/admin/google-drive/accounts', {
+              label: label, refreshToken: document.getElementById('driveToken').value,
+            });
+            location.href = '/admin/google-drive';
+          } catch (e) { window.restoreBtn(btn); window.toast(e.message, 'danger'); }
+        }
+      </script>`;
+    return html(ctx, 200, layout({ user: ctx.user, title: 'เพิ่มไดรฟ์ใหม่', path: '/admin/google-drive', content }));
+  }
 
   const content = `
     <h2>✅ เชื่อมต่อสำเร็จ</h2>

@@ -494,6 +494,26 @@ export function migrate() {
     created_at TEXT NOT NULL
   );
 
+  -- บัญชี Google Drive ที่ระบบใช้เก็บไฟล์ — มีได้หลายบัญชี เพราะบัญชีฟรีมี 15GB และเต็มได้จริง
+  --
+  -- ไดรฟ์ "ตั้งต้น" ไม่ได้อยู่ในตารางนี้ แต่มาจาก GOOGLE_OAUTH_REFRESH_TOKEN ใน environment variable
+  -- โดยตั้งใจ: ตอนโฮสต์ล้างดิสก์ ระบบต้องกู้ฐานข้อมูลคืนจาก Drive ให้ได้ "ก่อน" ที่จะมีฐานข้อมูลให้อ่าน
+  -- ถ้าเก็บโทเคนของไดรฟ์กู้คืนไว้ในฐานข้อมูลที่กำลังจะกู้ จะวนเป็นงูกินหาง กู้ไม่ได้ตลอดกาล
+  -- ตารางนี้จึงเก็บเฉพาะไดรฟ์ "เพิ่มเติม" ที่ผู้ดูแลเพิ่มเองทีหลังผ่านหน้าเว็บ (ไม่ต้อง redeploy)
+  --
+  -- สำเนาฐานข้อมูลอยู่บนไดรฟ์ตั้งต้นเสมอ ไม่ย้ายตามไดรฟ์ที่ใช้งานอยู่ — ไฟล์ฐานข้อมูลมีขนาดไม่กี่ MB
+  -- สิ่งที่ทำให้ไดรฟ์เต็มคือไฟล์แนบที่สแกนมา ไม่ใช่ตัวฐานข้อมูล
+  CREATE TABLE IF NOT EXISTS drive_accounts (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL, -- ชื่อที่ผู้ดูแลตั้งเอง เช่น "ไดรฟ์โรงเรียน ชุดที่ 2" (scope drive.file ไม่ให้สิทธิ์อ่านอีเมลเจ้าของ)
+    refresh_token TEXT NOT NULL,
+    -- ไม่ลบบัญชีเก่าทิ้ง แค่เลิกใช้เก็บของใหม่ — ไฟล์เก่าทั้งหมดยังอยู่บนนั้นและต้องเปิดได้ตลอดไป
+    status TEXT NOT NULL DEFAULT 'active', -- active = ไดรฟ์ที่ใช้เก็บไฟล์ใหม่ | readonly = เลิกใช้แล้วแต่ยังอ่านได้
+    created_at TEXT NOT NULL,
+    created_by TEXT REFERENCES users(id),
+    retired_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS attachments (
     id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(id),
@@ -980,6 +1000,24 @@ export function migrate() {
   const sessionCols = db.prepare('PRAGMA table_info(sessions)').all().map((c) => c.name);
   if (!sessionCols.includes('remembered')) {
     db.exec('ALTER TABLE sessions ADD COLUMN remembered INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // ไฟล์นี้อยู่บนบัญชี Google Drive ไหน — ว่าง = ไดรฟ์ตั้งต้น (ตัวที่ผูกกับ GOOGLE_OAUTH_REFRESH_TOKEN)
+  //
+  // Google Drive ฟรีมี 15GB ต่อบัญชี ซึ่งโรงเรียนที่สแกนหนังสือทุกวันเต็มได้จริงภายในไม่กี่ปี
+  // เดิมการเปลี่ยนไปใช้บัญชีใหม่ทำได้ทางเดียวคือแก้ GOOGLE_OAUTH_REFRESH_TOKEN แล้ว redeploy
+  // ซึ่งทำให้ "ไฟล์เก่าทุกไฟล์เปิดไม่ได้ทันที" เพราะบัญชีใหม่มองไม่เห็นไฟล์ของบัญชีเก่าเลย
+  // (scope drive.file เห็นเฉพาะไฟล์ที่แอปสร้างด้วยบัญชีนั้น) — ทะเบียนยังอยู่ครบแต่กดเปิดไฟล์ไม่ได้สักฉบับ
+  //
+  // จดไว้ที่ตัวไฟล์ว่าอยู่ไดรฟ์ไหน ระบบจึงอ่านของเก่าจากไดรฟ์เดิมได้ต่อไปตลอด ขณะที่ของใหม่ไปลงไดรฟ์ใหม่
+  const attachmentDriveCols = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);
+  if (!attachmentDriveCols.includes('drive_account_id')) {
+    db.exec('ALTER TABLE attachments ADD COLUMN drive_account_id TEXT');
+    db.exec('ALTER TABLE attachments ADD COLUMN stamped_drive_account_id TEXT');
+  }
+  const leaveAttachmentCols = db.prepare('PRAGMA table_info(leave_attachments)').all().map((c) => c.name);
+  if (!leaveAttachmentCols.includes('drive_account_id')) {
+    db.exec('ALTER TABLE leave_attachments ADD COLUMN drive_account_id TEXT');
   }
 
   const attachmentCols = db.prepare("PRAGMA table_info(attachments)").all().map((c) => c.name);

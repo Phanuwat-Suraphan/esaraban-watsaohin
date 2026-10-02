@@ -15,6 +15,7 @@ import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { canIssueOutgoingNumber } from '../services/outgoingRequest.js';
 import { previewNextNumber } from '../numbering.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
+import { activeDriveId, activeDriveToken, driveTokenFor, BOOTSTRAP_DRIVE_ID } from '../services/driveAccounts.js';
 import {
   stampPdf, stampDirectorDecision, stampAcknowledgeMark, stampRegistrarComment,
   DECISION_MAX_TOP_PERCENT, DEFAULT_ACK_MARK_X_PERCENT, DEFAULT_DECISION_X_PERCENT, DEFAULT_REGISTRAR_X_PERCENT,
@@ -3341,7 +3342,9 @@ async function readAttachmentBytes(att, { preferStamped = false } = {}) {
   const filepath = useStamped ? att.stamped_filepath : att.filepath;
   const driveFileId = useStamped ? att.stamped_drive_file_id : att.drive_file_id;
   if (provider === 'google_drive') {
-    const stream = await downloadFileStream(driveFileId);
+    // ต้องเปิดด้วยบัญชีไดรฟ์ที่ไฟล์นั้นอยู่จริง ไม่ใช่บัญชีที่ใช้งานอยู่ตอนนี้ — หลังเพิ่มไดรฟ์ที่สอง
+    // ไฟล์เก่ายังอยู่บนไดรฟ์แรก และบัญชีใหม่มองไม่เห็นเลยสักไฟล์ (scope drive.file)
+    const stream = await downloadFileStream(driveFileId, driveTokenFor(useStamped ? att.stamped_drive_account_id : att.drive_account_id));
     if (!stream) throw httpError(404, 'ไม่พบไฟล์บน Google Drive');
     const chunks = [];
     for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
@@ -3394,17 +3397,21 @@ async function saveStampedCopy(att, stampedBuffer, yearBe) {
   // 3 ชั้น (ความเห็นธุรการ → ทราบ → ตราปั๊ม ผอ.) ถ้าวันหลังมีใครรวบให้อ่าน att ครั้งเดียวแล้วส่งต่อทุกชั้น
   // เพื่อประหยัด query ค่าใน att จะเก่าตั้งแต่ชั้นที่สองทันที แล้วบรรทัดลบข้างล่างจะไปลบไฟล์ผิดตัว —
   // ลบสำเนาผิดตัวแล้วเรียกคืนไม่ได้ จึงไม่ฝากความถูกต้องไว้กับวินัยของผู้เรียก
-  const prev = db.prepare('SELECT stamped_storage_provider, stamped_filepath, stamped_drive_file_id FROM attachments WHERE id = ?').get(att.id);
+  const prev = db.prepare('SELECT stamped_storage_provider, stamped_filepath, stamped_drive_file_id, stamped_drive_account_id FROM attachments WHERE id = ?').get(att.id);
 
   if (isGoogleDriveEnabled()) {
-    const folderId = await ensureCategoryFolder({ yearBe: yearBe || (new Date().getFullYear() + 543), typeName: 'ประทับตราแล้ว' });
-    const driveFileId = await uploadFile({ buffer: stampedBuffer, filename: `${att.id}__stamped__${att.filename}`, mimeType: 'application/pdf', folderId });
-    db.prepare(`UPDATE attachments SET stamped_storage_provider = 'google_drive', stamped_filepath = NULL, stamped_drive_file_id = ?, stamped_at = ? WHERE id = ?`)
-      .run(driveFileId, nowIso(), att.id);
+    const refreshToken = activeDriveToken();
+    const folderId = await ensureCategoryFolder({ yearBe: yearBe || (new Date().getFullYear() + 543), typeName: 'ประทับตราแล้ว', refreshToken });
+    const driveFileId = await uploadFile({ buffer: stampedBuffer, filename: `${att.id}__stamped__${att.filename}`, mimeType: 'application/pdf', folderId, refreshToken });
+    const active = activeDriveId();
+    db.prepare(`UPDATE attachments SET stamped_storage_provider = 'google_drive', stamped_filepath = NULL, stamped_drive_file_id = ?,
+      stamped_drive_account_id = ?, stamped_at = ? WHERE id = ?`)
+      .run(driveFileId, active === BOOTSTRAP_DRIVE_ID ? null : active, nowIso(), att.id);
   } else {
     const safeName = `${att.id}-stamped.pdf`;
     fs.writeFileSync(path.join(UPLOAD_DIR, safeName), stampedBuffer);
-    db.prepare(`UPDATE attachments SET stamped_storage_provider = 'local', stamped_filepath = ?, stamped_drive_file_id = NULL, stamped_at = ? WHERE id = ?`)
+    db.prepare(`UPDATE attachments SET stamped_storage_provider = 'local', stamped_filepath = ?, stamped_drive_file_id = NULL,
+      stamped_drive_account_id = NULL, stamped_at = ? WHERE id = ?`)
       .run(safeName, nowIso(), att.id);
   }
 
@@ -3424,7 +3431,9 @@ async function deletePreviousStampedCopy(prev, attachmentId) {
   if (!prev) return;
   try {
     if (prev.stamped_storage_provider === 'google_drive' && prev.stamped_drive_file_id) {
-      await deleteFile(prev.stamped_drive_file_id);
+      // ต้องลบด้วยบัญชีที่ไฟล์เก่าอยู่ ไม่ใช่บัญชีที่ใช้งานอยู่ตอนนี้ — ไม่งั้นสำเนาชั้นก่อนหน้าจะค้าง
+      // อยู่บนไดรฟ์เดิมตลอดไปโดยไม่มีอะไรอ้างถึง กินพื้นที่ของไดรฟ์ที่เต็มอยู่แล้วต่อไปอีก
+      await deleteFile(prev.stamped_drive_file_id, driveTokenFor(prev.stamped_drive_account_id));
     } else if (prev.stamped_storage_provider === 'local' && prev.stamped_filepath) {
       // ชื่อไฟล์ local เป็น "<attachmentId>-stamped.pdf" ตัวเดิมเสมอ จึงถูกเขียนทับไปแล้ว ไม่ต้องลบซ้ำ
       const current = db.prepare('SELECT stamped_filepath FROM attachments WHERE id = ?').get(attachmentId);
@@ -3967,6 +3976,9 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
   const storageProvider = useStamped ? att.stamped_storage_provider : att.storage_provider;
   const filepath = useStamped ? att.stamped_filepath : att.filepath;
   const driveFileId = useStamped ? att.stamped_drive_file_id : att.drive_file_id;
+  // ต้องเปิดด้วยบัญชีไดรฟ์ที่ไฟล์นั้นอยู่จริง ไม่ใช่บัญชีที่ใช้งานอยู่ตอนนี้ — หลังโรงเรียนเพิ่มไดรฟ์
+  // ใบที่สองเพราะใบแรกเต็ม บัญชีใหม่มองไม่เห็นไฟล์เก่าเลยสักไฟล์ (scope drive.file)
+  const driveToken = driveTokenFor(useStamped ? att.stamped_drive_account_id : att.drive_account_id);
 
   // ?download=1 = บังคับให้เครื่องบันทึกไฟล์ลงเครื่องเสมอ ไม่ว่าจะเป็นไฟล์ชนิดไหน
   //
@@ -3984,7 +3996,7 @@ router.get('/files/:attachmentId', requirePage(async (ctx) => {
   if (storageProvider === 'google_drive') {
     let stream;
     try {
-      stream = await downloadFileStream(driveFileId);
+      stream = await downloadFileStream(driveFileId, driveToken);
     } catch (err) {
       return html(ctx, err.statusCode || 502, `<h1>เกิดข้อผิดพลาด</h1><p>${esc(err.message)}</p>`);
     }

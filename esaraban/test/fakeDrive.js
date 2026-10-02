@@ -8,11 +8,14 @@
 // และตั้งใจให้ "งอแง" ได้เหมือนของจริง (สั่งให้ตอบ error ได้) เพื่อทดสอบทางที่ล้มเหลวด้วย
 import { Readable } from 'node:stream';
 
-export function createFakeDrive() {
+// idPrefix: ใช้ตอนจำลองหลายบัญชีพร้อมกัน — ถ้าทุกใบแจก id ชุดเดียวกัน (fake-1, fake-2, ...)
+// ไฟล์คนละใบจะมี id ชนกัน แล้วการทดสอบ "บัญชีหนึ่งมองไม่เห็นไฟล์ของอีกบัญชี" จะผ่านแบบหลอกๆ
+// เพราะบังเอิญเจอไฟล์คนละไฟล์ที่ id ตรงกัน (เจอจริงตอนเขียนเทสต์หลายไดรฟ์)
+export function createFakeDrive({ idPrefix = 'fake' } = {}) {
   // ไฟล์/โฟลเดอร์ทั้งหมด: id -> { id, name, mimeType, parents, body }
   const items = new Map();
   let seq = 0;
-  const newId = () => `fake-${++seq}`;
+  const newId = () => `${idPrefix}-${++seq}`;
   const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
   // สั่งให้ Drive จำลองงอแงได้ — ใช้ทดสอบว่าระบบรับมือถูกต้องไหม

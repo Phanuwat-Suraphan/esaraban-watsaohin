@@ -11,6 +11,7 @@ import { db, uuid, nowIso, audit } from '../db.js';
 import { httpError } from './validate.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile } from './googleDrive.js';
+import { activeDriveId, activeDriveToken, BOOTSTRAP_DRIVE_ID } from './driveAccounts.js';
 import { truncateFilename } from '../router.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -139,13 +140,19 @@ export async function saveAttachment({ documentId, fileName, fileType, fileDataB
   let storageProvider = 'local';
   let filepath = null;
   let driveFileId = null;
+  // ไฟล์ใหม่ไปลง "ไดรฟ์ที่ใช้งานอยู่" และต้องจดไว้ที่ตัวไฟล์ว่าไปลงไดรฟ์ไหน — ไม่งั้นวันที่โรงเรียน
+  // เพิ่มไดรฟ์ที่สองเพราะไดรฟ์แรกเต็ม จะไม่มีทางรู้ว่าไฟล์ไหนอยู่ที่ไหน (ดู services/driveAccounts.js)
+  let driveAccountId = null;
 
   if (isGoogleDriveEnabled()) {
     const doc = db.prepare(`
       SELECT d.year_be, dt.name as type_name FROM documents d JOIN document_types dt ON dt.id = d.doc_type_id WHERE d.id = ?
     `).get(documentId);
-    const folderId = await ensureCategoryFolder({ yearBe: doc.year_be, typeName: doc.type_name });
-    driveFileId = await uploadFile({ buffer: buf, filename: `${safeName}__${fileName || `document.${kind.ext}`}`, mimeType: fileType, folderId });
+    const refreshToken = activeDriveToken();
+    const folderId = await ensureCategoryFolder({ yearBe: doc.year_be, typeName: doc.type_name, refreshToken });
+    driveFileId = await uploadFile({ buffer: buf, filename: `${safeName}__${fileName || `document.${kind.ext}`}`, mimeType: fileType, folderId, refreshToken });
+    const active = activeDriveId();
+    driveAccountId = active === BOOTSTRAP_DRIVE_ID ? null : active;
     storageProvider = 'google_drive';
   } else {
     fs.writeFileSync(path.join(UPLOAD_DIR, safeName), buf);
@@ -153,9 +160,9 @@ export async function saveAttachment({ documentId, fileName, fileType, fileDataB
   }
 
   db.prepare(`
-    INSERT INTO attachments (id, document_id, filename, storage_provider, filepath, drive_file_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, documentId, fileName || `document.${kind.ext}`, storageProvider, filepath, driveFileId, buf.length, fileType, hash, uploader.id, nowIso());
+    INSERT INTO attachments (id, document_id, filename, storage_provider, filepath, drive_file_id, drive_account_id, filesize, mime_type, hash_sha256, uploaded_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, documentId, fileName || `document.${kind.ext}`, storageProvider, filepath, driveFileId, driveAccountId, buf.length, fileType, hash, uploader.id, nowIso());
   audit({ userId: uploader.id, action: 'attachment_uploaded', tableName: 'attachments', recordId: id, detail: { documentId, hash, storageProvider, duplicateOf: dup ? dup.doc_number_display : null } });
   return { id, duplicateWarning: dup ? `พบไฟล์นี้ซ้ำกับเอกสาร ${dup.doc_number_display} (Hash ตรงกัน)` : null };
 }

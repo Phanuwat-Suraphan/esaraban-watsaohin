@@ -10,6 +10,7 @@ import { asText, asTextOrNull, normalizeEmployeeCode, MAX_EMPLOYEE_CODE } from '
 import { getSetting, setSetting, MAX_SETTING_LENGTH } from '../services/settings.js';
 import { reminderTime, sendTestReminder } from '../services/dailyReminder.js';
 import { previewNextNumber } from '../numbering.js';
+import { originFromHeaders } from '../services/publicUrl.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
   listAllAttachmentFiles, deleteFile,
@@ -50,10 +51,25 @@ async function findOrphanDriveFiles() {
   return out;
 }
 
+/**
+ * ที่อยู่ที่ Google จะส่งผู้ใช้กลับมาหลังกดยินยอม
+ *
+ * Google เทียบค่านี้กับช่อง "Authorized redirect URIs" ของ OAuth Client แบบตัวต่อตัว ต่างกันตัวเดียว
+ * (http/https, มี/ไม่มี www, มี / ปิดท้าย) ก็ตีกลับตั้งแต่หน้าแรก โดยหน้าจอที่ผู้ใช้เห็นขึ้นแค่
+ * "การเข้าถึงถูกบล็อก: คำขอของแอปนี้ไม่ถูกต้อง / ข้อผิดพลาด 400: redirect_uri_mismatch" ซึ่ง
+ * ไม่บอกว่าค่าที่ส่งไปคืออะไร และไม่บอกว่าต้องไปใส่อะไรที่ไหน — เป็นทางตันสำหรับผู้ดูแลที่ไม่ได้
+ * เขียนโค้ดนี้เอง จึงต้องเอาค่านี้ไปโชว์บนหน้าเว็บให้คัดลอกไปวางได้ตรงๆ (ดูการ์ดในหน้า Drive)
+ *
+ * ต้องเป็นฟังก์ชันเดียวกันทั้งตอนโชว์ ตอนเริ่ม และตอนแลกโทเคน ไม่งั้นค่าที่โชว์ก็ไม่ใช่ค่าที่ต้องเอา
+ * ไปลงทะเบียน แล้วผู้ดูแลจะทำตามจนครบแต่ยังติด mismatch เหมือนเดิม — มีด่านในชุดเทสต์เทียบไว้แล้ว
+ *
+ * PUBLIC_BASE_URL ชนะหัว Host เพราะโรงเรียนที่เอาโดเมนของตัวเองมาวางหน้าโฮสต์อีกที จะได้หัว Host
+ * เป็นชื่อภายในของผู้ให้บริการ ซึ่งไม่ใช่ที่อยู่ที่เบราว์เซอร์วิ่งไป และ Google ดูแต่ที่อยู่ที่
+ * เบราว์เซอร์วิ่งไปเท่านั้น (แนวเดียวกับ publicBaseUrl ที่ใช้ทำลิงก์ส่งไลน์)
+ */
 function oauthRedirectUri(ctx) {
-  const proto = ctx.req.headers['x-forwarded-proto'] || 'https';
-  const host = ctx.req.headers.host;
-  return `${proto}://${host}/admin/google-drive/callback`;
+  const fromEnv = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  return `${fromEnv || originFromHeaders(ctx.req.headers)}/admin/google-drive/callback`;
 }
 
 // ---------------- ตั้งค่าโรงเรียน ----------------
@@ -826,6 +842,20 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
   // ไดรฟ์) แนวเดียวกับรายชื่อไฟล์สำเนาสำรองที่โหลดตอนกดเปิดเท่านั้น — ดู loadDriveQuotas ฝั่งเว็บ
   const accounts = connected || db.prepare('SELECT 1 x FROM drive_accounts LIMIT 1').get() ? listDriveAccounts() : [];
 
+  // ที่อยู่ส่งกลับที่ต้องเอาไปลงทะเบียนกับ Google — โชว์ไว้ตรงนี้เพราะหน้าจอที่ Google ขึ้นเวลาไม่ตรง
+  // ไม่ได้บอกว่าค่าที่ถูกคืออะไรเลย (ดูคอมเมนต์ยาวที่ oauthRedirectUri)
+  const redirectUri = oauthRedirectUri(ctx);
+  const browsing = originFromHeaders(ctx.req.headers);
+  const envBase = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  // PUBLIC_BASE_URL ค้างค่าเก่าหลังย้ายเซิร์ฟเวอร์ = OAuth พังทั้งเส้นแบบไม่มีอะไรบอก และค่าที่โชว์
+  // ข้างบนก็จะเป็นโดเมนเก่าที่ลงทะเบียนยังไงก็ไม่ช่วย ต้องทักตรงจุดที่เขากำลังจะคัดลอกไปใช้
+  const baseMismatch = Boolean(envBase && browsing && envBase !== browsing);
+  // Google ไม่รับที่อยู่ส่งกลับที่เป็น http:// เลย ยกเว้น http://localhost เท่านั้น — โรงเรียนที่ติดตั้ง
+  // ระบบไว้บนเครื่องของตัวเองแล้วเข้าผ่าน http://192.168.x.x จะเชื่อม Google Drive ไม่ได้ทั้งเส้นทาง
+  // และต้องรู้ตั้งแต่ตรงนี้ ไม่ใช่ไปรู้ตอนที่ Google ตีกลับแล้วไล่หาสาเหตุไม่เจอว่าพิมพ์ผิดตรงไหน
+  const httpNotAllowed = redirectUri.startsWith('http://')
+    && !/^http:\/\/(localhost|127\.0\.0\.1)([:/]|$)/.test(redirectUri);
+
   const content = `
     <h2>🗂️ เชื่อมต่อ Google Drive</h2>
     <div class="card">
@@ -837,6 +867,43 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
         </tbody>
       </table>
       ${!clientConfigured ? `<div class="alert alert-warning" style="margin-top:1rem">ต้องตั้งค่า <code>GOOGLE_OAUTH_CLIENT_ID</code> และ <code>GOOGLE_OAUTH_CLIENT_SECRET</code> เป็น environment variable ก่อน (ดูขั้นตอนสร้างใน <code>deploy/GOOGLE_DRIVE.md</code>) แล้ว redeploy จึงจะกดเชื่อมต่อได้</div>` : ''}
+
+      <div class="alert alert-info" style="margin-top:1rem">
+        <strong>ก่อนกดเชื่อมต่อ — ที่อยู่ส่งกลับต้องลงทะเบียนไว้กับ Google ก่อน</strong>
+        <p style="margin:.4rem 0;font-size:.88rem">
+          คัดลอกบรรทัดนี้ไปวางในช่อง <strong>Authorized redirect URIs</strong> ของ OAuth Client
+          (Google Cloud Console → APIs &amp; Services → Credentials → กดที่ชื่อ OAuth Client → Add URI → Save)
+          ต้องตรงกัน<strong>ทุกตัวอักษร</strong>
+        </p>
+        <div class="copy-row">
+          <textarea id="driveRedirectUri" readonly rows="2" spellcheck="false"
+            data-redirect-uri="${esc(redirectUri)}">${esc(redirectUri)}</textarea>
+          <button class="btn btn-outline btn-sm" type="button"
+            onclick="window.copyField('driveRedirectUri')">📋 คัดลอก</button>
+        </div>
+        <p class="help-text" style="margin:.5rem 0 0">
+          ถ้า Google ขึ้นว่า <strong>“การเข้าถึงถูกบล็อก: คำขอของแอปนี้ไม่ถูกต้อง”</strong>
+          พร้อมรหัส <code>redirect_uri_mismatch</code> แปลว่ายังไม่ได้ใส่ค่านี้ หรือใส่ไว้ไม่ตรง
+          — ใส่แล้วรอสักครู่ (Google ใช้เวลาอัปเดตไม่กี่นาที) แล้วกดเชื่อมต่อใหม่
+        </p>
+      </div>
+      ${httpNotAllowed ? `<div class="alert alert-warning">
+        <strong>ที่อยู่ของระบบเป็น http:// — Google ไม่รับที่อยู่ส่งกลับแบบนี้</strong>
+        <div style="margin-top:.3rem;font-size:.88rem">
+          Google อนุญาตเฉพาะ <code>https://</code> เท่านั้น (ยกเว้น <code>http://localhost</code> ตอนพัฒนา)
+          จึงลงทะเบียน <code>${esc(redirectUri)}</code> ไม่ได้ ต้องให้ระบบเข้าถึงได้ด้วย <code>https://</code> ก่อน
+          แล้วค่อยกลับมากดเชื่อมต่อ — ระหว่างนี้ยังใช้ระบบได้ตามปกติ เพียงแต่ไฟล์จะเก็บไว้ในดิสก์ของเครื่องแทน
+        </div>
+      </div>` : ''}
+      ${baseMismatch ? `<div class="alert alert-warning">
+        <strong>PUBLIC_BASE_URL ที่ตั้งไว้ ไม่ตรงกับที่อยู่ที่คุณกำลังเปิดหน้านี้อยู่</strong>
+        <div style="margin-top:.3rem;font-size:.88rem">
+          ตั้งไว้เป็น <code>${esc(envBase)}</code> แต่คุณเปิดผ่าน <code>${esc(browsing)}</code>
+          — ระบบใช้ค่าที่ตั้งไว้เป็นที่อยู่ส่งกลับเสมอ ถ้าโรงเรียนไม่ได้ใช้โดเมนของตัวเองวางหน้าโฮสต์
+          แสดงว่า <code>PUBLIC_BASE_URL</code> ค้างค่าเก่าอยู่ ให้แก้เป็น <code>${esc(browsing)}</code>
+          แล้ว redeploy ก่อน ไม่งั้นจะเชื่อมต่อไม่ผ่านและลิงก์ที่ส่งเข้าไลน์ก็จะกดไม่ได้ด้วย
+        </div>
+      </div>` : ''}
       ${clientConfigured ? `<a class="btn btn-primary" style="margin-top:1rem" href="/admin/google-drive/start">${connected ? '🔄 เชื่อมต่อไดรฟ์ตั้งต้นใหม่ (เปลี่ยนบัญชี)' : '🔗 เชื่อมต่อบัญชี Google'}</a>` : ''}
       <p class="text-muted" style="font-size:.8rem;margin-top:1rem">ไฟล์ที่อัปโหลดหลังเชื่อมต่อจะไปอยู่ในโฟลเดอร์ "ระบบสารบรรณอิเล็กทรอนิกส์ (esaraban)" ในบัญชี Google Drive ที่เชื่อมต่อ นับพื้นที่ในโควตา 15GB ปกติของบัญชีนั้น</p>
     </div>

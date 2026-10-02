@@ -123,7 +123,9 @@ function getDocRow(id) {
 // เขียนออกมา — ตรรกะหลายอย่าง (ตัวกรอง, การส่งออกไฟล์, การกรองสิทธิ์ตอน export) อยู่ในตัวเส้นทางเอง
 // ถ้าเทสต์ระดับฟังก์ชันอย่างเดียวจะไม่ได้ตรวจสิ่งที่ผู้ใช้ได้รับจริงเลย
 let routerForTest = null;
-async function dispatchGet(user, path, query = {}) {
+// reqHeaders สำหรับเส้นทางที่คำตอบขึ้นกับหัวของ request จริง — เช่นที่อยู่ส่งกลับของ Google OAuth
+// ซึ่งประกอบจาก Host/x-forwarded-proto และต้องตรงกับที่เบราว์เซอร์วิ่งมาจริงเป๊ะๆ
+async function dispatchGet(user, path, query = {}, reqHeaders = {}) {
   if (!routerForTest) {
     ({ router: routerForTest } = await import('../src/router.js'));
     await import('../src/routes/index.js');
@@ -144,7 +146,7 @@ async function dispatchGet(user, path, query = {}) {
   const push = (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   res.write = (chunk) => { if (chunk) push(chunk); return true; };
   res.end = (chunk) => { if (chunk) push(chunk); ended = true; res.emit('finish'); res.emit('close'); };
-  const ctx = { req: { method: 'GET', headers: {} }, res, url: new URL(`http://x${path}`), query, user, body: {}, ip: '127.0.0.1' };
+  const ctx = { req: { method: 'GET', headers: { ...reqHeaders } }, res, url: new URL(`http://x${path}`), query, user, body: {}, ip: '127.0.0.1' };
   await routerForTest.dispatch('GET', path, ctx);
   // pipe ทำงานแบบอะซิงโครนัส เส้นทางคืนค่ากลับมาก่อนที่ไบต์จะไหลครบ — ต้องรอให้ตัวตอบกลับปิดจริง
   // ไม่งั้นจะได้ body ว่างเปล่าแบบไม่มีอะไรบอกว่าทำไม
@@ -9092,6 +9094,108 @@ describe('ตราประทับ: สามช่องแถบล่า�
       assert.equal(r.openNewAfterSwitchBackStatus, 200);
       assert.equal(r.openNewAfterSwitchBackMatches, true,
         'สลับกลับแล้วไฟล์ที่อยู่บนไดรฟ์ใบสองต้องยังเปิดได้ — สลับไปมาได้ตลอดเพราะไม่มีอะไรถูกย้าย');
+    });
+
+    // เจอจริงกับโรงเรียน: กด "เชื่อมต่อบัญชี Google" แล้ว Google ขึ้นหน้าแดง "การเข้าถึงถูกบล็อก:
+    // คำขอของแอปนี้ไม่ถูกต้อง / ข้อผิดพลาด 400: redirect_uri_mismatch" แล้วจบแค่นั้น
+    //
+    // Google เทียบที่อยู่ส่งกลับกับ Authorized redirect URIs แบบตัวต่อตัว ต่างกันตัวเดียวก็ตีกลับ
+    // แต่หน้าจอนั้น "ไม่บอกว่าค่าที่ส่งไปคืออะไร" และ "ไม่บอกว่าต้องไปใส่อะไรที่ไหน" — ผู้ดูแลที่ไม่ได้
+    // เขียนโค้ดนี้เองจึงเดาไม่ถูกเลยว่าต้องเอาสตริงอะไรไปวาง นี่คือทางตันแบบเดียวกับที่กวาดไปรอบก่อน
+    describe('ที่อยู่ส่งกลับของ Google ต้องหาเจอจากหน้าเว็บ ไม่ต้องเดา', () => {
+      const prevBase = process.env.PUBLIC_BASE_URL;
+      const restoreBase = () => {
+        if (prevBase === undefined) delete process.env.PUBLIC_BASE_URL;
+        else process.env.PUBLIC_BASE_URL = prevBase;
+      };
+      afterEach(restoreBase);
+
+      const shownOnPage = (body) => /data-redirect-uri="([^"]+)"/.exec(body)?.[1];
+      const sentToGoogle = (location) => new URL(location).searchParams.get('redirect_uri');
+
+      // ด่านสำคัญที่สุดของชุดนี้: ถ้าค่าที่โชว์ไม่ใช่ค่าที่ส่งจริง ผู้ดูแลจะเอาไปลงทะเบียนแล้วยังติด
+      // mismatch เหมือนเดิม — กลายเป็นทางตันที่แย่กว่าเดิมเพราะคราวนี้เขาเชื่อว่าทำถูกแล้ว
+      test('ค่าที่ให้คัดลอกบนหน้าเว็บ ต้องตรงเป๊ะกับค่าที่ส่งไปให้ Google จริง', async () => {
+        delete process.env.PUBLIC_BASE_URL;
+        const headers = { host: 'esaraban-watsaohin.onrender.com', 'x-forwarded-proto': 'https' };
+        const page = await dispatchGet(adminUser, '/admin/google-drive', {}, headers);
+        const shown = shownOnPage(page.body);
+        assert.ok(shown, 'หน้าเว็บต้องโชว์ที่อยู่ส่งกลับให้คัดลอกไปวางได้');
+
+        const start = await dispatchGet(adminUser, '/admin/google-drive/start', {}, headers);
+        assert.equal(start.status, 302);
+        assert.equal(shown, sentToGoogle(start.headers.Location),
+          'ค่าที่ให้คัดลอก ต้องเป็นค่าเดียวกับที่ส่งไปให้ Google ไม่งั้นลงทะเบียนตามแล้วก็ยังติด mismatch');
+        assert.equal(shown, 'https://esaraban-watsaohin.onrender.com/admin/google-drive/callback');
+      });
+
+      test('หน้าเว็บต้องบอกด้วยว่าค่านี้เอาไปทำอะไร และผูกกับข้อความผิดพลาดที่ Google ขึ้นให้เห็น', async () => {
+        const page = await dispatchGet(adminUser, '/admin/google-drive', {},
+          { host: 'esaraban-watsaohin.onrender.com' });
+        assert.match(page.body, /Authorized redirect URIs/,
+          'ต้องเรียกชื่อช่องตามที่เห็นจริงใน Google Cloud Console');
+        assert.match(page.body, /redirect_uri_mismatch/,
+          'ต้องมีคำที่ผู้ดูแลเห็นบนหน้าจอ Google อยู่บนหน้านี้ เขาจะได้โยงถูกว่าต้องมาแก้ตรงนี้');
+      });
+
+      // โรงเรียนที่เอาโดเมนตัวเองมาวางหน้า Render จะได้หัว Host เป็นชื่อภายในของผู้ให้บริการ ซึ่ง
+      // ไม่ใช่ที่อยู่ที่เบราว์เซอร์วิ่งไป — และ Google สนใจแต่ที่อยู่ที่เบราว์เซอร์วิ่งไปเท่านั้น
+      test('ตั้ง PUBLIC_BASE_URL ไว้ ต้องชนะหัว Host (และตัด / ปิดท้ายทิ้ง)', async () => {
+        process.env.PUBLIC_BASE_URL = 'https://saraban.watsaohin.ac.th/';
+        const headers = { host: 'esaraban-watsaohin.onrender.com', 'x-forwarded-proto': 'https' };
+        const start = await dispatchGet(adminUser, '/admin/google-drive/start', {}, headers);
+        assert.equal(sentToGoogle(start.headers.Location),
+          'https://saraban.watsaohin.ac.th/admin/google-drive/callback');
+        const page = await dispatchGet(adminUser, '/admin/google-drive', {}, headers);
+        assert.equal(shownOnPage(page.body), 'https://saraban.watsaohin.ac.th/admin/google-drive/callback');
+      });
+
+      // เดาโปรโตคอลผิด = ค่าที่โชว์ผิดทั้งบรรทัด ลงทะเบียนตามก็ยังติด mismatch — ต้องใช้กติกาเดียว
+      // กับที่ใช้ทำลิงก์ส่งไลน์ (originFromHeaders) ไม่ใช่เดาเองซ้ำอีกชุด
+      test('เดา http/https ตามกติกาเดียวกับลิงก์ที่ส่งเข้าไลน์', async () => {
+        delete process.env.PUBLIC_BASE_URL;
+        const uriFor = async (headers) => {
+          const r = await dispatchGet(adminUser, '/admin/google-drive/start', {}, headers);
+          return new URL(r.headers.Location).searchParams.get('redirect_uri');
+        };
+        assert.match(await uriFor({ host: '127.0.0.1:3000' }), /^http:\/\//,
+          'เครื่องตัวเองไม่มี https — ถ้าเดาเป็น https ตอนพัฒนาจะเชื่อมไม่ได้เลย');
+        assert.match(await uriFor({ host: 'esaraban.onrender.com' }), /^https:\/\//,
+          'โฮสต์บนอินเทอร์เน็ตต้องเดาเป็น https แม้ขาภายในจะเป็น http');
+        assert.match(await uriFor({ host: 'esaraban.onrender.com', 'x-forwarded-proto': 'https,http' }),
+          /^https:\/\//, 'ผ่านพร็อกซีหลายชั้นต้องเอาค่าแรกซึ่งเป็นฝั่งผู้ใช้');
+      });
+
+      // Google ไม่รับที่อยู่ส่งกลับที่เป็น http:// (ยกเว้น localhost) โรงเรียนที่ใช้เครื่องตัวเองแล้ว
+      // เข้าผ่าน http://192.168.x.x จะลองยังไงก็ไม่ผ่าน ต้องบอกตั้งแต่ก่อนกด ไม่ใช่ปล่อยให้ไปงมเอง
+      test('เข้าระบบผ่าน http:// (ไม่ใช่ localhost) ต้องบอกว่า Google ไม่รับแบบนี้', async () => {
+        delete process.env.PUBLIC_BASE_URL;
+        const lan = await dispatchGet(adminUser, '/admin/google-drive', {},
+          { host: '192.168.1.50:3000', 'x-forwarded-proto': 'http' });
+        assert.match(lan.body, /Google ไม่รับที่อยู่ส่งกลับแบบนี้/);
+
+        const ok = await dispatchGet(adminUser, '/admin/google-drive', {},
+          { host: 'esaraban.onrender.com', 'x-forwarded-proto': 'https' });
+        assert.ok(!/Google ไม่รับที่อยู่ส่งกลับแบบนี้/.test(ok.body), 'เป็น https อยู่แล้วต้องไม่ทัก');
+        const dev = await dispatchGet(adminUser, '/admin/google-drive', {}, { host: 'localhost:3000' });
+        assert.ok(!/Google ไม่รับที่อยู่ส่งกลับแบบนี้/.test(dev.body), 'http://localhost Google รับ');
+      });
+
+      // PUBLIC_BASE_URL ค้างค่าเก่าหลังย้ายเซิร์ฟเวอร์ = OAuth พังทั้งเส้นโดยไม่มีอะไรบอก และค่าที่
+      // หน้าเว็บโชว์ก็จะเป็นโดเมนเก่าที่ลงทะเบียนยังไงก็ไม่ช่วย — ต้องทักให้เห็นตรงนั้นเลย
+      test('PUBLIC_BASE_URL ไม่ตรงกับที่อยู่ที่กำลังเปิดอยู่ ต้องทักเตือน', async () => {
+        process.env.PUBLIC_BASE_URL = 'https://โดเมนเก่า.example.ac.th';
+        const page = await dispatchGet(adminUser, '/admin/google-drive', {},
+          { host: 'esaraban-watsaohin.onrender.com', 'x-forwarded-proto': 'https' });
+        assert.match(page.body, /PUBLIC_BASE_URL/, 'ต้องบอกชื่อตัวแปรที่ต้องไปแก้');
+        assert.match(page.body, /esaraban-watsaohin\.onrender\.com/,
+          'ต้องบอกด้วยว่าที่อยู่ที่กำลังเปิดอยู่จริงคืออะไร');
+
+        process.env.PUBLIC_BASE_URL = 'https://esaraban-watsaohin.onrender.com';
+        const ok = await dispatchGet(adminUser, '/admin/google-drive', {},
+          { host: 'esaraban-watsaohin.onrender.com', 'x-forwarded-proto': 'https' });
+        assert.ok(!/PUBLIC_BASE_URL ที่ตั้งไว้/.test(ok.body), 'ตรงกันแล้วต้องไม่ทักให้รำคาญ');
+      });
     });
 
     describe('ด่านฝั่งเซิร์ฟเวอร์', () => {

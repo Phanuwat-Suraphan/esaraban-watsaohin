@@ -10,17 +10,31 @@ let remembered = '';
 // (ดูเหตุผลที่ต้องแยกกันในคอมเมนต์ของ observedHttps ด้านล่าง)
 let sawHttps = false;
 
-/** อ่านจากหัว request แล้วจำไว้ — เรียกจาก server.js ทุก request (ราคาถูกมาก แค่ต่อสตริง) */
-export function rememberBaseUrl(headers) {
+/**
+ * ที่อยู่ต้นทาง (https://ชื่อเว็บ) ที่อ่านได้จากหัวของ request นั้นๆ — คืนค่าว่างถ้าไม่มีหัว Host
+ *
+ * Render/Nginx ส่ง x-forwarded-proto มาบอกว่าผู้ใช้เข้ามาด้วย https จริงหรือไม่ — ถ้าดูแค่ที่ขา
+ * ภายในจะเห็นเป็น http เสมอ แล้วลิงก์ที่ส่งไป LINE จะเป็น http:// ซึ่งเบราว์เซอร์มือถือเตือนว่าไม่ปลอดภัย
+ * (ผ่านพร็อกซีหลายชั้นจะมาเป็นรายการคั่นจุลภาค — ตัวแรกคือฝั่งผู้ใช้)
+ *
+ * มีที่เดียวในระบบโดยตั้งใจ: ที่อยู่ส่งกลับของ Google OAuth ก็ใช้ตัวนี้ และถ้าสองที่เดาคนละแบบ
+ * ค่าที่หน้าเว็บบอกให้ไปลงทะเบียนกับ Google จะไม่ใช่ค่าที่ระบบส่งไปจริง
+ */
+export function originFromHeaders(headers) {
   const host = headers?.host;
-  if (!host) return;
-  // Render/Nginx ส่ง x-forwarded-proto มาบอกว่าผู้ใช้เข้ามาด้วย https จริงหรือไม่ — ถ้าดูแค่ที่ขา
-  // ภายในจะเห็นเป็น http เสมอ แล้วลิงก์ที่ส่งไป LINE จะเป็น http:// ซึ่งเบราว์เซอร์มือถือเตือนว่าไม่ปลอดภัย
+  if (!host) return '';
   const forwarded = String(headers['x-forwarded-proto'] || '').split(',')[0].trim();
-  if (forwarded === 'https') sawHttps = true;
   const proto = forwarded
     || (host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
-  remembered = `${proto}://${host}`;
+  return `${proto}://${host}`;
+}
+
+/** อ่านจากหัว request แล้วจำไว้ — เรียกจาก server.js ทุก request (ราคาถูกมาก แค่ต่อสตริง) */
+export function rememberBaseUrl(headers) {
+  const origin = originFromHeaders(headers);
+  if (!origin) return;
+  if (String(headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https') sawHttps = true;
+  remembered = origin;
 }
 
 /**

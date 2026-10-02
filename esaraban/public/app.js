@@ -537,6 +537,31 @@
       ok ? 'success' : 'info');
   };
 
+  // คัดลอกค่าในช่องที่อ่านอย่างเดียว (ที่อยู่ส่งกลับของ Google, URL webhook ฯลฯ) — ค่าพวกนี้ยาว
+  // และต้องถูก "ทุกตัวอักษร" ลากเลือกเองพลาดง่ายมาก โดยเฉพาะบนมือถือ
+  //
+  // navigator.clipboard มีอยู่บนหน้า http:// ด้วย แต่ writeText จะ reject — ถ้าไม่ดัก แล้วบอกว่า
+  // "คัดลอกแล้ว" ผู้ใช้จะไปวางของเปล่า ซึ่งแย่กว่าไม่มีปุ่มเลย โรงเรียนที่ติดตั้งระบบไว้บนเครื่อง
+  // ตัวเองแล้วเข้าผ่าน http://192.168.x.x เจอกรณีนี้เต็มๆ จึงต้องมีทางสำรองเสมอ
+  window.copyField = async function (id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(el.value);
+        window.toast('คัดลอกแล้ว', 'success');
+        return;
+      }
+    } catch (err) { /* ตกไปใช้วิธีสำรอง */ }
+    el.focus();
+    el.select();
+    el.setSelectionRange(0, 99999);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+    window.toast(ok ? 'คัดลอกแล้ว' : 'เลือกข้อความให้แล้ว — กด Ctrl+C เพื่อคัดลอก (บนมือถือแตะค้างแล้วกดคัดลอก)',
+      ok ? 'success' : 'info');
+  };
+
   // ---------- confetti when every task is cleared (UX Bible Part 21 §11) ----------
   // triggered by a hidden marker element the server renders only when the user just
   // acknowledged their last pending item — never replays on a plain revisit with 0 tasks

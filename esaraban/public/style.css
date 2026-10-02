@@ -513,6 +513,22 @@ tbody tr:last-child td { border-bottom: none; }
 .alert-warning { background: var(--warning-bg); color: var(--warning); border-left: 4px solid var(--warning); }
 .alert-warning code { background: rgba(0, 0, 0, .08); padding: .05rem .3rem; border-radius: 4px; }
 
+/* ---------- แถวคัดลอกค่ายาวๆ ที่ต้อง "ตรงทุกตัวอักษร" ----------
+   เช่นที่อยู่ส่งกลับที่ต้องเอาไปลงทะเบียนกับ Google — ผู้ดูแลต้องอ่านทวนได้ครบทั้งบรรทัดเพื่อเทียบ
+   กับที่ลงทะเบียนไว้ ไม่ใช่แค่กดคัดลอกแล้วเชื่อ (เวลาผิดคือผิดตัวเดียวแล้วตีกลับทั้งเส้น)
+
+   วัดจริงบนมือถือ 390px: ช่อง input บรรทัดเดียวที่วางคู่ปุ่มเหลือกว้าง 198px เห็นที่อยู่ไม่ถึงครึ่ง
+   จึงใช้ textarea ที่ตัดบรรทัดให้ และบนจอแคบให้ปุ่มลงไปอยู่บรรทัดล่างเพื่อคืนความกว้างให้ช่อง */
+.copy-row { display: flex; gap: .5rem; align-items: flex-start; }
+.copy-row textarea {
+  flex: 1; min-width: 0; resize: vertical; overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .82rem; line-height: 1.45;
+}
+@media (max-width: 899px) {
+  .copy-row { flex-direction: column; align-items: stretch; }
+}
+
 /* ---------- กล่องเตือน "กองงานค้าง" บนหน้าแรก แบบพับเก็บได้ ----------
    วัดจริงบนมือถือตอนธุรการมีกองค้างพร้อมกันสามกอง: กล่องเตือนรวมกันสูง 980px และตัวเลขสรุปของ
    แดชบอร์ดถูกดันไปอยู่ที่ 1,964px = ต้องเลื่อนสามหน้าจอกว่าจะเห็นหน้าแรกของตัวเอง

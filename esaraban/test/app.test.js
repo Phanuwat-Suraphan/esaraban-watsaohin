@@ -9236,6 +9236,9 @@ describe('ตราประทับ: สามช่องแถบล่า�
           { host: 'esaraban-watsaohin.onrender.com' });
         assert.match(page.body, /fake-client/, 'ต้องโชว์ Client ID ที่ตั้งไว้จริง');
         assert.ok(!page.body.includes('fake-secret'), 'Client Secret ห้ามหลุดลงหน้าเว็บเด็ดขาด');
+        // ลิงก์ตรงไปหน้าแก้ไขของ OAuth Client ตัวนั้นเลย — ตัดโอกาส "เปิดผิดตัว" ทิ้งไปทั้งหมด
+        assert.match(page.body, /console\.cloud\.google\.com\/apis\/credentials\/oauthclient\/fake-client/,
+          'ต้องมีลิงก์ตรงไปหน้าตั้งค่าของ OAuth Client ตัวที่ระบบใช้');
       });
 
       // Google ส่งรหัสกลับมาเป็นคำอังกฤษคำเดียว เอาขึ้นหน้าเฉยๆ ก็เป็นทางตันอีกแบบ — ผู้ดูแลโรงเรียน

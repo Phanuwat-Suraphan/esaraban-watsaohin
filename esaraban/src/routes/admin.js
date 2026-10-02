@@ -903,6 +903,13 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
           <button class="btn btn-outline btn-sm" type="button"
             onclick="window.copyField('driveRedirectUri')">📋 คัดลอก</button>
         </div>
+        ${clientConfigured ? `<p style="margin:.6rem 0 0">
+          <!-- ลิงก์ตรงไปหน้าแก้ไขของ OAuth Client ตัวที่ระบบใช้ (ชี้ด้วย Client ID) — ตัดโอกาส
+               "เปิดผิดตัว" ทิ้งทั้งหมด ซึ่งเป็นสาเหตุที่ทำครบทุกขั้นแล้วยังติด mismatch เหมือนเดิม -->
+          <a class="btn btn-outline btn-sm" target="_blank" rel="noopener"
+            href="https://console.cloud.google.com/apis/credentials/oauthclient/${encodeURIComponent(clientId)}"
+            >🔗 เปิดหน้าตั้งค่าของ OAuth Client ตัวนี้</a>
+        </p>` : ''}
         <p class="help-text" style="margin:.5rem 0 0">
           ถ้า Google ขึ้นว่า <strong>“การเข้าถึงถูกบล็อก: คำขอของแอปนี้ไม่ถูกต้อง”</strong>
           พร้อมรหัส <code>redirect_uri_mismatch</code> แปลว่ายังไม่ได้ใส่ค่านี้ หรือใส่ไว้ไม่ตรง

@@ -9209,6 +9209,35 @@ describe('ตราประทับ: สามช่องแถบล่า�
         assert.ok(!/Google ไม่รับที่อยู่ส่งกลับแบบนี้/.test(dev.body), 'http://localhost Google รับ');
       });
 
+      // PUBLIC_BASE_URL เป็นค่าที่คนพิมพ์เอง พิมพ์ตกคำว่า https:// คือเรื่องปกติที่สุด ถ้าเอาค่านั้น
+      // มาต่อเป็นที่อยู่ส่งกลับดื้อๆ จะได้สตริงที่ไม่ใช่ URL ส่งไปให้ Google แล้วติด mismatch ตลอดกาล
+      // โดยที่หน้าเว็บก็โชว์สตริงพังๆ นั้นให้เอาไปลงทะเบียนด้วย = พาหลงทางไปอีกไกล
+      test('PUBLIC_BASE_URL ที่ไม่ใช่ URL เต็ม ต้องไม่ถูกเอามาใช้ และต้องทักให้แก้', async () => {
+        const headers = { host: 'esaraban-watsaohin.onrender.com', 'x-forwarded-proto': 'https' };
+        for (const bad of ['esaraban-watsaohin.onrender.com', 'ftp://x.example', '   ']) {
+          process.env.PUBLIC_BASE_URL = bad;
+          const start = await dispatchGet(adminUser, '/admin/google-drive/start', {}, headers);
+          assert.equal(sentToGoogle(start.headers.Location),
+            'https://esaraban-watsaohin.onrender.com/admin/google-drive/callback',
+            `ค่าที่ใช้ไม่ได้ (${JSON.stringify(bad)}) ต้องตกไปใช้ที่อยู่ที่เบราว์เซอร์เปิดอยู่จริง`);
+        }
+        process.env.PUBLIC_BASE_URL = 'esaraban-watsaohin.onrender.com';
+        const page = await dispatchGet(adminUser, '/admin/google-drive', {}, headers);
+        assert.match(page.body, /PUBLIC_BASE_URL/, 'ต้องบอกชื่อตัวแปรที่พิมพ์ผิด');
+        assert.match(page.body, /https:\/\//, 'และบอกว่าต้องขึ้นต้นด้วยอะไร');
+      });
+
+      // เจอบ่อยมาก: ในโปรเจกต์มี OAuth Client มากกว่าหนึ่งตัว (สร้างทิ้งไว้ตอนลองผิดลองถูก) แล้วไป
+      // เพิ่มที่อยู่ส่งกลับใส่ตัวที่ระบบไม่ได้ใช้ ผลคือทำครบทุกขั้นแล้วยังติด mismatch เหมือนเดิม
+      // Client ID ไม่ใช่ความลับ (ติดไปกับ URL ที่เด้งไปหา Google อยู่แล้ว) ต่างจาก Client Secret
+      test('หน้าเว็บต้องโชว์ Client ID ที่ระบบใช้ เพื่อให้ไปแก้ OAuth Client ตัวที่ถูก', async () => {
+        delete process.env.PUBLIC_BASE_URL;
+        const page = await dispatchGet(adminUser, '/admin/google-drive', {},
+          { host: 'esaraban-watsaohin.onrender.com' });
+        assert.match(page.body, /fake-client/, 'ต้องโชว์ Client ID ที่ตั้งไว้จริง');
+        assert.ok(!page.body.includes('fake-secret'), 'Client Secret ห้ามหลุดลงหน้าเว็บเด็ดขาด');
+      });
+
       // Google ส่งรหัสกลับมาเป็นคำอังกฤษคำเดียว เอาขึ้นหน้าเฉยๆ ก็เป็นทางตันอีกแบบ — ผู้ดูแลโรงเรียน
       // ไม่มีทางรู้ว่า access_denied แปลว่า "บัญชีนี้ยังไม่อยู่ในรายชื่อ Test users" ซึ่งเป็นสาเหตุ
       // ที่เกิดแทบทุกครั้งเวลาเอาบัญชี Google ใบใหม่มาเพิ่มเป็นไดรฟ์ที่สอง

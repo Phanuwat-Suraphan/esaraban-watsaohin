@@ -68,8 +68,20 @@ async function findOrphanDriveFiles() {
  * เบราว์เซอร์วิ่งไปเท่านั้น (แนวเดียวกับ publicBaseUrl ที่ใช้ทำลิงก์ส่งไลน์)
  */
 function oauthRedirectUri(ctx) {
-  const fromEnv = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
-  return `${fromEnv || originFromHeaders(ctx.req.headers)}/admin/google-drive/callback`;
+  return `${configuredOauthOrigin() || originFromHeaders(ctx.req.headers)}/admin/google-drive/callback`;
+}
+
+/**
+ * PUBLIC_BASE_URL เฉพาะตอนที่เป็น URL เต็มจริงๆ — ไม่งั้นคืนค่าว่างให้ตกไปใช้หัว Host แทน
+ *
+ * ค่านี้คนพิมพ์เองในหน้าตั้งค่าของโฮสต์ พิมพ์ตก https:// คือเรื่องที่เกิดเป็นปกติ ถ้าเอามาต่อดื้อๆ
+ * จะได้ "esaraban.onrender.com/admin/google-drive/callback" ซึ่งไม่ใช่ URL ส่งไปให้ Google แล้ว
+ * ติด redirect_uri_mismatch ตลอดกาล — และหน้าเว็บก็จะโชว์สตริงพังๆ นั้นให้เอาไปลงทะเบียนด้วย
+ * กลายเป็นพาหลงทางไปไกลกว่าเดิม จึงยอมตกไปใช้ค่าที่เดาจากหัว Host ซึ่งถูกในกรณีส่วนใหญ่แทน
+ */
+function configuredOauthOrigin() {
+  const raw = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  return /^https?:\/\/[^/\s]+$/.test(raw) ? raw : '';
 }
 
 // ---------------- ตั้งค่าโรงเรียน ----------------
@@ -833,7 +845,8 @@ router.get('/admin/audit', requireRole('admin')(requirePage((ctx) => {
 // ---------------- Google Drive OAuth connection (admin only) ----------------
 router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) => {
   let clientConfigured = true;
-  try { getOAuthClientConfig(); } catch (e) { clientConfigured = false; }
+  let clientId = '';
+  try { ({ clientId } = getOAuthClientConfig()); } catch (e) { clientConfigured = false; }
   const connected = isGoogleDriveConnected();
   const enabled = isGoogleDriveEnabled();
 
@@ -846,7 +859,11 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
   // ไม่ได้บอกว่าค่าที่ถูกคืออะไรเลย (ดูคอมเมนต์ยาวที่ oauthRedirectUri)
   const redirectUri = oauthRedirectUri(ctx);
   const browsing = originFromHeaders(ctx.req.headers);
-  const envBase = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  const envBase = configuredOauthOrigin();
+  const envBaseRaw = String(process.env.PUBLIC_BASE_URL || '').trim();
+  // ตั้งไว้แต่ใช้ไม่ได้ (พิมพ์ตก https:// ฯลฯ) — ระบบตกไปใช้หัว Host ให้แล้ว แต่ต้องบอกให้ไปแก้
+  // เพราะตัวแปรเดียวกันนี้ยังถูกใช้ทำลิงก์ที่ส่งเข้าไลน์ด้วย ซึ่งจะกดไม่ได้ทั้งหมด
+  const envBaseBroken = Boolean(envBaseRaw && !envBase);
   // PUBLIC_BASE_URL ค้างค่าเก่าหลังย้ายเซิร์ฟเวอร์ = OAuth พังทั้งเส้นแบบไม่มีอะไรบอก และค่าที่โชว์
   // ข้างบนก็จะเป็นโดเมนเก่าที่ลงทะเบียนยังไงก็ไม่ช่วย ต้องทักตรงจุดที่เขากำลังจะคัดลอกไปใช้
   const baseMismatch = Boolean(envBase && browsing && envBase !== browsing);
@@ -862,7 +879,12 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
       <table class="table-plain">
         <tbody>
           <tr><td class="text-muted">STORAGE_PROVIDER</td><td>${enabled ? '<span class="badge badge-success">google_drive (เปิดใช้งาน)</span>' : '<span class="badge badge-muted">local (ยังไม่เปิดใช้ Google Drive)</span>'}</td></tr>
-          <tr><td class="text-muted">GOOGLE_OAUTH_CLIENT_ID / SECRET</td><td>${clientConfigured ? '<span class="badge badge-success">ตั้งค่าแล้ว</span>' : '<span class="badge badge-danger">ยังไม่ได้ตั้งค่า</span>'}</td></tr>
+          <tr><td class="text-muted">GOOGLE_OAUTH_CLIENT_ID / SECRET</td><td>${clientConfigured ? `<span class="badge badge-success">ตั้งค่าแล้ว</span>
+            <!-- โชว์ Client ID เต็มๆ ได้ ไม่ใช่ความลับ (ติดไปกับ URL ที่เด้งไปหา Google ทุกครั้งอยู่แล้ว)
+                 ต่างจาก Client Secret ที่ห้ามโผล่เด็ดขาด — มีไว้ให้เทียบว่ากำลังแก้ OAuth Client ตัวที่
+                 ระบบใช้จริงอยู่หรือเปล่า เจอบ่อยมากที่ในโปรเจกต์มีหลายตัวแล้วไปแก้ผิดตัว -->
+            <div class="text-muted" style="font-size:.78rem;overflow-wrap:anywhere;margin-top:.2rem">${esc(clientId)}</div>`
+    : '<span class="badge badge-danger">ยังไม่ได้ตั้งค่า</span>'}</td></tr>
           <tr><td class="text-muted">เชื่อมต่อบัญชี Google แล้วหรือยัง</td><td>${connected ? '<span class="badge badge-success">เชื่อมต่อแล้ว</span>' : '<span class="badge badge-muted">ยังไม่เชื่อมต่อ</span>'}</td></tr>
         </tbody>
       </table>
@@ -884,7 +906,12 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
         <p class="help-text" style="margin:.5rem 0 0">
           ถ้า Google ขึ้นว่า <strong>“การเข้าถึงถูกบล็อก: คำขอของแอปนี้ไม่ถูกต้อง”</strong>
           พร้อมรหัส <code>redirect_uri_mismatch</code> แปลว่ายังไม่ได้ใส่ค่านี้ หรือใส่ไว้ไม่ตรง
-          — ใส่แล้วรอสักครู่ (Google ใช้เวลาอัปเดตไม่กี่นาที) แล้วกดเชื่อมต่อใหม่
+          — ใส่แล้วรอสักครู่ (Google ใช้เวลาอัปเดตไม่กี่นาที) แล้วกดเชื่อมต่อใหม่<br/>
+          ตรวจสองข้อนี้ด้วย:
+          <strong>(1)</strong> ต้องใส่ใน OAuth Client ที่มี Client ID ตรงกับที่แสดงไว้ด้านบน
+          — โปรเจกต์ที่เคยลองผิดลองถูกมักมี OAuth Client หลายตัว แล้วไปใส่ผิดตัว
+          <strong>(2)</strong> บนหน้าแดงของ Google กด “ดูรายละเอียดข้อผิดพลาด” จะเห็นบรรทัด
+          <code>redirect_uri</code> ที่ระบบส่งไปจริง เอามาเทียบกับค่าข้างบนได้เลยว่าต่างกันตรงไหน
         </p>
       </div>
       ${httpNotAllowed ? `<div class="alert alert-warning">
@@ -893,6 +920,14 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
           Google อนุญาตเฉพาะ <code>https://</code> เท่านั้น (ยกเว้น <code>http://localhost</code> ตอนพัฒนา)
           จึงลงทะเบียน <code>${esc(redirectUri)}</code> ไม่ได้ ต้องให้ระบบเข้าถึงได้ด้วย <code>https://</code> ก่อน
           แล้วค่อยกลับมากดเชื่อมต่อ — ระหว่างนี้ยังใช้ระบบได้ตามปกติ เพียงแต่ไฟล์จะเก็บไว้ในดิสก์ของเครื่องแทน
+        </div>
+      </div>` : ''}
+      ${envBaseBroken ? `<div class="alert alert-warning">
+        <strong>PUBLIC_BASE_URL ที่ตั้งไว้ใช้ไม่ได้ — ต้องเป็นที่อยู่เต็มที่ขึ้นต้นด้วย <code>https://</code></strong>
+        <div style="margin-top:.3rem;font-size:.88rem">
+          ตั้งไว้เป็น <code>${esc(envBaseRaw.slice(0, 120))}</code> ซึ่งไม่ใช่ที่อยู่เว็บเต็ม ระบบจึงข้ามไป
+          ใช้ที่อยู่ที่คุณกำลังเปิดอยู่แทน — แต่ตัวแปรเดียวกันนี้ใช้ทำลิงก์ที่ส่งเข้าไลน์ด้วย
+          ลิงก์เหล่านั้นจะกดไม่ได้จนกว่าจะแก้ ตั้งเป็น <code>${esc(browsing)}</code> แล้ว redeploy
         </div>
       </div>` : ''}
       ${baseMismatch ? `<div class="alert alert-warning">

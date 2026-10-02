@@ -1020,6 +1020,21 @@ export function migrate() {
     db.exec('ALTER TABLE leave_attachments ADD COLUMN drive_account_id TEXT');
   }
 
+  // ไดรฟ์ใบนี้เป็นบัญชี Google ของใคร — ถามจาก /drive/v3/about ตอนเพิ่ม
+  //
+  // เดิมกันเพิ่มบัญชีซ้ำด้วยการเทียบตัวสตริงของ refresh token ซึ่งกันไม่ได้จริง: ระบบส่ง
+  // prompt=consent ทุกครั้ง Google จึงออกโทเคนใบใหม่ทุกครั้งที่ยินยอม ยินยอมด้วยบัญชีเดิมซ้ำจะได้
+  // โทเคนคนละใบและผ่านด่านไปได้ กลายเป็น "เพิ่มไดรฟ์แล้ว" ทั้งที่พื้นที่ไม่ได้เพิ่มขึ้นเลยสักไบต์
+  //
+  // account_key = permissionId ซึ่งไม่เปลี่ยนแม้เจ้าของจะเปลี่ยนชื่ออีเมล จึงใช้เป็นตัวเทียบ
+  // account_email ไว้แสดงบนหน้าเว็บให้รู้ว่าไดรฟ์ใบไหนคือบัญชีอะไร (ชื่อเล่นที่ตั้งเองตั้งผิดได้)
+  // แถวเก่าที่เพิ่มไว้ก่อนมีคอลัมน์นี้จะเป็น NULL — ยังใช้งานได้ตามปกติ แค่ไม่มีอีเมลให้แสดง
+  const driveAccountCols = db.prepare('PRAGMA table_info(drive_accounts)').all().map((c) => c.name);
+  if (!driveAccountCols.includes('account_key')) {
+    db.exec('ALTER TABLE drive_accounts ADD COLUMN account_key TEXT');
+    db.exec('ALTER TABLE drive_accounts ADD COLUMN account_email TEXT');
+  }
+
   const attachmentCols = db.prepare("PRAGMA table_info(attachments)").all().map((c) => c.name);
   if (!attachmentCols.includes('stamped_storage_provider')) {
     db.exec('ALTER TABLE attachments ADD COLUMN stamped_storage_provider TEXT');

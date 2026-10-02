@@ -281,8 +281,36 @@ export async function exchangeCodeForTokens({ code, redirectUri }) {
  *
  * limit เป็น null ได้ (บัญชีองค์กรที่ไม่จำกัดพื้นที่) ผู้เรียกต้องรับมือกรณีนั้นด้วย
  */
+/**
+ * เจ้าของบัญชีของ refresh token ใบหนึ่ง — ใช้ตอบว่า "ไดรฟ์ใบใหม่" เป็นคนละบัญชีกับของเดิมจริงไหม
+ *
+ * ทำไมต้องถาม Google: เราส่ง prompt=consent ทุกครั้ง Google จึงออก refresh token ใบใหม่ทุกครั้ง
+ * ที่ยินยอม การเทียบตัวสตริงของโทเคนจึงบอกไม่ได้เลยว่าเป็นบัญชีเดิมหรือไม่ — ยินยอมด้วยบัญชีเดิมซ้ำ
+ * จะได้โทเคนคนละใบและผ่านด่าน "ห้ามซ้ำ" ไปได้ แล้วระบบจะเชื่อว่าเพิ่มไดรฟ์แล้วทั้งที่พื้นที่เท่าเดิม
+ * ซึ่งคือทั้งหมดที่ฟีเจอร์หลายไดรฟ์มีไว้แก้
+ *
+ * ใช้ permissionId เป็นตัวเทียบ ไม่ใช่อีเมล เพราะเจ้าของเปลี่ยนชื่ออีเมลได้แต่ permissionId ไม่เปลี่ยน
+ * ส่วนอีเมลเก็บไว้แสดงให้ผู้ดูแลรู้ว่าไดรฟ์ใบไหนคือบัญชีอะไร (scope drive.file เรียก about ได้)
+ *
+ * ผลพลอยได้: เรียกตอนเพิ่มไดรฟ์เท่ากับพิสูจน์ว่าโทเคนใบนั้นใช้งานได้จริงตั้งแต่ก่อนบันทึก ไม่ใช่ไป
+ * รู้เอาตอนที่ไฟล์แรกอัปโหลดไม่ขึ้นแล้วหาสาเหตุไม่เจอ
+ */
+export async function driveAccountIdentity(refreshToken) {
+  const res = await driveFetch(
+    'https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,permissionId,displayName)', {}, refreshToken);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw httpError(502, `อ่านข้อมูลบัญชี Google Drive ไม่สำเร็จ: ${data.error?.message || res.statusText}`);
+  const u = data.user || {};
+  const key = u.permissionId || u.emailAddress || '';
+  if (!key) throw httpError(502, 'Google ไม่ได้ส่งข้อมูลเจ้าของบัญชีกลับมา — ลองเชื่อมต่ออีกครั้ง');
+  return { key: String(key), email: String(u.emailAddress || ''), displayName: String(u.displayName || '') };
+}
+
 export async function driveStorageQuota(refreshToken) {
-  const res = await driveFetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota', {}, refreshToken);
+  // ขออีเมลเจ้าของมาในคำขอเดียวกันเลย — หน้ารายการไดรฟ์ต้องการทั้งสองอย่างพร้อมกัน และ about
+  // คือคำขอเดียวที่ให้ทั้งคู่ได้ ยิงแยกสองรอบคือเสียเวลารอเน็ตเพิ่มอีกหนึ่งรอบต่อไดรฟ์โดยไม่จำเป็น
+  const res = await driveFetch(
+    'https://www.googleapis.com/drive/v3/about?fields=storageQuota,user(emailAddress)', {}, refreshToken);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw httpError(502, `อ่านพื้นที่คงเหลือของ Google Drive ไม่สำเร็จ: ${data.error?.message || res.statusText}`);
   const q = data.storageQuota || {};
@@ -292,5 +320,6 @@ export async function driveStorageQuota(refreshToken) {
     limitBytes: Number.isFinite(limit) ? limit : null,
     usageBytes: Number.isFinite(usage) ? usage : 0,
     usedPercent: limit ? Math.min(100, Math.round((usage / limit) * 100)) : null,
+    email: String(data.user?.emailAddress || ''),
   };
 }

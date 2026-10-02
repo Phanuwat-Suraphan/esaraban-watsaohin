@@ -69,13 +69,15 @@ export function activeDriveToken() {
 export function listDriveAccounts() {
   const active = activeDriveId();
   const counts = fileCountsByDrive();
-  const rows = db.prepare('SELECT id, label, status, created_at, retired_at FROM drive_accounts ORDER BY created_at').all();
+  const rows = db.prepare('SELECT id, label, status, created_at, retired_at, account_email FROM drive_accounts ORDER BY created_at').all();
   return [
     {
       id: BOOTSTRAP_DRIVE_ID,
       label: 'ไดรฟ์ตั้งต้น (ตั้งค่าไว้ที่เซิร์ฟเวอร์)',
       bootstrap: true,
       connected: Boolean(bootstrapRefreshToken()),
+      // ไดรฟ์ตั้งต้นไม่มีแถวในตาราง จึงไม่มีอีเมลเก็บไว้ — หน้าเว็บอ่านมาเติมเองทีหลังพร้อมพื้นที่คงเหลือ
+      email: '',
       status: active === BOOTSTRAP_DRIVE_ID ? 'active' : 'readonly',
       isActive: active === BOOTSTRAP_DRIVE_ID,
       files: counts.get(BOOTSTRAP_DRIVE_ID) || 0,
@@ -86,6 +88,8 @@ export function listDriveAccounts() {
       label: r.label,
       bootstrap: false,
       connected: true,
+      // ชื่อเล่นตั้งเองตั้งผิดหรือตั้งซ้ำกันได้ อีเมลคือตัวที่บอกได้จริงว่าไดรฟ์ใบไหนคือบัญชีไหน
+      email: r.account_email || '',
       status: r.status,
       isActive: active === r.id,
       files: counts.get(r.id) || 0,
@@ -120,22 +124,29 @@ export const MAX_DRIVE_LABEL = 60;
  * ไม่เขียนทับไดรฟ์เดิม ไม่ย้ายไฟล์ และไม่ลบอะไรเลย การย้ายไฟล์เป็นแสนไฟล์ข้ามบัญชีใช้เวลาเป็นวัน
  * และถ้าขาดกลางคันจะเหลือไฟล์ครึ่งๆ กลางๆ สองที่ — ซึ่งแย่กว่าปล่อยให้ของเก่าอยู่ที่เดิมมาก
  */
-export function addDriveAccount({ label, refreshToken, actorUser }) {
+export function addDriveAccount({ label, refreshToken, account, bootstrapAccount, actorUser }) {
   const name = String(label || '').trim();
   if (!name) throw httpError(400, 'กรุณาตั้งชื่อเรียกไดรฟ์นี้ เช่น "ไดรฟ์โรงเรียน ชุดที่ 2"');
   if (name.length > MAX_DRIVE_LABEL) throw httpError(400, `ชื่อเรียกไดรฟ์ยาวเกิน ${MAX_DRIVE_LABEL} ตัวอักษร`);
   const token = String(refreshToken || '').trim();
   if (!token) throw httpError(400, 'ไม่มี refresh token ของบัญชีใหม่ — กดเชื่อมต่อบัญชี Google อีกครั้ง');
-  if (token === bootstrapRefreshToken()) {
-    throw httpError(400, 'นี่คือไดรฟ์ตั้งต้นที่ใช้อยู่แล้ว — ต้องเชื่อมต่อด้วยบัญชี Google คนละบัญชีกับของเดิม');
+
+  // ตัวตนของบัญชีมาจาก Google (/drive/v3/about) ไม่ใช่เดาจากตัวโทเคน — ดูเหตุผลเต็มที่
+  // driveAccountIdentity: โทเคนเป็นคนละใบทุกครั้งที่ยินยอม การเทียบโทเคนจึงกันบัญชีซ้ำไม่ได้จริง
+  const key = String(account?.key || '').trim();
+  if (!key) throw httpError(400, 'ยังไม่รู้ว่าบัญชีนี้เป็นของใคร — กดเชื่อมต่อบัญชี Google อีกครั้ง');
+  const sameAsBootstrap = token === bootstrapRefreshToken()
+    || (bootstrapAccount?.key && key === String(bootstrapAccount.key));
+  if (sameAsBootstrap) {
+    throw httpError(400, 'นี่คือบัญชีเดียวกับไดรฟ์ตั้งต้นที่ใช้อยู่แล้ว — ต้องเชื่อมต่อด้วยบัญชี Google คนละบัญชีกับของเดิม ไม่งั้นพื้นที่ที่ใช้ได้เท่าเดิม');
   }
-  if (db.prepare('SELECT 1 x FROM drive_accounts WHERE refresh_token = ?').get(token)) {
-    throw httpError(400, 'บัญชีนี้ถูกเพิ่มไว้แล้ว');
-  }
+  const dup = db.prepare('SELECT label FROM drive_accounts WHERE account_key = ? OR refresh_token = ?').get(key, token);
+  if (dup) throw httpError(400, `บัญชีนี้ถูกเพิ่มไว้แล้วในชื่อ "${dup.label}"`);
 
   const id = uuid();
-  db.prepare(`INSERT INTO drive_accounts (id, label, refresh_token, status, created_at, created_by)
-    VALUES (?, ?, ?, 'active', ?, ?)`).run(id, name, token, nowIso(), actorUser?.id || null);
+  db.prepare(`INSERT INTO drive_accounts (id, label, refresh_token, account_key, account_email, status, created_at, created_by)
+    VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`)
+    .run(id, name, token, key, String(account?.email || '') || null, nowIso(), actorUser?.id || null);
   useDriveForNewFiles(id, actorUser);
   return id;
 }

@@ -13,7 +13,7 @@ import { previewNextNumber } from '../numbering.js';
 import { originFromHeaders } from '../services/publicUrl.js';
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, getOAuthClientConfig, exchangeCodeForTokens, DRIVE_SCOPE, AUTH_URL,
-  listAllAttachmentFiles, deleteFile,
+  listAllAttachmentFiles, deleteFile, driveAccountIdentity, bootstrapRefreshToken,
 } from '../services/googleDrive.js';
 import {
   listDriveAccounts, driveTokenFor, addDriveAccount, useDriveForNewFiles, removeDriveAccount,
@@ -969,8 +969,12 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
       <div class="table-wrap"><table>
         <thead><tr><th>ไดรฟ์</th><th>ไฟล์ที่เก็บอยู่</th><th>พื้นที่ที่ใช้ไป</th><th>สถานะ</th><th></th></tr></thead>
         <tbody>${accounts.map((a) => `<tr>
-          <td><strong>${esc(a.label)}</strong>${a.bootstrap
-    ? '<div class="text-muted" style="font-size:.8rem">สำเนาฐานข้อมูลอยู่บนไดรฟ์นี้เสมอ</div>' : ''}</td>
+          <td><strong>${esc(a.label)}</strong>
+            <!-- ชื่อเล่นตั้งเองตั้งผิดหรือตั้งซ้ำกันได้ อีเมลคือตัวที่บอกได้จริงว่าเป็นบัญชีไหน
+                 โดยเฉพาะตอนจะถอดไดรฟ์ออก ซึ่งถอดผิดใบแปลว่าเปิดไฟล์เก่าไม่ได้ทั้งกอง -->
+            <div class="drive-email text-muted" style="font-size:.8rem" data-drive-email="${esc(a.id)}"
+              >${a.email ? esc(a.email) : (a.connected ? 'กำลังอ่านอีเมล...' : '')}</div>
+            ${a.bootstrap ? '<div class="text-muted" style="font-size:.8rem">สำเนาฐานข้อมูลอยู่บนไดรฟ์นี้เสมอ</div>' : ''}</td>
           <td>${a.files ? `${a.files} รายการ` : '<span class="text-muted">ยังไม่มี</span>'}</td>
           <td><span class="drive-quota text-muted" data-drive="${esc(a.id)}">${a.connected ? 'กำลังอ่าน...' : 'ยังไม่ได้เชื่อมต่อ'}</span></td>
           <td>${a.isActive
@@ -1005,10 +1009,16 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
           data.drives.forEach(function (d) {
             var el = document.querySelector('.drive-quota[data-drive="' + d.id + '"]');
             if (el) { el.innerHTML = d.html; el.classList.remove('text-muted'); }
+            var mail = document.querySelector('[data-drive-email="' + d.id + '"]');
+            if (mail && d.email) mail.textContent = d.email;
+            else if (mail && mail.textContent.indexOf('กำลังอ่าน') === 0) mail.textContent = '';
             if (d.activeNearlyFull) document.getElementById('driveFullWarn').hidden = false;
           });
         } catch (e) {
           document.querySelectorAll('.drive-quota').forEach(function (el) { el.textContent = 'อ่านพื้นที่ไม่ได้'; });
+          document.querySelectorAll('.drive-email').forEach(function (el) {
+            if (el.textContent.indexOf('กำลังอ่าน') === 0) el.textContent = '';
+          });
         }
       })();
 
@@ -1050,13 +1060,26 @@ router.get('/admin/google-drive/accounts/quota', requireRole('admin')(requireApi
         + `<span class="text-muted">${gb(q.usageBytes)} จาก ${gb(q.limitBytes)}</span>`;
     }
     // เตือนเฉพาะไดรฟ์ที่กำลังใช้เก็บไฟล์ใหม่ — ไดรฟ์เก่าที่เต็มแล้วเป็นเรื่องปกติและไม่ต้องทำอะไร
-    return { id: a.id, html: text, activeNearlyFull: Boolean(a.isActive && q.nearlyFull) };
+    // อีเมลมาจากคำขอเดียวกับพื้นที่ (about) จึงเติมให้ไดรฟ์ตั้งต้นได้ด้วย ทั้งที่ไม่มีแถวในตาราง
+    return { id: a.id, html: text, email: q.email || '', activeNearlyFull: Boolean(a.isActive && q.nearlyFull) };
   }));
   json(ctx, 200, { drives });
 })));
 
-router.post('/admin/google-drive/accounts', requireRole('admin')(requireApi((ctx) => {
-  const id = addDriveAccount({ label: ctx.body.label, refreshToken: ctx.body.refreshToken, actorUser: ctx.user });
+router.post('/admin/google-drive/accounts', requireRole('admin')(requireApi(async (ctx) => {
+  // ถาม Google ว่าโทเคนใบนี้เป็นของบัญชีไหน ก่อนบันทึก — กันกรณียินยอมด้วยบัญชีเดิมซ้ำ (ซึ่งได้
+  // โทเคนคนละใบแต่พื้นที่เท่าเดิม) และได้พิสูจน์ไปในตัวว่าโทเคนใช้งานได้จริงตั้งแต่ก่อนบันทึก
+  const token = String(ctx.body.refreshToken || '').trim();
+  const account = token ? await driveAccountIdentity(token) : null;
+  // ตัวตนของไดรฟ์ตั้งต้นต้องถามเหมือนกัน เพราะเทียบตัวโทเคนอย่างเดียวไม่พอ — ถ้าอ่านไม่ได้
+  // (ไดรฟ์ตั้งต้นยังไม่ได้เชื่อม/โทเคนหมดอายุ) ก็ปล่อยผ่านด่านนี้ ไม่ใช่บล็อกการเพิ่มไดรฟ์ใหม่ทิ้ง
+  let bootstrapAccount = null;
+  if (bootstrapRefreshToken()) {
+    try { bootstrapAccount = await driveAccountIdentity(bootstrapRefreshToken()); } catch { bootstrapAccount = null; }
+  }
+  const id = addDriveAccount({
+    label: ctx.body.label, refreshToken: ctx.body.refreshToken, account, bootstrapAccount, actorUser: ctx.user,
+  });
   audit({ userId: ctx.user.id, action: 'drive_account_added', tableName: 'drive_accounts', recordId: id, detail: { label: String(ctx.body.label || '').trim() } });
   json(ctx, 201, { ok: true, id });
 })));
@@ -1114,10 +1137,45 @@ router.get('/admin/google-drive/start', requireRole('admin')(requirePage((ctx) =
   redirect(ctx, `${AUTH_URL}?${params.toString()}`);
 })));
 
+/**
+ * แปลรหัสที่ Google ตีกลับมาเป็นสาเหตุจริงพร้อมขั้นตอนแก้
+ *
+ * Google ส่งกลับมาเป็นคำอังกฤษคำเดียว เช่น access_denied ซึ่งไม่ได้บอกเลยว่าต้องไปแก้อะไรที่ไหน
+ * เอาขึ้นหน้าเฉยๆ ก็เป็นทางตัน — ผู้ดูแลโรงเรียนไม่มีทางเดาต่อได้ว่ามันหมายถึงรายชื่อ Test users
+ * ยังคงรหัสดิบไว้บนหน้าด้วยเสมอ เผื่อต้องเอาไปค้นหาต่อหรือส่งต่อให้คนอื่นช่วยดู
+ */
+const GOOGLE_AUTH_ERROR_HELP = {
+  access_denied: `
+    <p style="margin:.4rem 0"><strong>บัญชี Google ที่เพิ่งเลือกยังไม่ได้รับอนุญาตให้ใช้แอปนี้</strong> พบบ่อยสองกรณี:</p>
+    <ol style="margin:.4rem 0 .4rem 1.1rem;padding:0">
+      <li style="margin-bottom:.5rem"><strong>แอปยังอยู่ในโหมดทดสอบ (Testing) และบัญชีนั้นไม่ได้อยู่ในรายชื่อ Test users</strong>
+        — ถ้าเพิ่งสร้างบัญชี Google ใบใหม่มาเพื่อเพิ่มไดรฟ์ จะเจอข้อนี้เสมอ<br/>
+        แก้ที่ Google Cloud Console → APIs &amp; Services → OAuth consent screen → Audience →
+        <strong>Test users</strong> → ADD USERS → ใส่อีเมลของบัญชีใบใหม่ → SAVE แล้วกลับมากดเพิ่มไดรฟ์อีกครั้ง<br/>
+        <em>ทางแก้ถาวร:</em> กด <strong>PUBLISH APP</strong> ให้แอปเป็น “In production” จะไม่ต้องมาเพิ่มรายชื่อทีละบัญชีอีก
+        และ refresh token จะไม่หมดอายุทุก 7 วันด้วย</li>
+      <li>กด “ยกเลิก” หรือไม่ได้ติ๊กอนุญาตให้ครบในหน้ายินยอมของ Google — กดใหม่แล้วกดอนุญาตให้ครบทุกขั้น</li>
+    </ol>`,
+  admin_policy_enforced: `
+    <p style="margin:.4rem 0">ผู้ดูแล Google Workspace ขององค์กรบล็อกไม่ให้แอปภายนอกเข้าถึง Google Drive ของบัญชีนี้
+      — ใช้บัญชี Gmail ส่วนตัวแทน หรือให้ผู้ดูแล Workspace อนุญาตแอปนี้ก่อน</p>`,
+  org_internal: `
+    <p style="margin:.4rem 0">OAuth Client นี้ตั้งไว้เป็น <strong>Internal</strong> (ใช้ได้เฉพาะบัญชีในองค์กรเดียวกัน)
+      แต่บัญชีที่เลือกอยู่นอกองค์กร — เปลี่ยน User type เป็น <strong>External</strong> ที่ OAuth consent screen
+      หรือเลือกบัญชีที่อยู่ในองค์กรเดียวกัน</p>`,
+};
+
 router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(async (ctx) => {
   if (ctx.query.error) {
+    const code = String(ctx.query.error);
+    const help = GOOGLE_AUTH_ERROR_HELP[code] || '';
     return html(ctx, 400, layout({ user: ctx.user, title: 'เชื่อมต่อไม่สำเร็จ', path: '/admin/google-drive',
-      content: `<div class="alert alert-danger">Google ปฏิเสธคำขอ: ${esc(ctx.query.error)}</div><a class="btn btn-outline" href="/admin/google-drive">กลับ</a>` }));
+      content: `<h2>เชื่อมต่อบัญชี Google ไม่สำเร็จ</h2>
+        <div class="alert alert-danger">
+          <strong>Google ปฏิเสธคำขอ</strong> (รหัส <code>${esc(code)}</code>)
+          ${help}
+        </div>
+        <a class="btn btn-primary" href="/admin/google-drive">กลับไปลองใหม่</a>` }));
   }
   if (!ctx.query.code) {
     return html(ctx, 400, layout({ user: ctx.user, title: 'เชื่อมต่อไม่สำเร็จ', path: '/admin/google-drive',
@@ -1142,14 +1200,24 @@ router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(asyn
           เพิกถอนสิทธิ์ของแอปนี้ในบัญชีนั้นก่อน แล้วกดเพิ่มไดรฟ์ใหม่อีกครั้ง</div>
           <a class="btn btn-outline" href="/admin/google-drive">กลับ</a>` }));
     }
+    // อ่านว่าเพิ่งยินยอมด้วยบัญชีไหน เพื่อยืนยันกับผู้ดูแลว่า "เลือกบัญชีถูกใบแล้วนะ" ตั้งแต่ก่อน
+    // บันทึก — เลือกผิดเป็นบัญชีเดิมคือเรื่องที่เกิดง่ายที่สุด เพราะ Google เด้งหน้าเลือกบัญชีมาให้
+    // และบัญชีที่ล็อกอินค้างอยู่บนเครื่องมักเป็นใบเดิม (ถ้าอ่านไม่ได้ก็แค่ไม่โชว์ ไม่ขวางการบันทึก)
+    let newAccount = null;
+    try { newAccount = await driveAccountIdentity(tokens.refresh_token); } catch { newAccount = null; }
     const content = `
       <h2>➕ ตั้งชื่อเรียกไดรฟ์ใหม่</h2>
       <div class="card">
-        <p>เชื่อมต่อบัญชี Google เรียบร้อยแล้ว เหลือตั้งชื่อเรียกไว้ให้รู้ว่าเป็นไดรฟ์ใบไหน
-          (ระบบขอสิทธิ์เฉพาะไฟล์ที่ตัวเองสร้าง จึงอ่านอีเมลเจ้าของบัญชีมาตั้งชื่อให้เองไม่ได้)</p>
+        <p>เชื่อมต่อบัญชี Google เรียบร้อยแล้ว เหลือตั้งชื่อเรียกไว้ให้รู้ว่าเป็นไดรฟ์ใบไหน</p>
+        ${newAccount?.email ? `<div class="alert alert-info">
+          บัญชีที่เพิ่งยินยอมคือ <strong>${esc(newAccount.email)}</strong>
+          — ถ้าไม่ใช่บัญชีใบใหม่ที่ตั้งใจจะเพิ่ม ให้กลับไปกดเพิ่มไดรฟ์ใหม่แล้วเลือกบัญชีให้ถูกก่อน
+          (เพิ่มบัญชีเดิมซ้ำไม่ได้ทำให้พื้นที่เพิ่มขึ้นเลย ระบบจะปฏิเสธให้เอง)
+        </div>` : ''}
         <div class="field">
           <label for="driveLabel">ชื่อเรียกไดรฟ์นี้ *</label>
-          <input type="text" id="driveLabel" maxlength="${MAX_DRIVE_LABEL}" placeholder="เช่น ไดรฟ์โรงเรียน ชุดที่ 2" />
+          <input type="text" id="driveLabel" maxlength="${MAX_DRIVE_LABEL}"
+            value="${esc(newAccount?.email || '')}" placeholder="เช่น ไดรฟ์โรงเรียน ชุดที่ 2" />
         </div>
         <input type="hidden" id="driveToken" value="${esc(tokens.refresh_token)}" />
         <button class="btn btn-primary" type="button" onclick="saveNewDrive(this)">บันทึกและใช้เก็บไฟล์ใหม่</button>

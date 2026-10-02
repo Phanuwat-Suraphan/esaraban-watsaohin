@@ -8983,6 +8983,12 @@ describe('ตราประทับ: สามช่องแถบล่า�
       process.env.GOOGLE_OAUTH_CLIENT_ID = 'fake-client';
       process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'fake-secret';
     });
+    // ตัวตนของบัญชี Google แบบจำลอง — ของจริงมาจาก /drive/v3/about (permissionId + อีเมล)
+    // ตัวที่ใช้เทียบคือ key ไม่ใช่อีเมล เพราะเจ้าของเปลี่ยนชื่ออีเมลได้แต่ permissionId ไม่เปลี่ยน
+    const acct = (n) => ({ key: `permission-${n}`, email: `drive-${n}@example.com` });
+    const BOOT_ACCT = acct('ตั้งต้น');
+    const addDrive = (o) => DA.addDriveAccount({ bootstrapAccount: BOOT_ACCT, actorUser: adminUser, ...o });
+
     afterEach(() => {
       db.prepare('DELETE FROM drive_accounts').run();
       for (const [k, v] of [['GOOGLE_OAUTH_REFRESH_TOKEN', envBefore.token],
@@ -8999,7 +9005,7 @@ describe('ตราประทับ: สามช่องแถบล่า�
     });
 
     test('เพิ่มไดรฟ์ใหม่แล้วของใหม่ไปลงไดรฟ์ใหม่ แต่ของเก่ายังอ่านจากไดรฟ์เดิม', () => {
-      const id = DA.addDriveAccount({ label: 'ไดรฟ์โรงเรียน ชุดที่ 2', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
+      const id = addDrive({ label: 'ไดรฟ์โรงเรียน ชุดที่ 2', refreshToken: 'token-ไดรฟ์สอง', account: acct('สอง') });
       assert.equal(DA.activeDriveId(), id, 'ไดรฟ์ใหม่ต้องกลายเป็นตัวที่ใช้เก็บไฟล์ใหม่ทันที');
       assert.equal(DA.activeDriveToken(), 'token-ไดรฟ์สอง');
       // หัวใจของเรื่อง: ไฟล์เก่ายังเปิดด้วยกุญแจของไดรฟ์เดิมได้อยู่
@@ -9015,7 +9021,7 @@ describe('ตราประทับ: สามช่องแถบล่า�
     });
 
     test('สลับกลับไปใช้ไดรฟ์ตั้งต้นได้ และสลับไปมาได้ตลอด เพราะไม่มีอะไรถูกย้าย', () => {
-      const id = DA.addDriveAccount({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
+      const id = addDrive({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', account: acct('สอง') });
       DA.useDriveForNewFiles(DA.BOOTSTRAP_DRIVE_ID, adminUser);
       assert.equal(DA.activeDriveId(), DA.BOOTSTRAP_DRIVE_ID);
       assert.equal(DA.listDriveAccounts().find((a) => a.id === id).status, 'readonly');
@@ -9024,17 +9030,39 @@ describe('ตราประทับ: สามช่องแถบล่า�
     });
 
     test('กันเพิ่มบัญชีเดิมซ้ำ และกันเพิ่มบัญชีเดียวกับไดรฟ์ตั้งต้น', () => {
-      DA.addDriveAccount({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
-      assert.throws(() => DA.addDriveAccount({ label: 'ซ้ำ', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser }), /เพิ่มไว้แล้ว/);
-      assert.throws(() => DA.addDriveAccount({ label: 'ตัวเดิม', refreshToken: 'token-ของไดรฟ์ตั้งต้น', actorUser: adminUser }),
+      addDrive({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', account: acct('สอง') });
+      assert.throws(() => addDrive({ label: 'ซ้ำ', refreshToken: 'token-ไดรฟ์สอง', account: acct('สอง') }), /เพิ่มไว้แล้ว/);
+      assert.throws(() => addDrive({ label: 'ตัวเดิม', refreshToken: 'token-ของไดรฟ์ตั้งต้น', account: acct('ตั้งต้น') }),
         /คนละบัญชี/, 'เพิ่มบัญชีเดิมซ้ำไม่ได้แก้ปัญหาพื้นที่เต็มเลย');
-      assert.throws(() => DA.addDriveAccount({ label: '', refreshToken: 'token-x', actorUser: adminUser }), /ตั้งชื่อ/);
+      assert.throws(() => addDrive({ label: '', refreshToken: 'token-x', account: acct('x') }), /ตั้งชื่อ/);
+    });
+
+    // Google ออก refresh token ใบใหม่ทุกครั้งที่ยินยอม (เพราะเราส่ง prompt=consent) การเทียบตัวโทเคน
+    // จึงบอกไม่ได้เลยว่าเป็นบัญชีเดิมหรือไม่ — ยินยอมด้วยบัญชีเดิมซ้ำจะได้โทเคนคนละใบ ผ่านด่านไปได้
+    // แล้วระบบจะเชื่อว่า "เพิ่มไดรฟ์แล้ว" ทั้งที่พื้นที่ไม่ได้เพิ่มขึ้นเลยสักไบต์ ซึ่งคือทั้งหมดที่
+    // ฟีเจอร์นี้มีไว้แก้ ต้องถามจาก Google ว่าใครเป็นเจ้าของบัญชีนั้นจริงๆ
+    test('ยินยอมด้วยบัญชีเดิมซ้ำ (โทเคนคนละใบ) ต้องไม่นับเป็นไดรฟ์ใบใหม่', () => {
+      assert.throws(() => addDrive({
+        label: 'นึกว่าเป็นใบใหม่', refreshToken: 'token-ใบใหม่แต่บัญชีเดิม', account: acct('ตั้งต้น'),
+      }), /คนละบัญชี/, 'โทเคนคนละใบแต่เป็นบัญชีเดียวกัน = พื้นที่เท่าเดิม');
+
+      addDrive({ label: 'ไดรฟ์สอง', refreshToken: 'token-ก', account: acct('สอง') });
+      assert.throws(() => addDrive({
+        label: 'ไดรฟ์สองอีกรอบ', refreshToken: 'token-ข', account: acct('สอง'),
+      }), /เพิ่มไว้แล้ว/, 'บัญชีเดียวกันกับไดรฟ์ที่เพิ่มไว้แล้วก็ต้องกัน');
+    });
+
+    test('รายการไดรฟ์ต้องบอกอีเมลเจ้าของบัญชี ไม่ใช่มีแต่ชื่อเล่นที่ตั้งเอง', () => {
+      addDrive({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', account: acct('สอง') });
+      const row = DA.listDriveAccounts().find((a) => !a.bootstrap);
+      assert.equal(row.email, 'drive-สอง@example.com',
+        'ชื่อเล่นตั้งซ้ำกันได้และตั้งผิดได้ อีเมลคือตัวที่บอกได้จริงว่าเป็นบัญชีไหน');
     });
 
     // ถอดไดรฟ์ที่ยังมีไฟล์อยู่ = ไฟล์เหล่านั้นเปิดไม่ได้ทันทีทั้งที่ยังอยู่บน Drive ครบ
     // ซึ่งเป็นสิ่งเดียวกับที่ฟีเจอร์นี้ตั้งใจจะป้องกัน
     test('ถอดไดรฟ์ที่ยังมีไฟล์อยู่ไม่ได้ และถอดไดรฟ์ที่ใช้งานอยู่ก็ไม่ได้', () => {
-      const id = DA.addDriveAccount({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', actorUser: adminUser });
+      const id = addDrive({ label: 'ไดรฟ์สอง', refreshToken: 'token-ไดรฟ์สอง', account: acct('สอง') });
       assert.throws(() => DA.removeDriveAccount(id, adminUser), /กำลังใช้เก็บไฟล์ใหม่/);
       DA.useDriveForNewFiles(DA.BOOTSTRAP_DRIVE_ID, adminUser);
 
@@ -9181,6 +9209,25 @@ describe('ตราประทับ: สามช่องแถบล่า�
         assert.ok(!/Google ไม่รับที่อยู่ส่งกลับแบบนี้/.test(dev.body), 'http://localhost Google รับ');
       });
 
+      // Google ส่งรหัสกลับมาเป็นคำอังกฤษคำเดียว เอาขึ้นหน้าเฉยๆ ก็เป็นทางตันอีกแบบ — ผู้ดูแลโรงเรียน
+      // ไม่มีทางรู้ว่า access_denied แปลว่า "บัญชีนี้ยังไม่อยู่ในรายชื่อ Test users" ซึ่งเป็นสาเหตุ
+      // ที่เกิดแทบทุกครั้งเวลาเอาบัญชี Google ใบใหม่มาเพิ่มเป็นไดรฟ์ที่สอง
+      test('Google ปฏิเสธคำขอ ต้องบอกสาเหตุและวิธีแก้ ไม่ใช่โยนรหัสดิบใส่หน้า', async () => {
+        const res = await dispatchGet(adminUser, '/admin/google-drive/callback', { error: 'access_denied' });
+        assert.equal(res.status, 400);
+        assert.match(res.body, /Test users/, 'ต้องบอกสาเหตุที่พบบ่อยที่สุดของบัญชีใบใหม่');
+        assert.match(res.body, /PUBLISH APP/, 'และบอกทางแก้ถาวรที่ทำให้ไม่ต้องมาเพิ่มรายชื่อทีละบัญชี');
+        assert.match(res.body, /access_denied/, 'ยังต้องเหลือรหัสดิบไว้ให้เอาไปค้นต่อได้');
+        assert.match(res.body, /\/admin\/google-drive/, 'ต้องมีทางกลับไปลองใหม่ ไม่ใช่หน้าตัน');
+      });
+
+      test('รหัสที่ระบบยังไม่รู้จัก ต้องยังขึ้นหน้าที่ใช้งานต่อได้', async () => {
+        const res = await dispatchGet(adminUser, '/admin/google-drive/callback', { error: 'รหัสใหม่ที่ยังไม่เคยเจอ' });
+        assert.equal(res.status, 400);
+        assert.match(res.body, /รหัสใหม่ที่ยังไม่เคยเจอ/);
+        assert.match(res.body, /\/admin\/google-drive/);
+      });
+
       // PUBLIC_BASE_URL ค้างค่าเก่าหลังย้ายเซิร์ฟเวอร์ = OAuth พังทั้งเส้นโดยไม่มีอะไรบอก และค่าที่
       // หน้าเว็บโชว์ก็จะเป็นโดเมนเก่าที่ลงทะเบียนยังไงก็ไม่ช่วย — ต้องทักให้เห็นตรงนั้นเลย
       test('PUBLIC_BASE_URL ไม่ตรงกับที่อยู่ที่กำลังเปิดอยู่ ต้องทักเตือน', async () => {
@@ -9199,6 +9246,38 @@ describe('ตราประทับ: สามช่องแถบล่า�
     });
 
     describe('ด่านฝั่งเซิร์ฟเวอร์', () => {
+      // เส้นทางเพิ่มไดรฟ์ถาม Google ว่าโทเคนใบนี้เป็นของบัญชีไหน (กันเพิ่มบัญชีเดิมซ้ำ ซึ่งเทียบจาก
+      // ตัวโทเคนอย่างเดียวกันไม่ได้) จึงต้องมี Google จำลองที่ตอบ "คนละบัญชี" ตาม refresh token
+      // อีเมลที่จำลองต้องไม่มีตัวโทเคนปนอยู่ ไม่งั้นด่าน "โทเคนห้ามหลุดลงหน้าเว็บ" จะผ่านแบบหลอกๆ
+      let GD;
+      const fakeAccounts = new Map([
+        ['token-ของไดรฟ์ตั้งต้น', { permissionId: 'permission-boot', emailAddress: 'saraban.boot@example.com' }],
+        ['token-ไดรฟ์สอง', { permissionId: 'permission-two', emailAddress: 'saraban.two@example.com' }],
+      ]);
+      const accountFor = (t) => {
+        if (!fakeAccounts.has(t)) {
+          const n = fakeAccounts.size;
+          fakeAccounts.set(t, { permissionId: `permission-${n}`, emailAddress: `saraban.${n}@example.com` });
+        }
+        return fakeAccounts.get(t);
+      };
+      before(async () => { GD = await import('../src/services/googleDrive.js'); });
+      beforeEach(() => {
+        GD._setDriveFetchForTest(async (url, opts = {}) => {
+          const u = String(url);
+          if (u.includes('oauth2.googleapis.com/token')) {
+            const refresh = new URLSearchParams(String(opts.body)).get('refresh_token');
+            return Response.json({ access_token: `access:${refresh}`, expires_in: 3600 });
+          }
+          if (u.includes('/drive/v3/about')) {
+            const refresh = String(opts.headers?.Authorization || '').replace('Bearer access:', '');
+            return Response.json({ user: accountFor(refresh), storageQuota: { limit: '16106127360', usage: '0' } });
+          }
+          throw new Error(`Google จำลองไม่รู้จักคำขอนี้: ${u}`);
+        });
+      });
+      afterEach(() => GD._setDriveFetchForTest(null));
+
       test('ครูยิง API เพิ่ม/สลับ/ถอดไดรฟ์เองไม่ได้', async () => {
         const teacher = loadUserForTest(seed.userIds.teacher001);
         for (const [path2, body] of [
@@ -9224,9 +9303,33 @@ describe('ตราประทับ: สามช่องแถบล่า�
         assert.match(page.body, /อ่านอย่างเดียว \(ไฟล์เก่ายังเปิดได้\)/);
         assert.match(page.body, /google-drive\/start\?add=1/, 'ต้องมีปุ่มเพิ่มไดรฟ์ใหม่');
         assert.ok(!page.body.includes('token-ไดรฟ์สอง'), 'refresh token ต้องไม่หลุดลงหน้าเว็บ');
+        // ชื่อเล่นตั้งผิด/ตั้งซ้ำกันได้ อีเมลคือตัวที่บอกได้จริงว่าแต่ละแถวคือบัญชีไหน
+        assert.match(page.body, /saraban\.two@example\.com/, 'ต้องบอกอีเมลเจ้าของบัญชีของไดรฟ์ที่เพิ่ม');
         // พื้นที่คงเหลือต้องโหลดทีหลัง ไม่ใช่ตอน render — ไม่งั้นหน้าค้างรอเน็ตของ Google ทุกครั้งที่เปิด
         assert.match(page.body, /class="drive-quota text-muted" data-drive=/, 'ช่องพื้นที่ต้องเป็นที่ว่างรอเติม');
         assert.match(page.body, /\/admin\/google-drive\/accounts\/quota/, 'ต้องมีตัวโหลดพื้นที่แยกต่างหาก');
+      });
+
+      // ของจริงที่เกิดง่ายที่สุด: Google เด้งหน้าเลือกบัญชีมาให้ แล้วบัญชีที่ล็อกอินค้างอยู่บนเครื่อง
+      // คือใบเดิม ผู้ดูแลกดผ่านไปโดยไม่ทันสังเกต ได้โทเคนคนละใบของบัญชีเดิม — ต้องกันตรงนี้
+      test('ยินยอมด้วยบัญชีเดิมของไดรฟ์ตั้งต้น (โทเคนคนละใบ) ต้องถูกปฏิเสธ', async () => {
+        fakeAccounts.set('token-ใบใหม่ของบัญชีเดิม',
+          { permissionId: 'permission-boot', emailAddress: 'saraban.boot@example.com' });
+        const res = await dispatchPost(adminUser, '/admin/google-drive/accounts',
+          { label: 'นึกว่าเป็นใบใหม่', refreshToken: 'token-ใบใหม่ของบัญชีเดิม' });
+        assert.equal(res.status, 400);
+        assert.match(res.body, /คนละบัญชี/, 'ต้องบอกว่าต้องใช้บัญชี Google คนละบัญชี');
+        assert.equal(db.prepare('SELECT COUNT(*) c FROM drive_accounts').get().c, 0, 'ต้องไม่บันทึกลงตาราง');
+      });
+
+      // โทเคนที่ใช้ไม่ได้จริงต้องดังตั้งแต่ตอนกดเพิ่ม ไม่ใช่เงียบไปจนถึงตอนที่ไฟล์แรกอัปโหลดไม่ขึ้น
+      // แล้วค่อยหาสาเหตุ (ตอนนั้นไดรฟ์ที่เสียคือไดรฟ์ที่ระบบกำลังใช้เก็บของใหม่อยู่แล้ว)
+      test('โทเคนที่ใช้ไม่ได้ ต้องไม่ถูกบันทึกเป็นไดรฟ์', async () => {
+        GD._setDriveFetchForTest(async () => Response.json({ error: { message: 'invalid_grant' } }, { status: 400 }));
+        const res = await dispatchPost(adminUser, '/admin/google-drive/accounts',
+          { label: 'ไดรฟ์ที่โทเคนเสีย', refreshToken: 'token-เสีย' });
+        assert.ok(res.status >= 400, `ต้องไม่สำเร็จ (ได้ ${res.status})`);
+        assert.equal(db.prepare('SELECT COUNT(*) c FROM drive_accounts').get().c, 0, 'ต้องไม่บันทึกลงตาราง');
       });
     });
   });

@@ -8180,6 +8180,79 @@ describe('เตือนงานค้างประจำวัน', () => {
     return doc;
   };
 
+  /**
+   * หนังสือเวียนที่ยังไม่ได้อ่าน ต้องถูกเตือนด้วย — ไม่งั้นคนที่ต้องเตือนที่สุดคือคนที่ไม่ถูกเตือนเลย
+   *
+   * หนังสือเวียนไม่มีขั้นตอน workflow และไม่มีวันครบกำหนด ตัวเตือนประจำวันไล่จาก workflow_steps
+   * ที่มีวันครบกำหนดเท่านั้น ครูที่ไม่มีงานค้างของตัวเองแต่ค้างอ่านหนังสือเวียนอยู่สามฉบับ จึงไม่ได้
+   * ข้อความอะไรเลย — แถบเตือนบนแดชบอร์ดช่วยได้เฉพาะคนที่เข้าระบบ ซึ่งคือคนละกลุ่มกับคนที่ยังไม่อ่าน
+   *
+   * นี่คือช่องว่างเดียวกับที่ไฟล์นี้ถูกสร้างขึ้นมาปิด (เรื่องค้างเงียบๆ โดยไม่มีอะไรวิ่งไปหาคน)
+   * แต่ยังเหลือหนังสือเวียนที่ตกสำรวจอยู่
+   */
+  // ผู้อ่านเฉพาะของเทสต์ชุดนี้ — ชุดเทสต์รันหลาย describe พร้อมกัน และชุดอื่นก็มอบงาน/ล้างสถานะ
+  // ของครูคนกลางอยู่ตลอด ถ้าใช้คนเดียวกันผลจะแกว่งตามลำดับการรัน
+  const circularReader = () => {
+    const id = 'circular-reader-01';
+    if (!db.prepare('SELECT 1 x FROM users WHERE id = ?').get(id)) {
+      db.prepare(`INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, status, created_at, updated_at)
+        VALUES (?, 'circ01', 'ทดสอบ', 'ค้างอ่านเวียน', ?, ?, 'active', ?, ?)`)
+        .run(id, deptId, hashSecret('Welcome@2569'), nowIso(), nowIso());
+    }
+    db.prepare('DELETE FROM document_broadcast_reads WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM workflow_steps WHERE assignee_id = ?').run(id);
+    db.prepare('DELETE FROM daily_reminder_log WHERE user_id = ?').run(id);
+    return id;
+  };
+  const makeCircular = (title, { sentDaysAgo = 1, readers } = {}) => {
+    const doc = makeDoc({ title });
+    db.prepare("UPDATE documents SET is_circular = 1 WHERE id = ?").run(doc.id);
+    const bid = uuid();
+    const sentAt = new Date(Date.now() - sentDaysAgo * 86400000).toISOString();
+    db.prepare('INSERT INTO document_broadcasts (id, document_id, note, recipient_count, sent_by, created_at) VALUES (?,?,NULL,?,?,?)')
+      .run(bid, doc.id, readers.length, registrarUser.id, sentAt);
+    for (const uid of readers) {
+      db.prepare('INSERT INTO document_broadcast_reads (broadcast_id, user_id, opened_at, created_at) VALUES (?,?,NULL,?)')
+        .run(bid, uid, sentAt);
+    }
+    return doc;
+  };
+
+  test('ครูที่ค้างอ่านหนังสือเวียน ต้องถูกเตือน แม้ไม่มีงานค้างของตัวเองเลย', () => {
+    const uid = circularReader();
+    makeCircular('หนังสือเวียนที่ครูยังไม่ได้อ่าน ฉบับที่หนึ่ง', { readers: [uid] });
+    makeCircular('หนังสือเวียนที่ครูยังไม่ได้อ่าน ฉบับที่สอง', { readers: [uid] });
+
+    const target = rem.reminderTargets().find((t) => t.userId === uid);
+    assert.ok(target, 'ครูที่ค้างอ่านหนังสือเวียนต้องอยู่ในรายชื่อที่ต้องเตือน');
+    assert.ok(target.circulars?.total >= 2, `ต้องนับหนังสือเวียนที่ค้างอ่านได้ (ได้ ${JSON.stringify(target.circulars)})`);
+
+    const msg = rem.reminderMessage(target);
+    assert.match(msg, /📢 หนังสือเวียนที่ยังไม่ได้อ่าน/, 'ข้อความต้องบอกว่าค้างอ่านหนังสือเวียน');
+    assert.match(msg, /ฉบับที่หนึ่ง/, 'และยกตัวอย่างเรื่องให้เห็นว่าเรื่องอะไร');
+  });
+
+  // หลักการข้อ 2 ของไฟล์นี้: เตือนเฉพาะของที่ "ถึงเวลาต้องรู้" ถ้าเวียนเช้านี้แล้วเตือนเช้านี้เลย
+  // ข้อความจะกลายเป็นเสียงรบกวนที่ซ้อนกับการแจ้งเตือนตอนเวียนซึ่งเพิ่งส่งไปหยกๆ
+  test('หนังสือเวียนที่เพิ่งส่งวันนี้ ยังไม่ต้องเตือนซ้ำ', () => {
+    const uid = circularReader();
+    makeCircular('หนังสือเวียนที่เพิ่งส่งเมื่อเช้านี้', { sentDaysAgo: 0, readers: [uid] });
+    const target = rem.reminderTargets().find((t) => t.userId === uid);
+    assert.ok(!target?.circulars,
+      'เวียนวันนี้แล้วเตือนวันนี้เลย = ซ้อนกับการแจ้งเตือนตอนเวียนที่เพิ่งส่งไป');
+  });
+
+  test('อ่านแล้วต้องหยุดเตือนทันที', () => {
+    const uid = circularReader();
+    const doc = makeCircular('หนังสือเวียนที่อ่านแล้วต้องเลิกเตือน', { readers: [uid] });
+    const mine = () => rem.reminderTargets().find((t) => t.userId === uid);
+    assert.ok(mine()?.circulars?.total >= 1, 'ยังไม่อ่าน ต้องเตือน');
+    db.prepare("UPDATE document_broadcast_reads SET opened_at = ? WHERE user_id = ? AND broadcast_id IN (SELECT id FROM document_broadcasts WHERE document_id = ?)")
+      .run(nowIso(), uid, doc.id);
+    assert.ok(!mine()?.circulars,
+      'อ่านแล้วต้องหายจากรายการเตือนเอง ไม่ต้องมีใครมากดปิด');
+  });
+
   test('สรุปงานเลยกำหนด/ครบวันนี้/ใกล้ครบ เป็นข้อความเดียวต่อคน ไม่ใช่ต่อฉบับ', () => {
     assignWithDue('หนังสือเลยกำหนดสำหรับทดสอบการเตือน', at(-3));
     assignWithDue('หนังสือครบกำหนดวันนี้สำหรับทดสอบการเตือน', at(0));

@@ -18,6 +18,7 @@ import { holidaySetBetween } from './holidays.js';
 import { getSetting } from './settings.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
 import { unassignedIncoming, unassignedReminderLine, canSeeUnassigned } from './unassigned.js';
+import { myUnreadBroadcasts } from './broadcastReads.js';
 
 /** อีกกี่วันถึงจะนับว่า "ใกล้ครบกำหนด" — สั้นพอให้ยังทำทัน และไม่ยาวจนเตือนทุกวันเป็นสัปดาห์ */
 const SOON_DAYS = 3;
@@ -85,7 +86,7 @@ export function reminderTargets(today = todayInBangkok()) {
 
   const byUser = new Map();
   const entry = (userId) => {
-    if (!byUser.has(userId)) byUser.set(userId, { userId, overdue: [], today: [], soon: [], unassigned: null });
+    if (!byUser.has(userId)) byUser.set(userId, { userId, overdue: [], today: [], soon: [], unassigned: null, circulars: null });
     return byUser.get(userId);
   };
   for (const r of rows) {
@@ -102,7 +103,29 @@ export function reminderTargets(today = todayInBangkok()) {
     const summary = unassignedIncoming(u, visibleDocumentsSqlFilter(u), { limit: 3 });
     if (summary.total) entry(u.id).unassigned = summary;
   }
+  // หนังสือเวียนที่ยังไม่ได้อ่าน — กองที่ตกสำรวจมาตลอด เพราะไม่มีขั้นตอน workflow และไม่มีวันครบ
+  // กำหนด กลไกข้างบนซึ่งไล่จาก workflow_steps ที่มีวันครบกำหนดจึงมองไม่เห็นเลย ครูที่ไม่มีงานค้าง
+  // ของตัวเองแต่ค้างอ่านหนังสือเวียนอยู่ จึงไม่เคยได้รับข้อความอะไรเลยสักครั้ง
+  //
+  // และแถบเตือนบนแดชบอร์ดก็ช่วยไม่ได้ เพราะช่วยได้เฉพาะคนที่เข้าระบบ ซึ่งเป็นคนละกลุ่มกับคนที่
+  // ยังไม่ได้อ่าน — นี่คือช่องว่างแบบเดียวกับที่ไฟล์นี้ถูกสร้างขึ้นมาปิดตั้งแต่แรก
+  //
+  // นับเฉพาะที่เวียนมา "ก่อนวันนี้" ตามหลักการข้อ 2: เวียนเช้านี้แล้วเตือนเช้านี้เลยคือข้อความซ้อน
+  // กับการแจ้งเตือนตอนเวียนที่เพิ่งส่งไปหยกๆ ส่วนของเมื่อวานขึ้นไปคือ "ถึงเวลาต้องรู้แล้ว"
+  // และมันหยุดเตือนเองทันทีที่กดอ่าน ไม่ต้องมีใครมากดปิด
+  for (const u of activeUserIds()) {
+    const unread = myUnreadBroadcasts(u, { limit: 3 });
+    const due = unread.docs.filter((d) => String(d.sentAt || '').slice(0, 10) < today);
+    if (!due.length) continue;
+    entry(u).circulars = { total: due.length, docs: due.slice(0, 3) };
+  }
+
   return [...byUser.values()];
+}
+
+/** บัญชีที่ยังใช้งานอยู่ทั้งหมด — หนังสือเวียนถึงทุกคน ไม่ได้จำกัดบทบาทเหมือนกองที่ยังไม่ได้เสนอ */
+function activeUserIds() {
+  return db.prepare("SELECT id FROM users WHERE deleted_at IS NULL AND status = 'active'").all().map((r) => r.id);
 }
 
 /**
@@ -140,13 +163,24 @@ export function reminderMessage(target) {
 
   // กอง "ยังไม่ได้เสนอใคร" ต่อท้ายเป็นย่อหน้าของตัวเอง ไม่ปนกับงานของตัวเอง เพราะเป็นคนละเรื่องกัน:
   // อันบนคือ "งานที่ท่านต้องทำ" อันล่างคือ "หนังสือที่ยังไม่มีใครต้องทำ" ซึ่งต้องลงมือคนละแบบ
-  if (!target.unassigned) return own;
-  const u = target.unassigned;
-  const lines = [unassignedReminderLine(u)];
-  for (const d of u.docs) lines.push(`• ${d.number} ${d.title}`.trim());
-  if (u.hiddenCount) lines.push(`• และอีก ${u.hiddenCount} ฉบับ`);
-  const block = lines.join('\n');
-  return own ? `${own}\n\n${block}` : block;
+  const blocks = [];
+  if (own) blocks.push(own);
+  if (target.unassigned) {
+    const u = target.unassigned;
+    const lines = [unassignedReminderLine(u)];
+    for (const d of u.docs) lines.push(`• ${d.number} ${d.title}`.trim());
+    if (u.hiddenCount) lines.push(`• และอีก ${u.hiddenCount} ฉบับ`);
+    blocks.push(lines.join('\n'));
+  }
+  // ย่อหน้าของตัวเองเหมือนกัน เพราะเป็นคนละการลงมือ: อันบนคือ "งานที่ต้องทำ" อันนี้คือ "ที่ต้องกดอ่าน"
+  if (target.circulars) {
+    const c = target.circulars;
+    const lines = [`📢 หนังสือเวียนที่ยังไม่ได้อ่าน ${c.total} ฉบับ`];
+    for (const d of c.docs) lines.push(`• ${d.number} ${d.title}`.trim());
+    if (c.total > c.docs.length) lines.push(`• และอีก ${c.total - c.docs.length} ฉบับ`);
+    blocks.push(lines.join('\n'));
+  }
+  return blocks.join('\n\n');
 }
 
 /** ส่งเตือนของวันนั้น — กันส่งซ้ำด้วยตารางบันทึกว่าใครได้ของวันไหนไปแล้ว */

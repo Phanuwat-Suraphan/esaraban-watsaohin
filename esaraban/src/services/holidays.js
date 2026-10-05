@@ -109,9 +109,15 @@ export function addHoliday({ date, name, actorUser }) {
 }
 
 export function removeHoliday({ date, actorUser }) {
-  const row = db.prepare('SELECT * FROM holidays WHERE holiday_date = ?').get(date);
+  // ต้องแปลง/ตรวจวันที่ก่อนเอาไปผูกกับ SQLite แบบเดียวกับ addHoliday — ค่าที่ไม่ใช่ข้อความ
+  // (undefined เมื่อไม่ได้ส่งช่องนี้มา หรือชนิดอื่นจาก client ที่ยิงเอง) ทำให้ SQLite ผูกค่าไม่ได้
+  // แล้วเด้ง "Provided value cannot be bound to SQLite parameter 1" ภาษาอังกฤษดิบใส่หน้าผู้ใช้
+  // (ยิงทดสอบแล้วเกิดขึ้นจริง — ตอบ HTTP 500 ด้วย)
+  const d = normalizeDate(date, 'วันที่');
+  if (!d) throw httpError(400, 'กรุณาระบุวันที่ของวันหยุดที่จะลบ');
+  const row = db.prepare('SELECT * FROM holidays WHERE holiday_date = ?').get(d);
   if (!row) throw httpError(404, 'ไม่พบวันหยุดนี้');
-  db.prepare('DELETE FROM holidays WHERE holiday_date = ?').run(date);
-  audit({ userId: actorUser.id, action: 'holiday_removed', tableName: 'holidays', recordId: date, detail: { name: row.name } });
+  db.prepare('DELETE FROM holidays WHERE holiday_date = ?').run(d);
+  audit({ userId: actorUser.id, action: 'holiday_removed', tableName: 'holidays', recordId: d, detail: { name: row.name } });
   return { ok: true };
 }

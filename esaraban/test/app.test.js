@@ -12161,6 +12161,37 @@ describe('หน้ารายละเอียดหนังสือ: เ�
  * การยกเลิกไม่ได้ทำลายอะไรเลย (แค่เปลี่ยนสถานะกับเก็บเหตุผล ไฟล์อยู่ครบ) การกู้กลับจึงเป็นการย้อน
  * ที่สะอาดจริงๆ ไม่ใช่การเดาสภาพเดิม
  */
+/**
+ * ไม่มีเส้นทางไหนพ่นข้อความของเครื่องใส่ผู้ใช้
+ *
+ * เจอจริงด้วยการกวาด: /admin/holidays/remove ตอบ HTTP 500 พร้อม
+ * "Provided value cannot be bound to SQLite parameter 1." เมื่อไม่ได้ส่งวันที่มา
+ * — ครูหรือธุรการอ่านแล้วทำอะไรต่อไม่ถูก และไม่รู้ด้วยซ้ำว่าตัวเองกรอกอะไรขาด
+ *
+ * โค้ดเบสนี้เคยแก้บั๊กแบบนี้มาแล้วที่ voidDocument (มีคอมเมนต์อธิบายไว้ในนั้น) แต่แก้เป็นรายจุด
+ * ด่านนี้ปิดทั้งคลาส: เส้นทางใหม่ที่ลืมตรวจค่าก่อนเอาไปใช้จะถูกจับได้ทันที
+ */
+describe('ทุกเส้นทางต้องตอบด้วยภาษาที่คนอ่านรู้เรื่อง ไม่ใช่ข้อความของเครื่อง', () => {
+  test('ยิงทุกเส้นทาง POST ด้วยข้อมูลว่าง ต้องไม่มีอันไหน 5xx หรือพ่นภาษาเครื่อง', () => {
+    const raw = execFileSync(process.execPath, ['--no-warnings', 'test/postRouteSweep.mjs'], {
+      cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 120_000,
+    });
+    const r = JSON.parse(raw.trim().split('\n').pop());
+    assert.ok(!r.fatal, r.fatal + '\n' + (r.stack || ''));
+    assert.ok(r.checked > 80, `กวาดได้แค่ ${r.checked} เส้นทาง — น้อยผิดปกติ ตัวกวาดน่าจะพัง`);
+    assert.deepEqual(r.offenders, [],
+      `เส้นทางที่ตอบไม่ดี:\n${r.offenders.map((o) => `  ${o.status} ${o.pattern} (${o.why}) ${o.message}`).join('\n')}`);
+  });
+
+  test('ลบวันหยุดโดยไม่ส่งวันที่มา ต้องบอกเป็นภาษาไทยว่าขาดอะไร', async () => {
+    const res = await dispatchPost(loadUserForTest(seed.userIds.admin), '/admin/holidays/remove', {});
+    assert.equal(res.status, 400, res.body);
+    assert.match(res.body, /วันที่/);
+    assert.ok(!/SQLite|cannot be bound/i.test(res.body), 'ห้ามมีข้อความของเครื่องหลุดออกไป');
+  });
+
+});
+
 describe('กดยกเลิกผิดฉบับ: กู้กลับมาใช้งานได้ โดยเลขทะเบียนเดิม', () => {
   const voidedDoc = async (over = {}) => {
     const doc = makeDoc({ title: `หนังสือที่เผลอกดยกเลิก ${Math.random().toString(36).slice(2, 8)}`, ...over });

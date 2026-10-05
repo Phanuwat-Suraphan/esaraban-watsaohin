@@ -4913,10 +4913,23 @@ describe('ใบลา: ช่วงวันที่ต้องสมเห�
 
   // ลาป่วยกะทันหันต้องยื่นย้อนหลังตอนกลับมาปฏิบัติงาน จึงห้ามบล็อกการย้อนหลังทั้งหมด —
   // ที่ย้อนเกิน 1 ปีคือกรอกปีผิด (พ.ศ. หลุดลงช่อง ค.ศ.) ซึ่งจะไปเพี้ยนสถิติของปีงบประมาณที่ปิดไปแล้ว
+  //
+  // ใช้ผู้ยื่นเฉพาะของตัวเอง เพราะเทสต์นี้คิดวันจาก "วันนี้" ช่วงวันที่จึงเลื่อนไปทุกวัน และจะไปทับ
+  // ใบลาของเทสต์อื่นในชุดเดียวกันที่ใช้วันที่ตายตัว เมื่อปฏิทินเดินมาถึงช่วงนั้นพอดี — เกิดขึ้นจริง
+  // ตอนขึ้นเดือนตุลาคม: ย้อนหลัง 20 วันไปตกกลางช่วง 14–25 ก.ย. ของเทสต์ลาพักผ่อน ทั้งที่โค้ดไม่ผิด
   test('ยื่นย้อนหลังตามปกติได้ แต่ย้อนเกิน 1 ปีต้องถูกปฏิเสธ', () => {
-    assert.ok(submit({ startDate: dayOffset(-20), endDate: dayOffset(-19), leaveType: 'sick' }).id,
+    const requesterId = 'leave-backdate-requester';
+    db.prepare('DELETE FROM leave_requests WHERE requester_id = ?').run(requesterId);
+    db.prepare('DELETE FROM users WHERE id = ?').run(requesterId);
+    db.prepare(`
+      INSERT INTO users (id, employee_code, first_name, last_name, department_id, password_hash, status, created_at, updated_at)
+      VALUES (?, 'bkdate01', 'ทดสอบ', 'ยื่นย้อนหลัง', ?, ?, 'active', ?, ?)
+    `).run(requesterId, db.prepare('SELECT id FROM departments LIMIT 1').get().id,
+      hashSecret('Welcome@2569'), nowIso(), nowIso());
+
+    assert.ok(submit({ requesterId, startDate: dayOffset(-20), endDate: dayOffset(-19), leaveType: 'sick' }).id,
       'ลาป่วยย้อนหลัง 20 วันต้องยื่นได้');
-    assert.throws(() => submit({ startDate: dayOffset(-400), endDate: dayOffset(-399), leaveType: 'sick' }),
+    assert.throws(() => submit({ requesterId, startDate: dayOffset(-400), endDate: dayOffset(-399), leaveType: 'sick' }),
       /เกิน 1 ปี/, 'ย้อนหลังเกินหนึ่งปีต้องถูกปฏิเสธ');
   });
 
@@ -10138,11 +10151,17 @@ describe('สำรองฐานข้อมูล: สำเนาต้อ�
       }
       // วันนี้เก็บได้หลายชุด (keepRecent=3) วันที่ผ่านมาแล้วเหลือวันละชุด → 3 + 1 + 1
       assert.equal(r.after.total, 5, `จำนวนไฟล์ที่เหลือไม่ตรง: ${JSON.stringify(r.after)}`);
+      // ชื่อโฟลเดอร์ต้องคำนวณจากวันที่ที่สคริปต์วางไว้จริง ไม่ใช่เขียนปี/เดือนตายตัว — เดือนปัจจุบัน
+      // เปลี่ยนทุก 30 วัน เทสต์ที่ฝังเลขเดือนไว้จะพังเองตอนขึ้นเดือนใหม่ โดยที่โค้ดไม่ได้ผิดอะไรเลย
+      // (เกิดมาแล้วจริงกับเทสต์ชุดนี้ตอนขึ้นเดือนตุลาคม)
+      const yearOf = (d) => d.slice(0, 4);
+      const monthOf = (d) => d.slice(0, 7);
       // โฟลเดอร์เดือน/ปีที่ไม่เหลืออะไรข้างในต้องถูกเก็บกวาดด้วย ไม่ให้รกสะสม
-      assert.ok(!r.foldersKept.includes('2568'), 'ปีที่ไม่เหลือสำเนาแล้วต้องถูกลบ');
-      assert.ok(!r.foldersKept.includes('2569-08'), 'เดือนที่ไม่เหลือสำเนาแล้วต้องถูกลบ');
+      assert.ok(!r.foldersKept.includes(yearOf(d400)), `ปี ${yearOf(d400)} ไม่เหลือสำเนาแล้ว ต้องถูกลบ`);
+      assert.ok(!r.foldersKept.includes(monthOf(d40)), `เดือน ${monthOf(d40)} ไม่เหลือสำเนาแล้ว ต้องถูกลบ`);
       // แต่ห้ามลบโฟลเดอร์ที่ยังมีของอยู่ข้างใน และห้ามแตะโฟลเดอร์ราก
-      assert.ok(r.foldersKept.includes('2569') && r.foldersKept.includes('2569-09'));
+      assert.ok(r.foldersKept.includes(yearOf(today)), `ปี ${yearOf(today)} ยังมีสำเนาอยู่ ห้ามลบ`);
+      assert.ok(r.foldersKept.includes(monthOf(today)), `เดือน ${monthOf(today)} ยังมีสำเนาอยู่ ห้ามลบ`);
       assert.ok(r.foldersKept.includes('สำเนาฐานข้อมูล (ห้ามลบ)'), 'โฟลเดอร์รากของสำเนาต้องไม่ถูกลบ');
     });
 
@@ -11813,6 +11832,207 @@ describe('ธุรการลืมติ๊กตราเสนอ ผอ. �
       const page = await dispatchGet(loadUserForTest(seed.userIds.director01), `/documents/${id}`);
       assert.equal(page.status, 200);
       assert.ok(!page.body.includes('lateRegMark'));
+    });
+  });
+
+  /**
+   * ปัญหาเดียวกันแต่เป็นของ ผอ. — กล่องความเห็นไม่ได้ลงไปบนไฟล์ แล้วไม่มีทางกลับมาลง
+   *
+   * วัดจริง: ธุรการลงรับหนังสือตอนที่ยังสแกนไม่เสร็จ (ยังไม่มี PDF) แล้วเสนอขึ้นไป ผอ. กดสั่งการ
+   * พร้อมติ๊กความเห็นครบ ระบบตอบ 200 ทุกอย่างดูเรียบร้อย — แต่ stampDirectorDecisionIfApplicable
+   * เจอว่ายังไม่มีไฟล์ให้ประทับก็ return เงียบๆ ไม่ปั๊ม ไม่จดว่าค้าง ไม่เตือนใคร
+   *
+   * พอธุรการสแกนเสร็จแล้วแนบ PDF ตามหลัง หนังสือราชการฉบับนั้นจะไม่มีกล่องความเห็นและลายเซ็น ผอ.
+   * อยู่บนไฟล์ตลอดไป ทั้งที่ทะเบียนบันทึกว่าท่านสั่งการแล้ว และปุ่ม "ประทับใหม่" ก็ใช้ไม่ได้
+   * เพราะมันกู้ได้เฉพาะกรณีที่ปั๊มแล้วล้มเหลว ไม่ใช่กรณีที่ไม่เคยปั๊มเลย
+   */
+  describe('ผอ. สั่งการไปแล้วแต่ความเห็นไม่ได้ลงไฟล์ — ต้องกลับมาปั๊มตามหลังได้', () => {
+    const director = () => loadUserForTest(seed.userIds.director01);
+    let m = 0;
+
+    // ลงรับ "โดยยังไม่แนบไฟล์" แล้วเสนอ ผอ. → ผอ. สั่งการ → ค่อยแนบ PDF ตามหลัง
+    const decidedThenAttached = async ({ attach = true } = {}) => {
+      const res = await dispatchPost(registrarUser, '/documents', {
+        direction: 'incoming', title: `ยังไม่ได้สแกนตอนเสนอ ${++m} ${Math.random().toString(36).slice(2, 8)}`,
+        correspondentName: 'สพป.', departmentId: deptId, allowDuplicate: true,
+      });
+      assert.equal(res.status, 201, res.body);
+      const id = /\/documents\/([0-9a-f-]{36})/.exec(res.body)[1];
+      proposeToDirector(id);
+      const step = db.prepare("SELECT id FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(id);
+      const approved = await dispatchPost(director(), `/documents/${id}/workflow/${step.id}/approve`, {
+        pin: userPin('director01'), nextAssigneeIds: [seed.userIds.teacher001],
+        decisionMarks: ['ทราบ'], decisionNote: 'มอบงานวิชาการ', comment: 'ดำเนินการตามเสนอ',
+      });
+      assert.equal(approved.status, 200, approved.body);
+      if (attach) {
+        const att = await dispatchPost(registrarUser, `/documents/${id}/attachments`, {
+          fileName: 'scan.pdf', fileType: 'application/pdf', fileDataBase64: pdfB64,
+        });
+        assert.equal(att.status, 200, att.body);
+      }
+      return id;
+    };
+
+    test('สั่งการตอนยังไม่มีไฟล์ แล้วแนบทีหลัง ต้องมีการ์ดให้ ผอ. ปั๊มตามหลัง', async () => {
+      const id = await decidedThenAttached();
+      assert.equal(db.prepare("SELECT COUNT(*) c FROM audit_logs WHERE action = 'attachment_director_stamped'").get().c, 0,
+        'ตั้งค่าเทสต์ผิดถ้าปั๊มสำเร็จไปแล้ว');
+      const page = await dispatchGet(director(), `/documents/${id}`);
+      assert.match(page.body, /lateDirMark/, 'ผอ. ต้องมีทางกลับมาปั๊มความเห็นลงไฟล์');
+      assert.match(page.body, /id="lateDirectorWarn"/, 'และต้องบอกว่าทำไมถึงขึ้นการ์ดนี้');
+    });
+
+    test('ปั๊มตามหลังแล้วบันทึกว่าท่านสั่งอะไร แม้เครื่องนี้เขียนลงไฟล์จริงไม่ได้', async () => {
+      const id = await decidedThenAttached();
+      const res = await dispatchPost(director(), `/documents/${id}/director-stamp`, {
+        pin: userPin('director01'), decisionMarks: ['ทราบ', 'ดำเนินการ'], decisionNote: 'มอบงานวิชาการดำเนินการ',
+      });
+      assert.equal(res.status, 200, res.body);
+      const att = db.prepare('SELECT id FROM attachments WHERE document_id = ?').get(id);
+      const tried = db.prepare(
+        "SELECT COUNT(*) c FROM audit_logs WHERE record_id = ? AND action IN ('attachment_director_stamped','attachment_director_stamp_failed')",
+      ).get(att.id).c;
+      assert.equal(tried, 1, 'ต้องมีร่องรอยในระบบว่าท่านปั๊มความเห็นอะไรลงไป');
+    });
+
+    describe('ด่านฝั่งเซิร์ฟเวอร์', () => {
+      test('คนที่ไม่ใช่ ผอ. ปั๊มกล่องความเห็น ผอ. ไม่ได้ — เท่ากับเซ็นแทนท่าน', async () => {
+        const id = await decidedThenAttached();
+        for (const [code, who] of [['teacher001', loadUserForTest(seed.userIds.teacher001)],
+          ['reg001', registrarUser], ['admin', loadUserForTest(seed.userIds.admin)]]) {
+          const res = await dispatchPost(who, `/documents/${id}/director-stamp`, {
+            pin: userPin(code), decisionMarks: ['ทราบ'],
+          });
+          assert.equal(res.status, 403, `${code} ต้องถูกปฏิเสธ (ได้ ${res.status})`);
+        }
+      });
+
+      test('ผอ. ที่ยังไม่เคยสั่งการเรื่องนี้ ก็ปั๊มไม่ได้', async () => {
+        const id = await registerWithPdf();
+        proposeToDirector(id); // เสนอแล้วแต่ยังไม่ได้กดอะไร
+        const res = await dispatchPost(director(), `/documents/${id}/director-stamp`, {
+          pin: userPin('director01'), decisionMarks: ['ทราบ'],
+        });
+        assert.equal(res.status, 409, res.body);
+        assert.match(res.body, /ยังไม่ได้สั่งการ/, 'กล่องนี้คือบันทึกการสั่งการ ไม่ใช่ทางลัดข้ามขั้นตอน');
+        const page = await dispatchGet(director(), `/documents/${id}`);
+        assert.ok(!page.body.includes('lateDirMark'), 'และต้องไม่มีการ์ดให้กดด้วย');
+      });
+
+      test('PIN ผิด ไม่ติ๊กอะไรเลย และไม่มีไฟล์ PDF — ต้องถูกปฏิเสธคนละแบบ', async () => {
+        const id = await decidedThenAttached();
+        const badPin = await dispatchPost(director(), `/documents/${id}/director-stamp`, {
+          pin: '000000', decisionMarks: ['ทราบ'],
+        });
+        assert.equal(badPin.status, 401);
+
+        const nothing = await dispatchPost(director(), `/documents/${id}/director-stamp`, {
+          pin: userPin('director01'), decisionMarks: [], decisionNote: '   ',
+        });
+        assert.equal(nothing.status, 400);
+
+        const noFile = await decidedThenAttached({ attach: false });
+        const res = await dispatchPost(director(), `/documents/${noFile}/director-stamp`, {
+          pin: userPin('director01'), decisionMarks: ['ทราบ'],
+        });
+        assert.equal(res.status, 409);
+        assert.match(res.body, /ยังไม่มีไฟล์ PDF/);
+      });
+
+      /**
+       * ต้องไม่ไปกวนตราอื่นเลยสักอัน
+       *
+       * หนังสือหนึ่งฉบับมีตราซ้อนกันอยู่หลายอันบนไฟล์เดียว: ตราลงรับ (ขวาบน), กล่องความเห็นธุรการ
+       * (ซ้ายล่าง), ตรา "รับทราบและปฏิบัติตามคำสั่ง" (กลางล่าง) และกล่องความเห็น ผอ. (ขวาล่าง)
+       * การเพิ่มทางปั๊มใหม่เข้ามาต้องไม่ลบ ไม่ย้าย และไม่นับซ้ำของเดิมแม้แต่อันเดียว
+       *
+       * วิธีที่ปลอดภัยที่สุดคือ "ไม่เขียนเส้นทางปั๊มขึ้นมาใหม่" แต่เรียกตัวเดียวกับที่เส้นทางปกติเรียก
+       * ซึ่งอ่านไฟล์ที่ประทับมาแล้วเป็นฐาน (preferStamped) และคำนวณตำแหน่งด้วยตัวเดียวกัน
+       * — ด่านนี้ยึดโครงสร้างนั้นไว้ เพราะเครื่องที่รันเทสต์ไม่มี chromium/qpdf จึงเทียบพิกเซลไม่ได้
+       */
+      test('ปั๊มตามหลังต้องใช้เส้นทางเดียวกับตอนสั่งการปกติ ไม่ใช่เส้นทางใหม่ที่วางตราเอง', () => {
+        const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+        const route = src.slice(src.indexOf("router.post('/documents/:id/director-stamp'"));
+        const body = route.slice(0, route.indexOf('\n}));'));
+        assert.match(body, /stampDirectorDecisionIfApplicable\(/,
+          'ต้องเรียกตัวเดียวกับเส้นทางปกติ ไม่งั้นตำแหน่ง/การซ้อนไฟล์จะค่อยๆ เลื่อนจากกัน');
+        for (const forbidden of ['stampDirectorDecision(', 'stampAcknowledgeMark(', 'stampRegistrarComment(', 'stampPdf(']) {
+          assert.ok(!body.includes(forbidden), `เส้นทางนี้ต้องไม่เรียก ${forbidden} เอง`);
+        }
+      });
+
+      test('ปั๊มตามหลังแล้ว ตราอื่นๆ ต้องไม่ถูกแตะเลยสักอัน', async () => {
+        const id = await decidedThenAttached();
+        const att = db.prepare('SELECT * FROM attachments WHERE document_id = ?').get(id);
+        // ปั๊มตราธุรการและตรา "รับทราบ" ไว้ก่อน เพื่อให้มีของให้กวนจริงๆ
+        const log = db.prepare(`INSERT INTO audit_logs (id, user_id, action, table_name, record_id, detail, ip, created_at)
+          VALUES (?, ?, ?, 'attachments', ?, NULL, NULL, ?)`);
+        log.run(uuid(), registrarUser.id, 'attachment_registrar_stamped', att.id, nowIso());
+        log.run(uuid(), seed.userIds.teacher001, 'attachment_mark_stamped', att.id, nowIso());
+        const countOf = (action) => db.prepare(
+          'SELECT COUNT(*) c FROM audit_logs WHERE action = ? AND record_id = ?').get(action, att.id).c;
+        const before = {
+          registrar: countOf('attachment_registrar_stamped'),
+          ack: countOf('attachment_mark_stamped'),
+          received: db.prepare('SELECT stamped_drive_file_id, stamped_filepath, stamped_at FROM attachments WHERE id = ?').get(att.id),
+        };
+
+        const res = await dispatchPost(director(), `/documents/${id}/director-stamp`, {
+          pin: userPin('director01'), decisionMarks: ['ทราบ'],
+        });
+        assert.equal(res.status, 200, res.body);
+
+        assert.equal(countOf('attachment_registrar_stamped'), before.registrar, 'ตราธุรการต้องไม่ถูกนับซ้ำหรือหายไป');
+        assert.equal(countOf('attachment_mark_stamped'), before.ack, 'ตรา "รับทราบและปฏิบัติตามคำสั่ง" ต้องไม่ถูกแตะ');
+        assert.deepEqual(
+          db.prepare('SELECT stamped_drive_file_id, stamped_filepath, stamped_at FROM attachments WHERE id = ?').get(att.id),
+          before.received,
+          'เครื่องนี้ปั๊มลงไฟล์จริงไม่ได้ สำเนาที่ประทับไว้เดิมจึงต้องคงเดิมทุกช่อง ไม่ถูกเขียนทับด้วยของว่าง');
+      });
+
+      // ถ้าการ์ดใหม่ไปขึ้นพร้อมช่องกรอกของตราอื่น ผู้ใช้จะกรอกเรื่องเดียวกันสองที่แล้วได้ตราซ้อนสองชุด
+      test('การ์ดใหม่ต้องไม่ไปโผล่ซ้อนกับช่องกรอกตราอื่นในหน้าเดียว', async () => {
+        const id = await decidedThenAttached();
+        const page = await dispatchGet(director(), `/documents/${id}`);
+        assert.match(page.body, /lateDirMark/, 'ตั้งค่าเทสต์ผิดถ้าการ์ดไม่ขึ้น');
+        assert.ok(!page.body.includes('lateRegMark'), 'ต้องไม่มีช่องตราธุรการปนมาด้วย');
+        assert.ok(!page.body.includes('assignRegMark'), 'ต้องไม่มีช่องตราในการ์ดเสนอปนมาด้วย');
+        // ผอ. ทำเรื่องนี้ไปแล้ว จึงต้องไม่มีการ์ดดำเนินการ (ซึ่งมีช่องติ๊กความเห็นชุดเดียวกัน) ค้างอยู่
+        assert.ok(!/doApprove\(/.test(page.body), 'ต้องไม่มีการ์ดดำเนินการที่มีช่องติ๊กความเห็นชุดเดียวกัน');
+      });
+
+      test('ปั๊มสำเร็จไปแล้ว ต้องไม่ขึ้นการ์ดให้ปั๊มซ้ำจนได้กล่องความเห็นสองกล่อง', async () => {
+        const id = await decidedThenAttached();
+        const att = db.prepare('SELECT * FROM attachments WHERE document_id = ?').get(id);
+        db.prepare(`INSERT INTO audit_logs (id, user_id, action, table_name, record_id, detail, ip, created_at)
+          VALUES (?, ?, 'attachment_director_stamped', 'attachments', ?, NULL, NULL, ?)`)
+          .run(uuid(), seed.userIds.director01, att.id, nowIso());
+        const page = await dispatchGet(director(), `/documents/${id}`);
+        assert.ok(!page.body.includes('lateDirMark'), 'ปั๊มไปแล้วต้องไม่ชวนให้ปั๊มอีก');
+      });
+
+      // ปุ่ม "ประทับใหม่" กู้เฉพาะกรณีที่ปั๊มแล้วล้มเหลว ซึ่งระบบเก็บเนื้อหาที่จะปั๊มไว้ให้แล้ว
+      // ถ้าการ์ดใหม่ไปขึ้นทับกัน ผอ. จะกรอกใหม่แล้วได้กล่องความเห็นซ้อนสองชุดบนหนังสือฉบับเดียว
+      test('กรณีที่ค้างรอ "ประทับใหม่" อยู่ ต้องไม่ขึ้นการ์ดนี้ซ้อนเข้าไปอีก', async () => {
+        const id = await decidedThenAttached();
+        const att = db.prepare('SELECT * FROM attachments WHERE document_id = ?').get(id);
+        db.prepare('UPDATE attachments SET stamp_retry_json = ? WHERE id = ?')
+          .run(JSON.stringify({ kind: 'director', actorUserId: seed.userIds.director01 }), att.id);
+        const page = await dispatchGet(director(), `/documents/${id}`);
+        assert.ok(!page.body.includes('lateDirMark'), 'ต้องให้ใช้ปุ่มประทับใหม่ที่เก็บเนื้อหาเดิมไว้แทน');
+      });
+
+      // ปั๊มตามหลังบนเรื่องที่ปิดไปแล้ว = ไฟล์ที่เก็บเข้าแฟ้มขัดกับทะเบียนที่บอกว่าจบแล้ว
+      test('เรื่องที่ปิดไปแล้ว ปั๊มตามหลังไม่ได้', async () => {
+        const id = await decidedThenAttached();
+        db.prepare("UPDATE documents SET status = 'archived' WHERE id = ?").run(id);
+        const res = await dispatchPost(director(), `/documents/${id}/director-stamp`, {
+          pin: userPin('director01'), decisionMarks: ['ทราบ'],
+        });
+        assert.equal(res.status, 409);
+        assert.match(res.body, /ปิดไปแล้ว/);
+      });
     });
   });
 });

@@ -2304,6 +2304,68 @@ router.get('/documents/:id', requirePage((ctx) => {
     && ctx.user.roleCodes.includes('registrar');
   // ยังไม่มีใครในสายกดอะไรเลย = ยังทันปั๊มก่อนที่ ผอ. จะเปิดอ่าน ซึ่งเป็นเหตุผลทั้งหมดของกล่องนี้
   const nobodyActedYet = steps.length > 0 && steps.every((s) => s.status === 'waiting');
+  /**
+   * ปั๊มกล่องความเห็น ผอ. ตามหลัง — เรื่องที่ท่านสั่งการไปแล้วแต่ความเห็นไม่ได้ลงไฟล์
+   *
+   * ขึ้นเฉพาะตอนที่ "ไม่มีช่องกรอกความเห็นที่อื่นแล้ว" จะได้ไม่มีช่องกรอกเรื่องเดียวกันสองที่ในหน้าเดียว
+   * ซึ่งจะทำให้ได้กล่องความเห็นซ้อนสองชุดบนหนังสือฉบับเดียว:
+   *  - ยังถือขั้นตอนอยู่ (isCurrentAssignee) = ช่องติ๊กชุดเดียวกันอยู่ในการ์ด "ดำเนินการ" แล้ว
+   *  - ปั๊มสำเร็จไปแล้ว = ไม่ต้องชวนให้ปั๊มซ้ำ
+   *  - ค้างรอ "ประทับใหม่" = ระบบเก็บเนื้อหาที่จะปั๊มไว้ให้แล้ว ให้ใช้ปุ่มนั้นซึ่งไม่ต้องกรอกใหม่
+   */
+  const directorStampCount = stampAtt ? db.prepare(
+    "SELECT COUNT(*) c FROM audit_logs WHERE action = 'attachment_director_stamped' AND record_id = ?",
+  ).get(stampAtt.id).c : 0;
+  const directorRestampPending = pendingRestamp(stampAtt)?.kind === 'director';
+  const lateDirectorStepId = stampAtt && docOpen && !isCurrentAssignee
+    && !directorStampCount && !directorRestampPending
+    ? lastDirectorStepOf(doc.id, ctx.user) : null;
+  const lateDirectorBox = !lateDirectorStepId ? '' : `
+    <div class="card" style="border-color:var(--primary)">
+      <h3 class="mt-0">🖋️ กล่องความเห็น ผอ.</h3>
+      <div class="alert alert-warning" id="lateDirectorWarn" style="margin-top:.2rem">
+        <strong>สั่งการไปแล้ว แต่ความเห็นยังไม่ได้ลงบนไฟล์หนังสือ</strong>
+        <div style="margin-top:.3rem;font-size:.9rem">
+          มักเกิดเมื่อไฟล์ PDF ถูกแนบตามมาทีหลังจากที่ท่านสั่งการไปแล้ว — ปั๊มตามหลังได้เลย
+          ระบบจะวางกล่องที่มุมขวาล่างเหมือนตอนสั่งการปกติ <strong>ตราอื่นบนหนังสือยังอยู่ครบและไม่ขยับ</strong>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="field">
+          <div class="help-text" style="margin-bottom:.4rem">ฝนเลือกข้อที่ต้องการ — ตรงกับตรายางจริงของโรงเรียน ติ๊กได้หลายข้อ</div>
+          ${DECISION_MARK_OPTIONS.filter((m) => !m.pairedInto).map((m) => `<label class="check-inline" style="display:block;margin:.15rem 0">
+            <input type="checkbox" class="lateDirMark" value="${esc(m.value)}" />
+            <span>${esc(m.label)}</span>
+          </label>`).join('')}
+          <input type="text" id="lateDirectorNotify" maxlength="60" style="margin-top:.4rem"
+                 placeholder="ชื่อผู้ที่ต้องแจ้ง (เติมในข้อ &quot;แจ้งให้ ........ ทราบ&quot;)" />
+          <textarea id="lateDirectorNote" style="margin-top:.4rem"
+                    placeholder="ความเห็น/คำสั่งการที่จะปั๊มลงหนังสือ"></textarea>
+        </div>
+        <button class="btn btn-primary" type="button" onclick="doLateDirectorStamp(this)">🖋️ ปั๊มความเห็นลงไฟล์</button>
+        <div class="help-text">ปั๊มลงไฟล์ PDF จริงที่มุมขวาล่าง พร้อมลายเซ็นและตำแหน่งของท่าน
+          — ต้องยืนยัน PIN เพราะเป็นการลงนามบนหนังสือราชการฉบับจริง</div>
+      </div>
+    </div>
+    <script>
+      async function doLateDirectorStamp(btn){
+        var marks = Array.prototype.slice.call(document.querySelectorAll('.lateDirMark:checked')).map(function (el) { return el.value; });
+        var note = document.getElementById('lateDirectorNote').value.trim();
+        var notify = document.getElementById('lateDirectorNotify').value.trim();
+        if (!marks.length && !note) { window.toast('กรุณาติ๊กอย่างน้อยหนึ่งข้อ หรือพิมพ์ความเห็นที่จะปั๊ม', 'warning'); return; }
+        var pin = await window.askPin('ยืนยัน PIN เพื่อปั๊มความเห็น ผอ. ลงไฟล์');
+        if (!pin) return;
+        window.setBtnLoading(btn, 'กำลังปั๊ม...');
+        try {
+          var data = await window.postJson('/documents/${doc.id}/director-stamp', {
+            pin: pin, decisionMarks: marks, decisionNote: note, decisionNotify: notify,
+          });
+          window.toast(data.warning || 'ปั๊มความเห็นลงไฟล์เรียบร้อย', data.warning ? 'warning' : 'success');
+          setTimeout(function () { location.reload(); }, 900);
+        } catch (e) { window.restoreBtn(btn); window.toast(e.message, 'danger'); }
+      }
+    </script>`;
+
   const lateRegistrarBox = !canLateRegistrarStamp ? '' : `
     <div class="card" ${registrarStampCount || registrarRestampPending ? '' : 'style="border-color:var(--primary)"'}>
       <h3 class="mt-0">✍️ ตราธุรการ เสนอ ผอ.</h3>
@@ -3094,6 +3156,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${actionBox}
         ${assignBox}
         ${lateRegistrarBox}
+        ${lateDirectorBox}
         ${broadcastBox}
         <div class="card">
           <h3>Timeline การเดินหนังสือ</h3>
@@ -3173,6 +3236,95 @@ router.post('/documents/:id/registrar-stamp', requireApi(async (ctx) => {
     documentId: doc.id, stepId: null, actorUser: ctx.user, comment: registrarNote,
     registrarMarks: ctx.body.registrarMarks, registrarUnit: ctx.body.registrarUnit,
     registrarX: parsePercent(ctx.body.registrarX), registrarY: parsePercent(ctx.body.registrarY),
+  });
+  json(ctx, 200, { ok: true, warning });
+}));
+
+/**
+ * ขั้นตอนล่าสุดบนหนังสือฉบับนี้ที่ผู้ใช้คนนี้ได้ลงนามไปแล้ว "ในฐานะ ผอ. หรือผู้รักษาการแทน ผอ."
+ *
+ * ใช้สองอย่างพร้อมกัน:
+ *  - เป็นด่าน — ไม่เคยสั่งการ = ปั๊มไม่ได้ กล่องความเห็นคือบันทึกการสั่งการของท่าน ไม่ใช่ทางลัดข้ามขั้นตอน
+ *  - เป็นที่มาของโหมดหัวตรา (ผอ. ตัวจริง / รักษาการแทน) และตำแหน่งวางกล่องไม่ให้ทับของเดิม
+ *    ซึ่งต้องมาจากขั้นตอนจริง ไม่ใช่เดาเอง ไม่งั้นหัวตราหรือตำแหน่งจะต่างจากตอนสั่งการปกติ
+ *
+ * ต้องจำกัดเฉพาะขั้นตอนที่ผู้ใช้ "ถืออยู่จริง" (หรือรักษาการแทนคนที่ถืออยู่) ก่อนเสมอ — ถ้าดูแค่
+ * directorTitleMode อย่างเดียวจะหลวม เพราะตัวนั้นคืนค่า 'director' ให้ทุกขั้นตอนเมื่อผู้ใช้มีบทบาท ผอ.
+ * แม้เป็นขั้นตอนของคนอื่นที่ท่านไม่ได้แตะเลยก็ตาม
+ */
+/**
+ * ผู้ใช้คนนี้ลงนามในฐานะ ผอ. ได้หรือไม่ (เป็น ผอ. เอง หรือรักษาการแทน ผอ. อยู่ ณ วันนี้)
+ *
+ * แยกจาก lastDirectorStepOf เพื่อให้ตอบคนละแบบ: คนที่ไม่มีสิทธิ์เลยต้องได้ 403 "ไม่ใช่หน้าที่คุณ"
+ * ส่วนคนที่มีสิทธิ์แต่ยังไม่ได้สั่งการต้องได้ 409 "ยังไม่ถึงเวลา" — ถ้ารวมเป็นข้อความเดียว ครูที่
+ * เพิ่งกดรับทราบไปจะได้ข้อความว่า "คุณยังไม่ได้สั่งการ" ซึ่งอ่านแล้วงงว่าต้องไปสั่งการยังไงต่อ
+ */
+function canSignAsDirector(actorUser) {
+  if (actorUser.roleCodes.includes('director')) return true;
+  return Boolean(db.prepare(`
+    SELECT 1 FROM user_delegations ud
+    JOIN user_roles ur ON ur.user_id = ud.delegator_id
+    JOIN roles r ON r.id = ur.role_id AND r.name = 'director'
+    WHERE ud.delegate_id = :me AND ud.cancelled_at IS NULL
+      AND ud.start_date <= :today AND ud.end_date >= :today
+  `).get({ me: actorUser.id, today: todayInBangkok() }));
+}
+
+function lastDirectorStepOf(documentId, actorUser) {
+  const steps = db.prepare(`
+    SELECT ws.id FROM workflow_steps ws
+    WHERE ws.document_id = :doc AND ws.status != 'waiting'
+      AND (ws.assignee_id = :me OR ws.assignee_id IN (
+        SELECT delegator_id FROM user_delegations
+        WHERE delegate_id = :me AND cancelled_at IS NULL AND start_date <= :today AND end_date >= :today))
+    ORDER BY ws.decided_at DESC, ws.step_order DESC
+  `).all({ doc: documentId, me: actorUser.id, today: todayInBangkok() });
+  return steps.find((s) => directorTitleMode(s.id, actorUser) !== 'generic')?.id || null;
+}
+
+/**
+ * ปั๊มกล่องความเห็น ผอ. ตามหลัง — สำหรับเรื่องที่ท่านสั่งการไปแล้วแต่ความเห็นไม่ได้ลงไฟล์
+ *
+ * เกิดจริงเมื่อธุรการลงรับตอนที่ยังสแกนไม่เสร็จ (ยังไม่มี PDF) แล้วเสนอขึ้นไป ผอ. กดสั่งการพร้อม
+ * ติ๊กความเห็นครบ ระบบตอบสำเร็จทุกอย่าง แต่ stampDirectorDecisionIfApplicable เจอว่ายังไม่มีไฟล์
+ * ให้ประทับก็ออกเงียบๆ ไม่ปั๊ม ไม่จดว่าค้าง ไม่เตือนใคร — พอแนบ PDF ตามหลัง หนังสือราชการฉบับนั้น
+ * จะไม่มีกล่องความเห็นและลายเซ็น ผอ. อยู่บนไฟล์ตลอดไป ทั้งที่ทะเบียนบันทึกว่าท่านสั่งการแล้ว
+ * และปุ่ม "ประทับใหม่" ก็ช่วยไม่ได้ เพราะมันกู้เฉพาะกรณีที่ปั๊มแล้วล้มเหลว ไม่ใช่กรณีที่ไม่เคยปั๊ม
+ *
+ * เรียก stampDirectorDecisionIfApplicable ตัวเดียวกับเส้นทางสั่งการปกติโดยตั้งใจ — ตัวนั้นอ่าน
+ * "ไฟล์ที่ประทับมาแล้ว" เป็นฐาน (preferStamped) และคำนวณตำแหน่งด้วยตัวเดียวกัน ตราอื่นบนไฟล์
+ * (ตราลงรับ ตราธุรการ ตรารับทราบ) จึงอยู่ครบและไม่ขยับ ถ้าเขียนเส้นทางวางตราขึ้นมาใหม่เมื่อไหร่
+ * สองเส้นทางจะค่อยๆ เลื่อนจากกันจนตราซ้อนทับกันเอง (มีด่านในชุดเทสต์ยึดโครงสร้างนี้ไว้)
+ */
+router.post('/documents/:id/director-stamp', requireApi(async (ctx) => {
+  const doc = getDocument(ctx.params.id);
+  if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
+  // กล่องนี้คือลายมือชื่อของ ผอ. การให้คนอื่น (แม้แต่แอดมิน) กดแทนเท่ากับเซ็นแทนกัน
+  if (!canSignAsDirector(ctx.user)) {
+    throw httpError(403, 'เฉพาะ ผอ. หรือผู้รักษาการแทน ผอ. เท่านั้นที่ปั๊มกล่องความเห็นนี้ได้ — เป็นลายมือชื่อของท่าน');
+  }
+  const stepId = lastDirectorStepOf(doc.id, ctx.user);
+  if (!stepId) {
+    throw httpError(409, 'คุณยังไม่ได้สั่งการเรื่องนี้ในฐานะ ผอ. หรือผู้รักษาการแทน — กล่องความเห็นคือบันทึกการสั่งการ จึงปั๊มก่อนสั่งการไม่ได้');
+  }
+  // ปิดเรื่องแล้วยังปั๊มความเห็นตามหลัง = ไฟล์ที่เก็บเข้าแฟ้มขัดกับทะเบียนที่บอกว่าจบไปแล้ว
+  if (CLOSED_STATUSES.includes(doc.status)) {
+    throw httpError(409, 'เรื่องนี้ปิดไปแล้ว จึงปั๊มความเห็นเพิ่มไม่ได้');
+  }
+  const note = typeof ctx.body.decisionNote === 'string' ? ctx.body.decisionNote.trim() : '';
+  const marks = parseDecisionMarks(ctx.body.decisionMarks);
+  if (!note && !marks.length) throw httpError(400, 'กรุณาติ๊กอย่างน้อยหนึ่งข้อ หรือพิมพ์ความเห็นที่จะปั๊มลงหนังสือ');
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
+  assertStampTextFits({ decisionNote: note });
+  if (!stampTargetAttachment(doc.id)) {
+    throw httpError(409, 'หนังสือฉบับนี้ยังไม่มีไฟล์ PDF ให้ประทับตรา — แนบตัวหนังสือเป็นไฟล์ PDF ก่อน');
+  }
+
+  const warning = await stampDirectorDecisionIfApplicable({
+    documentId: doc.id, stepId, actorUser: ctx.user, decision: 'approve', note,
+    marks, notifyTarget: parseNotifyTarget(ctx.body.decisionNotify),
+    decisionX: parsePercent(ctx.body.decisionX), decisionY: parsePercent(ctx.body.decisionY),
   });
   json(ctx, 200, { ok: true, warning });
 }));

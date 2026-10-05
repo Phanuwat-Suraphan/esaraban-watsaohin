@@ -12044,6 +12044,112 @@ describe('ธุรการลืมติ๊กตราเสนอ ผอ. �
  * กระดาษมีฉบับเดียว — ผิดหลักงานสารบรรณ เพราะเลขทะเบียนต้องเรียงตามหนังสือที่รับจริง และเลขที่
  * ออกไปแล้วใช้ซ้ำไม่ได้ ทะเบียนจึงมีรูโหว่หนึ่งเลขทุกครั้งที่ทำผิด
  */
+/**
+ * หน้ารายละเอียดหนังสือต้องแสดงแค่สิ่งที่ต้องเห็นจริงๆ ที่เหลือพับเก็บได้
+ *
+ * วัดจริงบนมือถือ 390px ด้วยหนังสือที่เดินไปแล้วหนึ่งฉบับ: หน้านี้ยาว 3,616px (4.3 จอ) สำหรับธุรการ
+ * และ 4,086px (4.8 จอ) สำหรับ ผอ. โดย "ไม่มีกล่องไหนพับได้เลยสักกล่อง" — ทั้งที่หกกล่องที่กินที่
+ * มากที่สุดเป็นข้อมูลอ้างอิงที่เปิดดูเมื่อต้องการ ไม่ใช่สิ่งที่ต้องเห็นทุกครั้งที่เปิดหนังสือ
+ *
+ *   รายละเอียด 599px · Timeline 412px · ความคิดเห็น 343px · ประชาสัมพันธ์ 279px
+ *   เรื่องค้างอยู่ที่ใคร 278px · การตอบกลับ 216px   รวม 2,127px จาก 3,616px
+ *
+ * สิ่งที่ห้ามพับ: กล่องดำเนินการ กล่องเสนอ/มอบหมาย ไฟล์แนบ และกล่องเตือนที่ขึ้นเฉพาะตอนมีปัญหา
+ * — คนเปิดหนังสือมาเพื่อ "ทำอะไรสักอย่าง" กับมัน ถ้าสิ่งนั้นถูกพับไว้ก็เท่ากับซ่อนงานจากคนทำงาน
+ */
+describe('หน้ารายละเอียดหนังสือ: เห็นแค่ที่จำเป็น ที่เหลือพับเก็บได้', () => {
+  const pdfB64 = Buffer.from(`%PDF-1.4\n${'x'.repeat(1200)}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
+  let docId;
+  before(async () => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      direction: 'incoming', title: `หนังสือสำหรับวัดความรก ${Math.random().toString(36).slice(2, 8)}`,
+      correspondentName: 'สพป.', departmentId: deptId, allowDuplicate: true,
+      fileName: 'letter.pdf', fileType: 'application/pdf', fileDataBase64: pdfB64,
+    });
+    docId = /\/documents\/([0-9a-f-]{36})/.exec(res.body)[1];
+    assignStep({ documentId: docId, assigneeId: seed.userIds.director01, instruction: 'เพื่อโปรดพิจารณา', actorUser: registrarUser });
+  });
+
+  // ดึงเฉพาะ <details> ที่เป็นกล่องพับของหน้านี้ พร้อมดูว่าเปิดค้างไว้หรือไม่
+  const foldsOf = (body) => [...body.matchAll(/<details([^>]*\bdata-fold="([^"]+)"[^>]*)>/g)]
+    .map((m) => ({ id: m[2], open: /\bopen\b/.test(m[1]) }));
+
+  test('กล่องอ้างอิงที่กินที่มากที่สุด ต้องพับเก็บได้และพับไว้ตั้งแต่แรก', async () => {
+    const page = await dispatchGet(registrarUser, `/documents/${docId}`);
+    assert.equal(page.status, 200);
+    const folds = Object.fromEntries(foldsOf(page.body).map((f) => [f.id, f]));
+    for (const id of ['docDetail', 'docTimeline', 'docComments']) {
+      assert.ok(folds[id], `กล่อง ${id} ต้องพับเก็บได้`);
+      assert.equal(folds[id].open, false, `กล่อง ${id} ต้องพับไว้ตั้งแต่แรก ไม่ใช่กางค้าง`);
+    }
+  });
+
+  // หัวข้อตอนพับอยู่ต้องบอกสาระสำคัญให้ครบ ไม่งั้นผู้ใช้ต้องกางทุกกล่องทุกครั้ง = รกกว่าเดิม
+  test('หัวข้อของกล่องที่พับอยู่ ต้องบอกสาระสำคัญโดยไม่ต้องกาง', async () => {
+    const page = await dispatchGet(registrarUser, `/documents/${docId}`);
+    assert.match(page.body, /<summary>[^<]*รายละเอียด[\s\S]{0,400}?สพป\./,
+      'หัวข้อกล่องรายละเอียดต้องบอกหน่วยงานต้นทางให้เห็นตั้งแต่ยังไม่กาง');
+    assert.match(page.body, /<summary>[\s\S]{0,200}?Timeline[\s\S]{0,300}?ขั้นที่/,
+      'หัวข้อ Timeline ต้องบอกว่าตอนนี้อยู่ขั้นไหน');
+    assert.match(page.body, /<summary>[\s\S]{0,200}?ความคิดเห็น[\s\S]{0,120}?\(0\)/,
+      'หัวข้อความคิดเห็นต้องบอกจำนวนให้เห็นเลย');
+  });
+
+  test('สิ่งที่ต้องลงมือทำ ห้ามถูกพับซ่อน', async () => {
+    // ธุรการ: การ์ดเสนอ/มอบหมาย และไฟล์แนบ ต้องกางอยู่เสมอ
+    const reg = await dispatchGet(registrarUser, `/documents/${docId}`);
+    const regFolds = foldsOf(reg.body).map((f) => f.id);
+    for (const mustNotFold of ['docAssign', 'docAttachments', 'docAction']) {
+      assert.ok(!regFolds.includes(mustNotFold), `${mustNotFold} ห้ามเป็นกล่องพับ — เป็นงานที่ต้องทำ ไม่ใช่ข้อมูลอ้างอิง`);
+    }
+    assert.match(reg.body, /ไฟล์แนบ/, 'ไฟล์แนบต้องยังอยู่บนหน้า');
+
+    // ผู้รับงาน: การ์ดดำเนินการต้องไม่ถูกพับ
+    const step = db.prepare("SELECT id FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(docId);
+    assert.ok(step, 'ตั้งค่าเทสต์ผิดถ้าไม่มีขั้นตอนค้าง');
+    const dir = await dispatchGet(loadUserForTest(seed.userIds.director01), `/documents/${docId}`);
+    assert.match(dir.body, /ดำเนินการ \(ขั้นที่/, 'ผู้ที่ถือเรื่องอยู่ต้องเห็นการ์ดดำเนินการ');
+    const dirFold = foldsOf(dir.body).find((f) => f.id === 'docAction');
+    assert.ok(!dirFold, 'การ์ดดำเนินการห้ามถูกพับ');
+  });
+
+  // สถานะพับ/กางจำไว้ต่อเครื่อง ผู้ใช้ที่อยากเห็นรายละเอียดทุกครั้งจึงกางครั้งเดียวแล้วอยู่อย่างนั้น
+  /**
+   * หน้าแรกก็เหมือนกัน — กล่องที่ใหญ่ที่สุดของทุกบทบาทคือ "เอกสารล่าสุดในระบบ" (597px) ซึ่งเป็น
+   * รายการไว้ไล่ดูที่ซ้ำกับหน้าทะเบียนหนังสืออยู่แล้ว ไม่ใช่งานที่ต้องทำวันนี้ ส่วน "ภาพรวมสำหรับ
+   * ผู้บริหาร" (457px) เป็นตัวเลขที่ดูเป็นรอบ — ทั้งคู่พับได้ แต่ "งานของฉัน" ห้ามพับ
+   */
+  test('หน้าแรก: กล่องไว้ไล่ดูต้องพับได้ แต่กองงานที่ต้องทำห้ามพับ', async () => {
+    for (const who of [registrarUser, loadUserForTest(seed.userIds.director01),
+      loadUserForTest(seed.userIds.teacher001)]) {
+      const page = await dispatchGet(who, '/');
+      assert.equal(page.status, 200);
+      const folds = Object.fromEntries(foldsOf(page.body).map((f) => [f.id, f]));
+      assert.ok(folds.recentDocs, `${who.employee_code}: "เอกสารล่าสุดในระบบ" ต้องพับได้`);
+      assert.equal(folds.recentDocs.open, false, `${who.employee_code}: ต้องพับไว้ตั้งแต่แรก`);
+      // กองงานของตัวเองคือเหตุผลเดียวที่คนเปิดหน้าแรก ถ้าพับไว้ = ซ่อนงานจากคนทำงาน
+      assert.match(page.body, /งานของฉัน/, `${who.employee_code}: ต้องยังเห็นกองงานของตัวเอง`);
+      assert.ok(!folds.myTasks, `${who.employee_code}: กองงานของฉันห้ามถูกพับ`);
+    }
+  });
+
+  test('หน้าแรกของ ผอ.: ภาพรวมพับได้ และหัวข้อบอกตัวเลขหลักโดยไม่ต้องกาง', async () => {
+    const page = await dispatchGet(loadUserForTest(seed.userIds.director01), '/');
+    const folds = Object.fromEntries(foldsOf(page.body).map((f) => [f.id, f]));
+    assert.ok(folds.execKpi, 'ภาพรวมสำหรับผู้บริหารต้องพับได้');
+    assert.equal(folds.execKpi.open, false);
+    assert.match(page.body, /<summary>[\s\S]{0,200}?ภาพรวมสำหรับผู้บริหาร[\s\S]{0,200}?งานค้างทุกฝ่าย/,
+      'ต้องบอกจำนวนงานค้างตั้งแต่ยังไม่กาง ไม่งั้น ผอ. ต้องกางทุกครั้งอยู่ดี');
+  });
+
+  test('ทุกกล่องพับต้องมี data-fold เพื่อให้ระบบจำว่าใครชอบกางอะไรไว้', async () => {
+    const page = await dispatchGet(registrarUser, `/documents/${docId}`);
+    const withoutId = [...page.body.matchAll(/<details(?![^>]*data-fold)([^>]*)>/g)]
+      .map((m) => m[1]).filter((a) => /class="[^"]*\b(card|alert)\b/.test(a));
+    assert.deepEqual(withoutId, [], 'กล่องพับระดับการ์ดทุกอันต้องมี data-fold ไม่งั้นกางแล้วพับกลับเองทุกครั้งที่โหลดหน้า');
+  });
+});
+
 describe('เริ่มเดินเรื่องใหม่ทั้งฉบับ โดยไม่ต้องลงทะเบียนใหม่', () => {
   const pdfB64 = Buffer.from(`%PDF-1.4\n${'x'.repeat(2000)}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
   let k = 0;

@@ -181,8 +181,10 @@ router.get('/', requirePage((ctx) => {
     const chase = pendingChaseGroups(user);
 
     execKpiHtml = `
-    <div class="card">
-      <h3 class="mt-0">📊 ภาพรวมสำหรับผู้บริหาร</h3>
+    <details class="card alert-fold" data-fold="execKpi">
+      <summary>📊 ภาพรวมสำหรับผู้บริหาร <span class="text-muted" style="font-weight:400;font-size:.86rem">·
+        งานค้างทุกฝ่าย ${fmtCount(byDept.reduce((sum, r) => sum + r.pending_count, 0))} เรื่อง</span></summary>
+      <div class="alert-fold-body">
       <div class="kpi-grid" style="margin-bottom:1rem">
         ${kpi(avgDays != null ? avgDays.toFixed(1) : '-', 'เวลาเฉลี่ยจนปิดงาน (วัน)', '⏱️', 'primary')}
         ${kpi(byDept.reduce((s, r) => s + r.pending_count, 0), 'งานค้างทั้งหมดทุกฝ่าย', '📋', 'warning')}
@@ -203,7 +205,8 @@ router.get('/', requirePage((ctx) => {
           <div class="flex" style="justify-content:space-between;font-size:.85rem"><span>${esc(r.dept_name)}</span><span class="text-muted">${r.pending_count} รายการ</span></div>
           <div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden"><div style="background:var(--primary);height:100%;width:${(r.pending_count / maxCount) * 100}%"></div></div>
         </div>`).join('') : '<p class="text-muted">ไม่มีงานค้าง</p>'}
-    </div>`;
+      </div>
+    </details>`;
   }
 
   /**
@@ -464,8 +467,10 @@ router.get('/', requirePage((ctx) => {
             <td>${priorityBadge(d.priority)}</td><td>${statusBadge(d.status)}</td></tr>`).join('')}</tbody>
         </table></div>` : illustratedEmptyState('allClear', 'วันนี้ไม่มีงานค้างแล้ว พักผ่อนสบายๆ ได้เลยครับ ☕')}
       </div>
-      <div class="card">
-        <h3 class="mt-0">🕒 เอกสารล่าสุดในระบบ</h3>
+      <details class="card alert-fold" data-fold="recentDocs">
+        <summary>🕒 เอกสารล่าสุดในระบบ${recent.length
+    ? ` <span class="text-muted" style="font-weight:400;font-size:.86rem">· ${fmtCount(recent.length)} รายการ</span>` : ''}</summary>
+        <div class="alert-fold-body">
         ${/* ทั้งรายการเป็นลิงก์เดียว ไม่ใช่แค่เลขทะเบียน — เดิมพื้นที่แตะสูงแค่ 17px (วัดบนจอ iPhone จริง)
               ซึ่งต่ำกว่าเกณฑ์ของทั้ง Apple และ Google มาก และ "ชื่อเรื่อง" ซึ่งเป็นสิ่งที่คนอ่านแล้วอยากกด
               กลับไม่ใช่ลิงก์เลย ต้องเล็งไปที่ตัวเลขเล็กๆ ข้างบนแทน */ ''}
@@ -476,7 +481,8 @@ router.get('/', requirePage((ctx) => {
               <div class="text-muted" style="font-size:.82rem">${esc(d.title)}</div>
             </a>
           </div>`).join('') : illustratedEmptyState('emptyInbox', 'ยังไม่มีเอกสารในระบบ เริ่มต้นสร้างรายการแรกได้เลยครับ')}
-      </div>
+        </div>
+      </details>
     </div>
 
     <!-- คำชวนติดตั้งลงมือถือ อยู่ "ท้ายหน้า" และพับไว้ โดยตั้งใจ

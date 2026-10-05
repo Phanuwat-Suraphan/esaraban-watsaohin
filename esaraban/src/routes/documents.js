@@ -1963,8 +1963,10 @@ router.get('/documents/:id', requirePage((ctx) => {
     </div>`;
 
   const broadcastBox = showBroadcastBox ? `
-    <div class="card">
-      <h3 class="mt-0">📢 ประชาสัมพันธ์ให้ทุกคนอ่าน</h3>
+    <details class="card alert-fold" data-fold="docBroadcast">
+      <summary>📢 ประชาสัมพันธ์ให้ทุกคนอ่าน${broadcasts.length
+    ? ` <span class="text-muted" style="font-weight:400;font-size:.86rem">· ส่งแล้ว ${fmtCount(broadcasts.length)} ครั้ง</span>` : ''}</summary>
+      <div class="alert-fold-body">
       ${broadcasts.length ? `
         <div class="alert alert-success" style="font-size:.85rem">
           ประชาสัมพันธ์แล้ว ${broadcasts.length > 1 ? `${broadcasts.length} ครั้ง ล่าสุด` : ''}
@@ -2007,7 +2009,8 @@ router.get('/documents/:id', requirePage((ctx) => {
               .catch(function(e){ toast(e.message, 'danger'); window.restoreBtn(btn); });
           }
         </script>`}
-    </div>` : '';
+      </div>
+    </details>` : '';
 
   // หนังสือค้างอยู่กับคนที่ปิดบัญชีไปแล้ว (ครูย้ายโรงเรียน/ลาออก) — เดิมไม่มีทางออกจากหน้าเว็บเลย
   // ไม่ว่าจะเป็นแอดมินหรือธุรการผู้บันทึก และหน้าเว็บก็ไม่บอกด้วยว่าทำไมเรื่องไม่เดิน
@@ -2527,11 +2530,11 @@ router.get('/documents/:id', requirePage((ctx) => {
   const replies = doc.direction === 'incoming' ? repliesOf(doc.id) : [];
   const replyTarget = replyTargetOf(doc);
   const replyCard = doc.direction === 'incoming' ? `
-        <div class="card" id="replyCard">
-          <div class="card-header"><h3 class="mt-0">📤 การตอบกลับ</h3>
-            ${replies.length
-              ? `<span class="badge badge-success">ตอบแล้ว ${fmtCount(replies.length)} ฉบับ</span>`
-              : (doc.needs_reply ? '<span class="badge badge-warning">ต้องตอบ — ยังไม่ได้ตอบ</span>' : '')}</div>
+        <details class="card alert-fold" id="replyCard" data-fold="docReply">
+          <summary>📤 การตอบกลับ ${replies.length
+    ? `<span class="badge badge-success">ตอบแล้ว ${fmtCount(replies.length)} ฉบับ</span>`
+    : (doc.needs_reply ? '<span class="badge badge-warning">ต้องตอบ — ยังไม่ได้ตอบ</span>' : '')}</summary>
+          <div class="alert-fold-body">
           ${replies.length ? `<div>${replies.map((r) => `<div style="padding:.35rem 0;border-bottom:1px solid var(--border)">
             📄 ${rowLink(`/documents/${r.id}`, `<strong>${esc(r.doc_number_display)}</strong> ${esc(r.title)}`)}
             <div class="text-muted" style="font-size:.8rem">
@@ -2560,7 +2563,8 @@ router.get('/documents/:id', requirePage((ctx) => {
                 .catch(function (e) { window.toast(e.message, 'danger'); box.checked = !box.checked; box.disabled = false; });
             };
           </script>` : ''}
-        </div>` : `
+          </div>
+        </details>` : `
         <div class="card" id="replyCard">
           <div class="card-header"><h3 class="mt-0">↩️ หนังสือฉบับนี้ตอบเรื่องอะไร</h3>
             ${replyTarget ? '<span class="badge badge-info">เป็นหนังสือตอบ</span>' : ''}</div>
@@ -2717,10 +2721,11 @@ router.get('/documents/:id', requirePage((ctx) => {
          และครูที่ยังไม่ได้ผูกไลน์ส่วนตัวก็ยังได้รับผ่านกลุ่มด้วย
          ใช้ waitingSteps (ทุกคนที่ค้าง) ไม่ใช่ขั้นบนสุดขั้นเดียว เพราะ ผอ. สั่งการถึงหลายคนพร้อมกันได้
          ถ้าตามแค่คนเดียว อีกสามคนก็ไม่มีใครไปบอก -->
-    ${waitingSteps.length ? `<div class="alert alert-warning">
-      <p style="margin:0 0 .35rem"><strong>⏳ ตอนนี้เรื่องค้างอยู่ที่ ${
+    ${waitingSteps.length ? `<details class="alert alert-warning alert-fold" data-fold="docPending">
+      <summary>⏳ ตอนนี้เรื่องค้างอยู่ที่ ${
         waitingSteps.map((s) => esc(signerIdentity(s).name)).join(', ')
-      }</strong></p>
+      }</summary>
+      <div class="alert-fold-body">
       <!-- "ยังไม่ได้เปิดอ่าน" กับ "เปิดอ่านแล้วแต่ยังไม่ได้ทำ" ต้องตามคนละแบบ — อย่างแรกคือแจ้งซ้ำ
            ให้รู้ตัว อย่างหลังคือถามว่าติดอะไร เดิมระบบไม่แยกให้ ธุรการจึงทวงด้วยข้อความเดียวกันหมด -->
       <div style="font-size:.85rem;margin-bottom:.6rem">
@@ -2741,12 +2746,18 @@ router.get('/documents/:id', requirePage((ctx) => {
         copyLabel: '📋 คัดลอกข้อความแจ้งเตือน',
         title: 'คัดลอกข้อความตามเรื่องไปวางในช่องทางที่ใช้ส่งให้ครู',
       })}
-    </div>` : ''}
+      </div>
+    </details>` : ''}
 
     <div class="grid-2 doc-detail-grid">
       <div class="doc-main">
-        <div class="card">
-          <h3>รายละเอียด</h3>
+        <!-- ข้อมูลอ้างอิงที่เปิดดูเมื่อต้องการ ไม่ใช่สิ่งที่ต้องเห็นทุกครั้งที่เปิดหนังสือ — วัดได้ 599px
+             จากหน้าที่ยาว 3,616px หัวข้อจึงต้องหอบสองค่าที่ต้องรู้ก่อนตัดสินใจติดไปด้วย
+             (หน่วยงานต้นทาง และกำหนดเสร็จ) ไม่งั้นผู้ใช้ต้องกางทุกครั้งอยู่ดี = รกกว่าเดิม -->
+        <details class="card alert-fold" data-fold="docDetail">
+          <summary>รายละเอียด <span class="text-muted" style="font-weight:400;font-size:.86rem">·
+            ${esc(doc.correspondent_name || '')}${doc.due_date ? ` · กำหนดเสร็จ ${esc(fmtThaiDateShort(doc.due_date))}` : ''}</span></summary>
+          <div class="alert-fold-body">
           <table class="table-plain" style="min-width:0">
             <tbody>
               <tr><td class="text-muted">${doc.direction === 'incoming' ? 'หน่วยงานต้นทาง' : 'หน่วยงานปลายทาง'}</td><td>${esc(doc.correspondent_name)}</td></tr>
@@ -2797,7 +2808,8 @@ router.get('/documents/:id', requirePage((ctx) => {
           ${doc.subject ? `<p style="margin-top:.75rem"><strong>สาระสำคัญ:</strong><br/>${esc(doc.subject).replace(/\n/g, '<br/>')}</p>` : ''}
           ${doc.void_reason ? `<div class="alert alert-danger">ยกเลิกแล้ว: ${esc(doc.void_reason)}</div>` : ''}
           ${doc.status === 'destroyed' ? `<div class="alert alert-danger">🗄️ ทำลายแล้วตามมติคณะกรรมการทำลายหนังสือ เมื่อ ${fmtDate(doc.destroyed_at)} (ไฟล์แนบถูกลบออกจากระบบถาวร รายการทะเบียน/เลขที่ยังคงอยู่เป็นหลักฐาน)</div>` : ''}
-        </div>
+          </div>
+        </details>
 
         ${dispatchCard}
 
@@ -3160,8 +3172,9 @@ router.get('/documents/:id', requirePage((ctx) => {
           </p>`}
         </div>
 
-        <div class="card">
-          <h3>ความคิดเห็น</h3>
+        <details class="card alert-fold" data-fold="docComments">
+          <summary>ความคิดเห็น (${fmtCount(comments.length)})</summary>
+          <div class="alert-fold-body">
           <div class="stack">
             ${comments.map((c) => `<div style="padding:.5rem;background:var(--surface-2);border-radius:8px">
               <strong>${esc(c.first_name)} ${esc(c.last_name)}</strong> <span class="text-muted" style="font-size:.76rem">${fmtDate(c.created_at)}</span>
@@ -3180,7 +3193,8 @@ router.get('/documents/:id', requirePage((ctx) => {
                 .then(() => location.reload());
             });
           </script>
-        </div>
+          </div>
+        </details>
       </div>
 
       <div class="doc-side">
@@ -3191,10 +3205,11 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${lateRegistrarBox}
         ${lateDirectorBox}
         ${broadcastBox}
-        <div class="card">
-          <h3>Timeline การเดินหนังสือ</h3>
-          ${timelineHtml}
-        </div>
+        <details class="card alert-fold" data-fold="docTimeline">
+          <summary>Timeline การเดินหนังสือ <span class="text-muted" style="font-weight:400;font-size:.86rem">·
+            ${steps.length ? `ขั้นที่ ${fmtCount(Math.max(...steps.map((s) => s.step_order)))} จาก ${fmtCount(steps.length)} รายการ` : 'ยังไม่มีการมอบหมาย'}</span></summary>
+          <div class="alert-fold-body">${timelineHtml}</div>
+        </details>
       </div>
     </div>`;
 

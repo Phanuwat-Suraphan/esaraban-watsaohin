@@ -1121,7 +1121,48 @@ export function voidDocument({ documentId, reason, actorUser }) {
     throw httpError(409, 'ห้ามลบ/ยกเลิกหนังสือที่อยู่ระหว่างดำเนินการ (Business Rule) — เลขที่ออกไปแล้วต้องคงอยู่ในลำดับเสมอ');
   }
   db.prepare(`UPDATE documents SET status = 'voided', void_reason = ?, updated_at = ? WHERE id = ?`).run(reason, nowIso(), documentId);
-  audit({ userId: actorUser.id, action: 'document_voided', tableName: 'documents', recordId: documentId, detail: { reason } });
+  // เก็บสถานะก่อนยกเลิกไว้ด้วย เพื่อให้กู้กลับไปที่เดิมได้จริง ไม่ใช่เดาเอา (ดู unvoidDocument)
+  audit({ userId: actorUser.id, action: 'document_voided', tableName: 'documents', recordId: documentId, detail: { reason, previousStatus: doc.status } });
+}
+
+/**
+ * กู้หนังสือที่ยกเลิกไว้กลับมาใช้งาน — ปุ่มคู่ของการยกเลิก
+ *
+ * ทำไมต้องมี: ปุ่ม "ยกเลิกเอกสาร" อยู่ในแถวเดียวกับปุ่มพิมพ์/แชร์ และไม่มี PIN กั้น กดผิดฉบับเกิดได้
+ * ง่ายมาก พอกดแล้วหนังสือฉบับนั้นถูกแช่แข็งถาวร — เสนอต่อไม่ได้ ใช้ปุ่มเริ่มเดินเรื่องใหม่ก็ไม่ได้
+ * ทางออกเดียวคือลงทะเบียนใหม่ ซึ่งกินเลขทะเบียนเพิ่มอีกหนึ่งเลขทั้งที่หนังสือกระดาษมีฉบับเดียว
+ *
+ * การยกเลิกไม่ได้ทำลายอะไรเลย (เปลี่ยนสถานะกับเก็บเหตุผลเท่านั้น ไฟล์และขั้นตอนอยู่ครบ) การกู้กลับ
+ * จึงเป็นการย้อนที่สะอาดจริงๆ ต่างจาก "ทำลายตามมติ" ซึ่งลบไฟล์ออกจากระบบไปแล้ว กู้สถานะกลับมา
+ * ก็ได้แค่หนังสือเปล่าที่ไม่มีไฟล์ จึงกันไว้
+ */
+export function unvoidDocument({ documentId, reason, actorUser }) {
+  const doc = getDocument(documentId);
+  if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  assertCanManageDocument(doc, actorUser, 'กู้เอกสารที่ยกเลิกไว้');
+  if (doc.status !== 'voided') {
+    throw httpError(409, 'หนังสือฉบับนี้ไม่ได้อยู่ในสถานะยกเลิก จึงไม่มีอะไรให้กู้กลับ');
+  }
+  reason = asTextOrNull(reason);
+  if (!reason) throw httpError(400, 'กรุณาระบุเหตุผลที่กู้กลับมา — บันทึกไว้ในประวัติเพื่อให้ตรวจสอบย้อนหลังได้');
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผลที่กู้กลับ');
+
+  // กลับไปที่สถานะก่อนถูกยกเลิก ถ้าไม่มีบันทึกไว้ (ยกเลิกก่อนมีฟีเจอร์นี้) ให้เป็น registered
+  // ซึ่งถูกเสมอในทางปฏิบัติ เพราะ voidDocument อนุญาตให้ยกเลิกได้จาก draft/registered เท่านั้น
+  const lastVoid = db.prepare(
+    "SELECT detail FROM audit_logs WHERE action = 'document_voided' AND record_id = ? ORDER BY created_at DESC LIMIT 1",
+  ).get(documentId);
+  let back = 'registered';
+  try { back = JSON.parse(lastVoid?.detail || '{}').previousStatus || 'registered'; } catch { back = 'registered'; }
+  if (!['draft', 'registered'].includes(back)) back = 'registered';
+
+  db.prepare('UPDATE documents SET status = ?, void_reason = NULL, updated_at = ? WHERE id = ?')
+    .run(back, nowIso(), documentId);
+  audit({
+    userId: actorUser.id, action: 'document_unvoided', tableName: 'documents', recordId: documentId,
+    detail: { reason, previousVoidReason: doc.void_reason || null, restoredTo: back },
+  });
+  return { status: back };
 }
 
 // ลบเอกสารถาวรโดยแอดมิน — ต่างจาก voidDocument ตรงที่ไม่จำกัดสถานะ (ใช้เก็บกวาดเอกสาร

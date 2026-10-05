@@ -12150,6 +12150,108 @@ describe('หน้ารายละเอียดหนังสือ: เ�
   });
 });
 
+/**
+ * กดยกเลิกผิดฉบับ — ต้องกู้กลับมาได้ ไม่ใช่เผาเลขทะเบียนทิ้งไปหนึ่งเลข
+ *
+ * วัดจริง: ธุรการกดปุ่ม "ยกเลิกเอกสาร" บนแถวที่ผิด (ปุ่มอยู่ในแถวเดียวกับปุ่มพิมพ์/แชร์ ไม่มี PIN กั้น)
+ * ผลคือหนังสือฉบับนั้นถูกแช่แข็งถาวร — เสนอต่อไม่ได้ (409) ใช้ปุ่มเริ่มเดินเรื่องใหม่ก็ไม่ได้ (409)
+ * ไม่มีเส้นทาง unvoid และไม่มีปุ่มไหนบนหน้าเลย ทางออกเดียวคือลงทะเบียนใหม่ = กินเลขเพิ่มอีกหนึ่งเลข
+ * ซึ่งเป็นต้นทุนเดียวกับที่ปุ่ม "เริ่มเดินเรื่องใหม่" เพิ่งถูกทำขึ้นมาเพื่อกำจัด
+ *
+ * การยกเลิกไม่ได้ทำลายอะไรเลย (แค่เปลี่ยนสถานะกับเก็บเหตุผล ไฟล์อยู่ครบ) การกู้กลับจึงเป็นการย้อน
+ * ที่สะอาดจริงๆ ไม่ใช่การเดาสภาพเดิม
+ */
+describe('กดยกเลิกผิดฉบับ: กู้กลับมาใช้งานได้ โดยเลขทะเบียนเดิม', () => {
+  const voidedDoc = async (over = {}) => {
+    const doc = makeDoc({ title: `หนังสือที่เผลอกดยกเลิก ${Math.random().toString(36).slice(2, 8)}`, ...over });
+    const res = await dispatchPost(registrarUser, `/documents/${doc.id}/void`, { reason: 'กดผิดฉบับ' });
+    assert.equal(res.status, 200, res.body);
+    assert.equal(db.prepare('SELECT status FROM documents WHERE id = ?').get(doc.id).status, 'voided');
+    return doc;
+  };
+  const statusOf = (id) => db.prepare('SELECT status, void_reason FROM documents WHERE id = ?').get(id);
+
+  test('กู้กลับมาแล้วใช้งานต่อได้ทันที และเลขทะเบียนยังเป็นเลขเดิม', async () => {
+    const doc = await voidedDoc();
+    const before = db.prepare('SELECT doc_number_display, running_number FROM documents WHERE id = ?').get(doc.id);
+
+    const res = await dispatchPost(registrarUser, `/documents/${doc.id}/unvoid`, { reason: 'ยกเลิกผิดฉบับ' });
+    assert.equal(res.status, 200, res.body);
+
+    const after = statusOf(doc.id);
+    assert.equal(after.status, 'registered', 'ต้องกลับมาอยู่สถานะพร้อมใช้งาน');
+    assert.equal(after.void_reason, null, 'เหตุผลการยกเลิกต้องถูกล้าง ไม่งั้นหน้าเอกสารยังขึ้นว่ายกเลิกแล้ว');
+    const num = db.prepare('SELECT doc_number_display, running_number FROM documents WHERE id = ?').get(doc.id);
+    assert.deepEqual(num, before, 'เลขทะเบียนต้องไม่เปลี่ยน — ทั้งหมดของเรื่องนี้คือไม่ต้องกินเลขใหม่');
+
+    // กู้แล้วต้องเดินเรื่องต่อได้จริง ไม่ใช่แค่เปลี่ยนตัวอักษรในคอลัมน์สถานะ
+    assert.doesNotThrow(() => assignStep({
+      documentId: doc.id, assigneeId: seed.userIds.director01, instruction: 'เสนอ', actorUser: registrarUser,
+    }), 'กู้แล้วต้องเสนอต่อได้');
+  });
+
+  test('ต้องบันทึกไว้ในประวัติว่าใครกู้กลับ เพราะอะไร', async () => {
+    const doc = await voidedDoc();
+    await dispatchPost(registrarUser, `/documents/${doc.id}/unvoid`, { reason: 'ที่จริงต้องยกเลิกอีกฉบับ' });
+    const row = db.prepare(
+      "SELECT user_id, detail FROM audit_logs WHERE action = 'document_unvoided' AND record_id = ? ORDER BY created_at DESC LIMIT 1",
+    ).get(doc.id);
+    assert.ok(row, 'ต้องมีรายการในประวัติ');
+    assert.equal(row.user_id, registrarUser.id);
+    const detail = JSON.parse(row.detail);
+    assert.equal(detail.reason, 'ที่จริงต้องยกเลิกอีกฉบับ');
+    assert.equal(detail.previousVoidReason, 'กดผิดฉบับ', 'ต้องเก็บเหตุผลเดิมไว้ด้วย ไม่งั้นหลักฐานขาดช่วง');
+  });
+
+  test('หน้าเอกสารที่ถูกยกเลิก ต้องมีปุ่มกู้กลับให้เห็น', async () => {
+    const doc = await voidedDoc();
+    const page = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+    assert.equal(page.status, 200);
+    assert.match(page.body, /id="unvoidBtn"/, 'ต้องมีปุ่มกู้กลับ');
+    assert.match(page.body, /กดผิดฉบับ/, 'และต้องบอกด้วยว่าถูกยกเลิกเพราะอะไร');
+
+    // กู้แล้วปุ่มต้องหายไป ไม่ใช่ค้างอยู่ให้กดซ้ำ
+    await dispatchPost(registrarUser, `/documents/${doc.id}/unvoid`, { reason: 'กู้' });
+    const after = await dispatchGet(registrarUser, `/documents/${doc.id}`);
+    assert.ok(!after.body.includes('id="unvoidBtn"'), 'กู้แล้วต้องไม่เหลือปุ่มกู้ค้างอยู่');
+  });
+
+  describe('ด่านฝั่งเซิร์ฟเวอร์', () => {
+    test('ครูกู้เองไม่ได้ — สิทธิ์เดียวกับคนที่กดยกเลิกได้', async () => {
+      const doc = await voidedDoc();
+      const res = await dispatchPost(loadUserForTest(seed.userIds.teacher001),
+        `/documents/${doc.id}/unvoid`, { reason: 'อยากกู้' });
+      assert.equal(res.status, 403);
+      assert.equal(statusOf(doc.id).status, 'voided', 'ถูกปฏิเสธแล้วต้องไม่เปลี่ยนอะไร');
+    });
+
+    test('ไม่ระบุเหตุผล ต้องถูกปฏิเสธ', async () => {
+      const doc = await voidedDoc();
+      const res = await dispatchPost(registrarUser, `/documents/${doc.id}/unvoid`, { reason: '  ' });
+      assert.equal(res.status, 400);
+      assert.match(res.body, /เหตุผล/);
+      assert.equal(statusOf(doc.id).status, 'voided');
+    });
+
+    test('หนังสือที่ไม่ได้ถูกยกเลิก กู้ไม่ได้ (กันกดมั่วเปลี่ยนสถานะเรื่องที่กำลังเดินอยู่)', async () => {
+      const doc = makeDoc({ title: `หนังสือปกติไม่ได้ยกเลิก ${Math.random().toString(36).slice(2, 8)}` });
+      db.prepare("UPDATE documents SET status = 'in_progress' WHERE id = ?").run(doc.id);
+      const res = await dispatchPost(registrarUser, `/documents/${doc.id}/unvoid`, { reason: 'ลอง' });
+      assert.equal(res.status, 409);
+      assert.equal(db.prepare('SELECT status FROM documents WHERE id = ?').get(doc.id).status, 'in_progress',
+        'สถานะเดิมต้องไม่ถูกแตะ');
+    });
+
+    // ทำลายแล้วคือไฟล์ถูกลบออกจากระบบจริงตามมติคณะกรรมการ กู้สถานะกลับมาก็ได้หนังสือเปล่าที่ไม่มีไฟล์
+    test('หนังสือที่ถูกทำลายตามมติแล้ว กู้ด้วยปุ่มนี้ไม่ได้', async () => {
+      const doc = makeDoc({ title: `หนังสือที่ทำลายแล้ว ${Math.random().toString(36).slice(2, 8)}` });
+      db.prepare("UPDATE documents SET status = 'destroyed' WHERE id = ?").run(doc.id);
+      const res = await dispatchPost(registrarUser, `/documents/${doc.id}/unvoid`, { reason: 'ขอคืน' });
+      assert.equal(res.status, 409);
+    });
+  });
+});
+
 describe('เริ่มเดินเรื่องใหม่ทั้งฉบับ โดยไม่ต้องลงทะเบียนใหม่', () => {
   const pdfB64 = Buffer.from(`%PDF-1.4\n${'x'.repeat(2000)}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
   let k = 0;

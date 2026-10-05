@@ -6,7 +6,7 @@ import {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS,
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, groupStepsByOrder, currentStep, currentStepFor,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
-  voidDocument, archiveDocument, forceDeleteDocument, resetDocumentWorkflow, assertCanResetWorkflow,
+  voidDocument, unvoidDocument, archiveDocument, forceDeleteDocument, resetDocumentWorkflow, assertCanResetWorkflow,
   httpError, assertStepBelongsToDocument,
   isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep, markStepOpened, assignStepsBulk,
   adminReassignStep, adminAddAssignees, adminRemoveAssignee, MAX_PARALLEL_ASSIGNEES,
@@ -1718,6 +1718,8 @@ router.get('/documents/:id', requirePage((ctx) => {
   const canRoute = canRouteDocument(ctx.user, doc);
   const canAssign = ['registered', 'returned'].includes(doc.status) && canRoute;
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
+  // คู่ของ canVoid — ใครกดยกเลิกได้ ก็ต้องกู้กลับได้ ไม่งั้นคนที่กดผิดก็แก้เองไม่ได้อยู่ดี
+  const canUnvoid = doc.status === 'voided' && isCreatorOrAdmin;
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
   const canForceDelete = ctx.user.roleCodes.includes('admin');
   /**
@@ -2721,6 +2723,19 @@ router.get('/documents/:id', requirePage((ctx) => {
          และครูที่ยังไม่ได้ผูกไลน์ส่วนตัวก็ยังได้รับผ่านกลุ่มด้วย
          ใช้ waitingSteps (ทุกคนที่ค้าง) ไม่ใช่ขั้นบนสุดขั้นเดียว เพราะ ผอ. สั่งการถึงหลายคนพร้อมกันได้
          ถ้าตามแค่คนเดียว อีกสามคนก็ไม่มีใครไปบอก -->
+    ${doc.status === 'voided' ? `<div class="alert alert-danger">
+      <strong>🚫 หนังสือฉบับนี้ถูกยกเลิกไว้</strong>
+      <div style="margin-top:.3rem;font-size:.9rem">
+        ${doc.void_reason ? `เหตุผล: ${esc(doc.void_reason)}<br/>` : ''}
+        ตอนนี้เสนอต่อหรือดำเนินการอะไรกับหนังสือฉบับนี้ไม่ได้เลย
+        — <strong>เลขทะเบียน ${esc(doc.doc_number_display)} ยังเป็นของฉบับนี้อยู่</strong> ไม่ถูกนำไปใช้ซ้ำ
+        ${canUnvoid ? '<br/>ถ้ากดยกเลิกผิดฉบับ กู้กลับมาใช้งานได้เลย ไม่ต้องลงทะเบียนใหม่ให้เปลืองเลข' : ''}
+      </div>
+      ${canUnvoid ? `<button class="btn btn-primary btn-sm" id="unvoidBtn" style="margin-top:.6rem"
+        onclick="actionWithReason(this, '/documents/${doc.id}/unvoid', 'ระบุเหตุผลที่กู้หนังสือฉบับนี้กลับมา (บันทึกไว้ในประวัติ)')"
+        >↩️ กู้กลับมาใช้งาน</button>` : ''}
+    </div>` : ''}
+
     ${waitingSteps.length ? `<details class="alert alert-warning alert-fold" data-fold="docPending">
       <summary>⏳ ตอนนี้เรื่องค้างอยู่ที่ ${
         waitingSteps.map((s) => esc(signerIdentity(s).name)).join(', ')
@@ -2806,7 +2821,6 @@ router.get('/documents/:id', requirePage((ctx) => {
             };
           </script>` : ''}
           ${doc.subject ? `<p style="margin-top:.75rem"><strong>สาระสำคัญ:</strong><br/>${esc(doc.subject).replace(/\n/g, '<br/>')}</p>` : ''}
-          ${doc.void_reason ? `<div class="alert alert-danger">ยกเลิกแล้ว: ${esc(doc.void_reason)}</div>` : ''}
           ${doc.status === 'destroyed' ? `<div class="alert alert-danger">🗄️ ทำลายแล้วตามมติคณะกรรมการทำลายหนังสือ เมื่อ ${fmtDate(doc.destroyed_at)} (ไฟล์แนบถูกลบออกจากระบบถาวร รายการทะเบียน/เลขที่ยังคงอยู่เป็นหลักฐาน)</div>` : ''}
           </div>
         </details>
@@ -3536,6 +3550,13 @@ router.post('/documents/:id/reset-workflow', requireApi(async (ctx) => {
   if (!verifyPin(ctx.user.id, ctx.body.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   const cleared = await resetDocumentWorkflow({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
   json(ctx, 200, { ok: true, cleared });
+}));
+
+// คู่ของ /void — ดูเหตุผลเต็มที่ unvoidDocument ไม่บังคับ PIN เพราะเป็นการ "คืนสภาพ" ไม่ใช่การทำลาย
+// (ตัวการยกเลิกเองก็ไม่บังคับ PIN) แต่บังคับเหตุผลเสมอเพื่อให้ประวัติอ่านแล้วเข้าใจว่าเกิดอะไรขึ้น
+router.post('/documents/:id/unvoid', requireApi(async (ctx) => {
+  const r = unvoidDocument({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
+  json(ctx, 200, { ok: true, ...r });
 }));
 
 router.post('/documents/:id/force-delete', requireApi(async (ctx) => {

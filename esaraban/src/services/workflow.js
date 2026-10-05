@@ -1155,6 +1155,101 @@ export async function forceDeleteDocument({ documentId, reason, actorUser }) {
   audit({ userId: actorUser.id, action: 'document_force_deleted', tableName: 'documents', recordId: documentId, detail: { reason, docNumberDisplay: doc.doc_number_display, previousStatus: doc.status } });
 }
 
+/**
+ * ล้างการเดินเรื่องทั้งหมดของหนังสือฉบับนี้ แล้วเริ่มใหม่จากขั้นแรก — โดยไม่ลงทะเบียนใหม่
+ *
+ * ทำไมต้องมี: เมื่อเรื่องเดินผิดมาตั้งแต่ต้น (เสนอผิดคน ปั๊มผิดตรา ผอ. สั่งผิดเรื่อง ครูกดรับทราบ
+ * ไปแล้ว) ทางเดียวที่เคยมีคือลงทะเบียนหนังสือใหม่ทั้งฉบับ ซึ่ง "กินเลขทะเบียนเพิ่มอีกหนึ่งเลข"
+ * ทั้งที่หนังสือกระดาษมีฉบับเดียว — ผิดหลักงานสารบรรณ เพราะเลขทะเบียนต้องเรียงตามหนังสือที่รับจริง
+ * และเลขที่ออกไปแล้วใช้ซ้ำไม่ได้ ทะเบียนจึงมีรูโหว่หนึ่งเลขทุกครั้งที่ทำผิด
+ *
+ * สิ่งที่ "ไม่แตะ" โดยตั้งใจ:
+ *  - ตัวหนังสือและเลขทะเบียน (นั่นคือทั้งหมดของฟีเจอร์นี้)
+ *  - ไฟล์แนบต้นฉบับที่สแกนมา — ล้างเฉพาะ "สำเนาที่ประทับตราแล้ว" ให้กลับไปเป็นไฟล์เปล่าพร้อมปั๊มใหม่
+ *  - audit log — เป็นบันทึกว่าใครสั่งล้างเมื่อไหร่ ห้ามหายไปพร้อมกับของที่ถูกล้าง
+ *  - รายการในบัญชีทำลายเอกสาร (destruction_batch_items) ซึ่งเป็นมติของคณะกรรมการ ไม่ใช่การเดินเรื่อง
+ */
+export function assertCanResetWorkflow(documentId, actorUser) {
+  const doc = getDocument(documentId);
+  if (!doc) throw httpError(404, 'ไม่พบเอกสาร');
+  assertCanRouteDocument(doc, actorUser, 'สั่งเริ่มเดินเรื่องใหม่');
+  // ยกเลิก/ทำลายแล้วคือสถานะปลายทางตามระเบียบ ปลุกกลับมาเดินเรื่องใหม่ไม่ได้
+  if (['voided', 'destroyed'].includes(doc.status)) {
+    throw httpError(409, 'หนังสือที่ยกเลิกหรือทำลายไปแล้ว เริ่มเดินเรื่องใหม่ไม่ได้');
+  }
+  // อยู่ในบัญชีขอทำลายที่คณะกรรมการกำลังพิจารณา — ล้างสถานะตอนนี้จะทำให้บัญชีนั้นอ้างถึงของที่เปลี่ยนไป
+  const inBatch = db.prepare(`
+    SELECT 1 x FROM destruction_batch_items bi JOIN destruction_batches b ON b.id = bi.batch_id
+    WHERE bi.document_id = ? AND b.status != 'rejected'
+  `).get(documentId);
+  if (inBatch) throw httpError(409, 'หนังสือฉบับนี้อยู่ในบัญชีขอทำลายเอกสาร — นำออกจากบัญชีก่อนจึงจะเริ่มใหม่ได้');
+  return doc;
+}
+
+export async function resetDocumentWorkflow({ documentId, reason, actorUser }) {
+  // ตรวจสิทธิ์ก่อนเสมอ แล้วค่อยตรวจค่าที่กรอกมา — คนที่ไม่มีสิทธิ์ต้องได้ 403 ไม่ใช่ถูกถามเรื่อง
+  // รูปแบบข้อมูลก่อนแล้วค่อยรู้ทีหลังว่าทำไม่ได้อยู่ดี (และเส้นทางฝั่ง route ก็ตรวจก่อนถาม PIN ด้วย)
+  const doc = assertCanResetWorkflow(documentId, actorUser);
+  reason = asTextOrNull(reason);
+  if (!reason) throw httpError(400, 'กรุณาระบุเหตุผลที่ต้องเริ่มเดินเรื่องใหม่ — บันทึกไว้ในประวัติเพื่อให้ตรวจสอบย้อนหลังได้');
+  assertMaxLength(reason, MAX_STEP_TEXT, 'เหตุผลที่เริ่มใหม่');
+
+  // เก็บสภาพเดิมไว้ลง audit ก่อนล้าง — หลังล้างแล้วไม่มีทางรู้ได้อีกว่าเคยเดินไปถึงไหน
+  const before = {
+    status: doc.status,
+    steps: db.prepare('SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ?').get(documentId).c,
+    comments: db.prepare('SELECT COUNT(*) c FROM comments WHERE document_id = ?').get(documentId).c,
+    stamped: db.prepare('SELECT COUNT(*) c FROM attachments WHERE document_id = ? AND stamped_at IS NOT NULL').get(documentId).c,
+  };
+
+  // ลบสำเนาที่ประทับตราแล้วออกจากที่เก็บจริงก่อน แล้วค่อยล้างคอลัมน์ — ลบไม่สำเร็จไม่ควรทำให้การ
+  // เริ่มใหม่ล้มเหลวทั้งก้อน (เหลือไฟล์ค้างบน Drive อย่างมาก ซึ่งตัวเก็บกวาดไฟล์ไร้เจ้าของจัดการได้)
+  const stampedRows = db.prepare(`
+    SELECT id, stamped_storage_provider, stamped_drive_file_id, stamped_drive_account_id, stamped_filepath
+    FROM attachments WHERE document_id = ? AND stamped_at IS NOT NULL
+  `).all(documentId);
+  for (const att of stampedRows) {
+    try {
+      if (att.stamped_storage_provider === 'google_drive' && att.stamped_drive_file_id) {
+        const { driveTokenFor } = await import('./driveAccounts.js');
+        await deleteDriveFile(att.stamped_drive_file_id, driveTokenFor(att.stamped_drive_account_id));
+      } else if (att.stamped_filepath) {
+        fs.rmSync(path.join(UPLOAD_DIR, att.stamped_filepath), { force: true });
+      }
+    } catch (e) {
+      audit({ userId: actorUser.id, action: 'reset_stamped_cleanup_failed', tableName: 'attachments', recordId: att.id, detail: { error: e.message } });
+    }
+  }
+
+  // ทั้งก้อนต้องสำเร็จหรือไม่เกิดอะไรเลย — ล้างขั้นตอนไปแล้วแต่สถานะยังค้างเป็น in_progress
+  // จะกลายเป็นหนังสือที่เสนอใหม่ไม่ได้และไม่มีใครถืออยู่ คือค้างถาวรแบบไม่มีทางออก
+  // (node:sqlite ไม่มี db.transaction() แบบ better-sqlite3 ต้องสั่ง BEGIN/COMMIT เอง)
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('DELETE FROM workflow_steps WHERE document_id = ?').run(documentId);
+    db.prepare('DELETE FROM comments WHERE document_id = ?').run(documentId);
+    db.prepare('DELETE FROM notifications WHERE document_id = ?').run(documentId);
+    db.prepare('DELETE FROM document_broadcasts WHERE document_id = ?').run(documentId);
+    db.prepare('DELETE FROM document_access_grants WHERE document_id = ?').run(documentId);
+    // ไฟล์ต้นฉบับอยู่ครบ ล้างเฉพาะร่องรอยการประทับ เพื่อให้ปั๊มใหม่ได้ตั้งแต่ตราแรก
+    db.prepare(`UPDATE attachments SET stamped_storage_provider = NULL, stamped_filepath = NULL,
+      stamped_drive_file_id = NULL, stamped_drive_account_id = NULL, stamped_at = NULL,
+      stamp_failed_at = NULL, stamp_failed_reason = NULL, stamp_retry_json = NULL
+      WHERE document_id = ?`).run(documentId);
+    db.prepare(`UPDATE documents SET status = 'registered', updated_at = ? WHERE id = ?`).run(nowIso(), documentId);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  audit({
+    userId: actorUser.id, action: 'document_workflow_reset', tableName: 'documents', recordId: documentId,
+    detail: { reason, docNumberDisplay: doc.doc_number_display, cleared: before },
+  });
+  return before;
+}
+
 export function archiveDocument({ documentId, actorUser }) {
   const doc = getDocument(documentId);
   if (!doc) throw httpError(404, 'ไม่พบเอกสาร');

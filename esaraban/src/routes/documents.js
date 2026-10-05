@@ -6,7 +6,8 @@ import {
   createDocument, createDocumentsBulk, MAX_BULK_DOCUMENTS,
   getDocument, canUserSeeDocument, visibleDocumentsSqlFilter, getWorkflowSteps, groupStepsByOrder, currentStep, currentStepFor,
   assignStep, approveAndForward, acknowledgeAndComplete, rejectStep, returnStep,
-  voidDocument, archiveDocument, forceDeleteDocument, httpError, assertStepBelongsToDocument,
+  voidDocument, archiveDocument, forceDeleteDocument, resetDocumentWorkflow, assertCanResetWorkflow,
+  httpError, assertStepBelongsToDocument,
   isSignedStep, signerIdentity, inactiveStepHolder, reassignStuckStep, markStepOpened, assignStepsBulk,
   adminReassignStep, adminAddAssignees, adminRemoveAssignee, MAX_PARALLEL_ASSIGNEES,
   broadcastDocument, listBroadcasts, canBroadcast, canRouteDocument,
@@ -1719,6 +1720,13 @@ router.get('/documents/:id', requirePage((ctx) => {
   const canVoid = ['draft', 'registered'].includes(doc.status) && isCreatorOrAdmin;
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
   const canForceDelete = ctx.user.roleCodes.includes('admin');
+  /**
+   * เริ่มเดินเรื่องใหม่ทั้งฉบับ — สำหรับเรื่องที่ทำผิดมาตั้งแต่ขั้นแรก
+   *
+   * ขึ้นเฉพาะตอนที่ "มีอะไรให้ล้างจริง" (เดินไปแล้วอย่างน้อยหนึ่งขั้น) ถ้ายังไม่ได้เสนอใครเลย
+   * การ์ดเสนอก็ยังอยู่ให้แก้ได้ตามปกติ ไม่ต้องมีปุ่มนี้มาชวนให้กดเล่น
+   */
+  const canResetWorkflow = canRoute && !['voided', 'destroyed'].includes(doc.status) && steps.length > 0;
 
   const stepsInSameOrder = {};
   for (const s of steps) stepsInSameOrder[s.step_order] = (stepsInSameOrder[s.step_order] || 0) + 1;
@@ -2663,9 +2671,34 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${canVoid ? `<button class="btn btn-outline btn-sm" onclick="actionWithReason(this, '/documents/${doc.id}/void', 'ระบุเหตุผลที่ยกเลิกเอกสาร (เลขที่จะยังคงอยู่ในลำดับ ไม่ถูกนำไปใช้ซ้ำ)')">ยกเลิกเอกสาร</button>` : ''}
         ${canArchive ? `<button class="btn btn-outline btn-sm" onclick="fetch('/documents/${doc.id}/archive',{method:'POST'}).then(()=>location.reload())">📦 จัดเก็บเข้าแฟ้ม</button>` : ''}
         ${canForceDelete ? `<a class="btn btn-outline btn-sm" href="/admin/audit?document=${esc(doc.id)}">🧾 ประวัติการดำเนินการ (audit)</a>` : ''}
+        ${canResetWorkflow ? `<button class="btn btn-outline btn-sm" id="resetWorkflowBtn"
+          style="color:var(--danger);border-color:var(--danger)"
+          onclick="resetThisWorkflow(this)">♻️ เริ่มเดินเรื่องใหม่ทั้งฉบับ</button>` : ''}
         ${canForceDelete ? `<button class="btn btn-danger btn-sm" onclick="forceDeleteThisDoc(this)">🗑️ ลบเอกสาร (แอดมิน)</button>` : ''}
       </div>
     </div>
+    ${canResetWorkflow ? `<script>
+      // ย้อนกลับไม่ได้ จึงต้องบอกให้ครบทั้งสิ่งที่หายและสิ่งที่อยู่ครบ ก่อนถามเหตุผลและ PIN
+      async function resetThisWorkflow(btn){
+        if (!confirm('เริ่มเดินเรื่องใหม่ทั้งฉบับ?\\n\\nสิ่งที่จะถูกลบ (ย้อนกลับไม่ได้):\\n' +
+          '· ขั้นตอนการเดินหนังสือทั้งหมด\\n· ความเห็นและบันทึกในเรื่องนี้\\n' +
+          '· ตราประทับทุกดวงบนไฟล์ PDF (กลับไปเป็นไฟล์ที่สแกนมา)\\n\\n' +
+          'สิ่งที่ยังอยู่ครบ:\\n· เลขทะเบียนรับเดิม (ไม่ต้องลงทะเบียนใหม่)\\n· ไฟล์ต้นฉบับที่สแกนมา\\n· ประวัติการทำงาน (audit)')) return;
+        var reason = prompt('ระบุเหตุผลที่ต้องเริ่มใหม่ (บันทึกไว้ในประวัติ เพื่อให้ตรวจสอบย้อนหลังได้)');
+        if (reason === null) return;
+        if (!reason.trim()) { window.toast('กรุณาระบุเหตุผล', 'warning'); return; }
+        var pin = await window.askPin('ยืนยัน PIN เพื่อล้างการเดินเรื่องทั้งหมด');
+        if (!pin) return;
+        window.setBtnLoading(btn, 'กำลังล้าง...');
+        try {
+          var data = await window.postJson('/documents/${doc.id}/reset-workflow', { reason: reason.trim(), pin: pin });
+          var c = data.cleared || {};
+          window.toast('ล้างเรียบร้อย — ลบขั้นตอน ' + (c.steps || 0) + ' ขั้น ความเห็น ' + (c.comments || 0) +
+            ' รายการ และตราบนไฟล์ ' + (c.stamped || 0) + ' ไฟล์ เริ่มเสนอใหม่ได้เลย', 'success');
+          setTimeout(function () { location.reload(); }, 1200);
+        } catch (e) { window.restoreBtn(btn); window.toast(e.message, 'danger'); }
+      }
+    </script>` : ''}
     ${canForceDelete ? `<script>
       function forceDeleteThisDoc(btn){
         var reason = prompt('สำหรับผู้ดูแลระบบเท่านั้น: ระบุเหตุผลที่ลบเอกสารนี้ถาวร (ใช้กับเอกสารที่ผิดพลาด/ค้างจากบั๊กเท่านั้น เอกสารจริงควรใช้ปุ่มยกเลิก/ทำลายตามขั้นตอนปกติแทน)');
@@ -3472,6 +3505,22 @@ router.post('/documents/:id/workflow/add-assignees', requireApi(async (ctx) => {
 router.post('/documents/:id/void', requireApi(async (ctx) => {
   voidDocument({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
+}));
+
+/**
+ * ล้างการเดินเรื่องทั้งหมดแล้วเริ่มใหม่ — โดยไม่ลงทะเบียนหนังสือใหม่
+ *
+ * บังคับ PIN เพราะย้อนกลับไม่ได้: ขั้นตอน ความเห็น และสำเนาที่ประทับตราแล้วถูกลบจริง
+ * (ไฟล์ต้นฉบับที่สแกนมายังอยู่ครบ — ดู resetDocumentWorkflow)
+ */
+router.post('/documents/:id/reset-workflow', requireApi(async (ctx) => {
+  // ตรวจสิทธิ์ก่อนถาม PIN — คนที่ไม่มีสิทธิ์ต้องได้ 403 ตรงๆ ไม่ใช่ถูกบอกว่า "PIN ไม่ถูกต้อง"
+  // ซึ่งทำให้เขาไปนั่งหา PIN ที่ถูกทั้งที่กดยังไงก็ไม่ได้อยู่ดี
+  assertCanResetWorkflow(ctx.params.id, ctx.user);
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
+  const cleared = await resetDocumentWorkflow({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
+  json(ctx, 200, { ok: true, cleared });
 }));
 
 router.post('/documents/:id/force-delete', requireApi(async (ctx) => {

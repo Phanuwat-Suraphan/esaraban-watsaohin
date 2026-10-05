@@ -12037,6 +12037,176 @@ describe('ธุรการลืมติ๊กตราเสนอ ผอ. �
   });
 });
 
+/**
+ * เรื่องที่เดินผิดมาตั้งแต่ขั้นแรก — ต้องล้างแล้วเริ่มใหม่ได้ โดยไม่กินเลขทะเบียนเพิ่ม
+ *
+ * ทางเดียวที่เคยมีคือลงทะเบียนหนังสือใหม่ทั้งฉบับ ซึ่งกินเลขทะเบียนเพิ่มอีกหนึ่งเลขทั้งที่หนังสือ
+ * กระดาษมีฉบับเดียว — ผิดหลักงานสารบรรณ เพราะเลขทะเบียนต้องเรียงตามหนังสือที่รับจริง และเลขที่
+ * ออกไปแล้วใช้ซ้ำไม่ได้ ทะเบียนจึงมีรูโหว่หนึ่งเลขทุกครั้งที่ทำผิด
+ */
+describe('เริ่มเดินเรื่องใหม่ทั้งฉบับ โดยไม่ต้องลงทะเบียนใหม่', () => {
+  const pdfB64 = Buffer.from(`%PDF-1.4\n${'x'.repeat(2000)}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
+  let k = 0;
+
+  // เดินเรื่องผิดจนครบทุกขั้น: ลงรับ+แนบไฟล์ → เสนอ ผอ. → ผอ. สั่งการต่อให้ครู → มีความเห็นค้างไว้
+  const messedUpDoc = async () => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      direction: 'incoming', title: `เรื่องที่เดินผิดทุกขั้น ${++k} ${Math.random().toString(36).slice(2, 8)}`,
+      correspondentName: 'สพป.', departmentId: deptId, allowDuplicate: true,
+      fileName: 'letter.pdf', fileType: 'application/pdf', fileDataBase64: pdfB64,
+    });
+    assert.equal(res.status, 201, res.body);
+    const id = /\/documents\/([0-9a-f-]{36})/.exec(res.body)[1];
+    assignStep({ documentId: id, assigneeId: seed.userIds.director01, instruction: 'เสนอผิดคน', actorUser: registrarUser });
+    const step = db.prepare("SELECT id FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(id);
+    const approved = await dispatchPost(loadUserForTest(seed.userIds.director01),
+      `/documents/${id}/workflow/${step.id}/approve`, {
+        pin: userPin('director01'), nextAssigneeIds: [seed.userIds.teacher001],
+        decisionMarks: ['ทราบ'], comment: 'สั่งผิดเรื่อง',
+      });
+    assert.equal(approved.status, 200, approved.body);
+    // จำลองว่ามีตราประทับลงไฟล์ไปแล้ว (เครื่องที่รันเทสต์ประทับจริงไม่ได้)
+    const att = db.prepare('SELECT id FROM attachments WHERE document_id = ?').get(id);
+    db.prepare(`UPDATE attachments SET stamped_storage_provider = 'local', stamped_filepath = ?, stamped_at = ? WHERE id = ?`)
+      .run(`${att.id}-stamped.pdf`, nowIso(), att.id);
+    return { id, attId: att.id };
+  };
+  const countIn = (table, id) => db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE document_id = ?`).get(id).c;
+
+  test('ล้างแล้วเริ่มใหม่ได้ โดยเลขทะเบียนและไฟล์ต้นฉบับยังอยู่ครบ', async () => {
+    const { id, attId } = await messedUpDoc();
+    const before = db.prepare('SELECT doc_number_display, running_number, created_at FROM documents WHERE id = ?').get(id);
+    const origFile = db.prepare('SELECT filepath, drive_file_id, hash_sha256 FROM attachments WHERE id = ?').get(attId);
+    assert.ok(countIn('workflow_steps', id) > 0, 'ตั้งค่าเทสต์ผิดถ้ายังไม่มีขั้นตอน');
+
+    const res = await dispatchPost(registrarUser, `/documents/${id}/reset-workflow`, {
+      pin: userPin('reg001'), reason: 'เสนอผิดคนตั้งแต่ขั้นแรก',
+    });
+    assert.equal(res.status, 200, res.body);
+
+    // หัวใจของเรื่อง — เลขทะเบียนต้องเป็นเลขเดิม ไม่ใช่ออกเลขใหม่
+    const after = db.prepare('SELECT doc_number_display, running_number, created_at, status FROM documents WHERE id = ?').get(id);
+    assert.equal(after.doc_number_display, before.doc_number_display, 'เลขทะเบียนต้องเป็นเลขเดิม');
+    assert.equal(after.running_number, before.running_number);
+    assert.equal(after.created_at, before.created_at, 'วันที่ลงรับต้องไม่เปลี่ยน');
+    assert.equal(after.status, 'registered', 'ต้องกลับไปอยู่สถานะพร้อมเสนอใหม่');
+
+    assert.equal(countIn('workflow_steps', id), 0, 'ขั้นตอนเดิมต้องถูกล้างหมด');
+    assert.equal(countIn('comments', id), 0, 'ความเห็นเดิมต้องถูกล้าง');
+
+    // ไฟล์ต้นฉบับที่สแกนมาต้องอยู่ครบ ล้างเฉพาะร่องรอยการประทับ
+    const file = db.prepare('SELECT * FROM attachments WHERE id = ?').get(attId);
+    assert.equal(file.filepath, origFile.filepath, 'ไฟล์ต้นฉบับห้ามหาย');
+    assert.equal(file.hash_sha256, origFile.hash_sha256);
+    assert.equal(file.stamped_at, null, 'ตราบนไฟล์ต้องถูกล้างให้ปั๊มใหม่ได้');
+    assert.equal(file.stamped_filepath, null);
+    assert.equal(file.stamp_retry_json, null, 'ตราที่ค้างรอประทับใหม่ก็ต้องถูกล้าง ไม่ให้ไปโผล่ตอนเริ่มใหม่');
+  });
+
+  test('ล้างแล้วเสนอใหม่ได้ทันที และได้เลขเดิม ไม่ใช่เลขใหม่', async () => {
+    const { id } = await messedUpDoc();
+    const numbersBefore = db.prepare('SELECT COUNT(*) c FROM documents').get().c;
+    await dispatchPost(registrarUser, `/documents/${id}/reset-workflow`, {
+      pin: userPin('reg001'), reason: 'ทำผิดทุกขั้น',
+    });
+    assert.equal(db.prepare('SELECT COUNT(*) c FROM documents').get().c, numbersBefore,
+      'ต้องไม่มีหนังสือใบใหม่เกิดขึ้น = ไม่กินเลขทะเบียนเพิ่ม');
+
+    assert.doesNotThrow(() => assignStep({
+      documentId: id, assigneeId: seed.userIds.director01, instruction: 'เสนอใหม่ให้ถูกคน', actorUser: registrarUser,
+    }), 'ล้างแล้วต้องเสนอใหม่ได้เลย');
+    assert.equal(countIn('workflow_steps', id), 1, 'ขั้นตอนใหม่ต้องเริ่มนับหนึ่งใหม่');
+  });
+
+  test('ประวัติการทำงาน (audit) ต้องไม่ถูกล้างไปด้วย และต้องจดว่าล้างอะไรไปบ้าง', async () => {
+    const { id } = await messedUpDoc();
+    const auditBefore = db.prepare('SELECT COUNT(*) c FROM audit_logs WHERE record_id = ?').get(id).c;
+    await dispatchPost(registrarUser, `/documents/${id}/reset-workflow`, {
+      pin: userPin('reg001'), reason: 'ปั๊มผิดตราตั้งแต่แรก',
+    });
+    assert.ok(db.prepare('SELECT COUNT(*) c FROM audit_logs WHERE record_id = ?').get(id).c > auditBefore,
+      'audit ต้องเพิ่มขึ้น ไม่ใช่ถูกล้างไปพร้อมกับของที่ล้าง');
+    const row = db.prepare(
+      "SELECT detail FROM audit_logs WHERE action = 'document_workflow_reset' AND record_id = ? ORDER BY created_at DESC LIMIT 1").get(id);
+    assert.ok(row, 'ต้องมีรายการว่าใครสั่งล้างเมื่อไหร่');
+    const detail = JSON.parse(row.detail);
+    assert.equal(detail.reason, 'ปั๊มผิดตราตั้งแต่แรก', 'ต้องเก็บเหตุผลไว้ให้ตรวจย้อนหลังได้');
+    assert.ok(detail.cleared.steps > 0, 'ต้องจดว่าล้างขั้นตอนไปกี่ขั้น');
+  });
+
+  describe('ด่านฝั่งเซิร์ฟเวอร์', () => {
+    test('ครูกดล้างเองไม่ได้', async () => {
+      const { id } = await messedUpDoc();
+      const res = await dispatchPost(loadUserForTest(seed.userIds.teacher001), `/documents/${id}/reset-workflow`, {
+        pin: userPin('teacher001'), reason: 'อยากล้าง',
+      });
+      assert.equal(res.status, 403);
+      assert.ok(countIn('workflow_steps', id) > 0, 'ถูกปฏิเสธแล้วต้องไม่ล้างอะไรเลย');
+    });
+
+    test('PIN ผิด หรือไม่ระบุเหตุผล ต้องถูกปฏิเสธและไม่ล้างอะไร', async () => {
+      const { id } = await messedUpDoc();
+      const steps = countIn('workflow_steps', id);
+      const badPin = await dispatchPost(registrarUser, `/documents/${id}/reset-workflow`, { pin: '000000', reason: 'x' });
+      assert.equal(badPin.status, 401);
+      const noReason = await dispatchPost(registrarUser, `/documents/${id}/reset-workflow`, {
+        pin: userPin('reg001'), reason: '   ',
+      });
+      assert.equal(noReason.status, 400);
+      assert.match(noReason.body, /เหตุผล/);
+      assert.equal(countIn('workflow_steps', id), steps, 'ทั้งสองกรณีต้องไม่ล้างอะไรเลย');
+    });
+
+    test('หนังสือที่ยกเลิก/ทำลายไปแล้ว ปลุกกลับมาเดินเรื่องใหม่ไม่ได้', async () => {
+      for (const status of ['voided', 'destroyed']) {
+        const { id } = await messedUpDoc();
+        db.prepare('UPDATE documents SET status = ? WHERE id = ?').run(status, id);
+        const res = await dispatchPost(registrarUser, `/documents/${id}/reset-workflow`, {
+          pin: userPin('reg001'), reason: 'ขอเริ่มใหม่',
+        });
+        assert.equal(res.status, 409, `${status} ต้องถูกปฏิเสธ`);
+      }
+    });
+
+    // บัญชีขอทำลายคือมติของคณะกรรมการ ไม่ใช่การเดินเรื่อง — ล้างสถานะตอนนี้จะทำให้บัญชีนั้น
+    // อ้างถึงหนังสือที่เปลี่ยนสภาพไปแล้วโดยที่คณะกรรมการไม่รู้
+    test('หนังสือที่อยู่ในบัญชีขอทำลาย ต้องเอาออกจากบัญชีก่อน', async () => {
+      const { id } = await messedUpDoc();
+      const batchId = uuid();
+      db.prepare(`INSERT INTO destruction_batches (id, committee_names, status, created_by, created_at)
+        VALUES (?, 'กรรมการ ก, กรรมการ ข, กรรมการ ค', 'pending_approval', ?, ?)`)
+        .run(batchId, registrarUser.id, nowIso());
+      db.prepare('INSERT INTO destruction_batch_items (id, batch_id, document_id) VALUES (?, ?, ?)')
+        .run(uuid(), batchId, id);
+      const res = await dispatchPost(registrarUser, `/documents/${id}/reset-workflow`, {
+        pin: userPin('reg001'), reason: 'ขอเริ่มใหม่',
+      });
+      assert.equal(res.status, 409, res.body);
+      assert.match(res.body, /บัญชีขอทำลาย/);
+      assert.ok(countIn('workflow_steps', id) > 0, 'ต้องไม่ล้างอะไรเลย');
+    });
+
+    test('ยังไม่ได้เสนอใครเลย ไม่ต้องมีปุ่มนี้ — การ์ดเสนอยังแก้ได้ตามปกติ', async () => {
+      const res = await dispatchPost(registrarUser, '/documents', {
+        direction: 'incoming', title: `ยังไม่ได้เสนอใคร ${++k} ${Math.random().toString(36).slice(2, 8)}`,
+        correspondentName: 'สพป.', departmentId: deptId, allowDuplicate: true,
+        fileName: 'letter.pdf', fileType: 'application/pdf', fileDataBase64: pdfB64,
+      });
+      const id = /\/documents\/([0-9a-f-]{36})/.exec(res.body)[1];
+      const page = await dispatchGet(registrarUser, `/documents/${id}`);
+      assert.ok(!page.body.includes('resetWorkflowBtn'), 'ยังไม่มีอะไรให้ล้าง ไม่ต้องชวนให้กด');
+    });
+
+    test('ธุรการเห็นปุ่มบนหน้าเอกสารที่เดินไปแล้ว', async () => {
+      const { id } = await messedUpDoc();
+      const page = await dispatchGet(registrarUser, `/documents/${id}`);
+      assert.match(page.body, /id="resetWorkflowBtn"/);
+      const teacher = await dispatchGet(loadUserForTest(seed.userIds.teacher001), `/documents/${id}`);
+      assert.ok(!teacher.body.includes('resetWorkflowBtn'), 'ครูไม่ต้องเห็นปุ่มนี้');
+    });
+  });
+});
+
 describe('ประทับลงไฟล์ไม่สำเร็จ ต้องเตือนค้างไว้ ไม่ใช่เตือนแวบเดียว', () => {
   const attachmentOf = (documentId) =>
     db.prepare('SELECT * FROM attachments WHERE document_id = ?').get(documentId);

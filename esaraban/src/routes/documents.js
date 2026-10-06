@@ -2386,8 +2386,14 @@ router.get('/documents/:id', requirePage((ctx) => {
         เคยกดปั๊มไว้แล้วแต่เขียนลงไฟล์ไม่สำเร็จ — ระบบเก็บข้อความที่จะปั๊มไว้ให้แล้ว
         <strong>ให้กด "ประทับใหม่อีกครั้ง" ที่การ์ดไฟล์แนบ</strong> ไม่ต้องกรอกใหม่ที่นี่
         (กรอกใหม่จะได้ความเห็นซ้ำสองชุดบนหนังสือฉบับเดียว)
-      </div>` : registrarStampCount ? `<div class="help-text" style="margin-top:-.3rem">
-        ปั๊มลงไฟล์ไปแล้ว ${fmtCount(registrarStampCount)} ครั้ง — ปั๊มเพิ่มได้ ระบบจะวางกล่องใหม่เหนือกล่องเดิมไม่ให้ทับกัน
+      </div>` : registrarStampCount ? `<div class="alert alert-warning" style="margin-top:.2rem">
+        <strong>ปั๊มลงไฟล์ไปแล้ว ${fmtCount(registrarStampCount)} ครั้ง</strong>
+        <div style="margin-top:.3rem;font-size:.9rem">
+          ปั๊มซ้ำได้ แต่กล่องใหม่จะ<strong>วางทับกล่องเดิม</strong>ที่มุมซ้ายล่าง เพราะที่ว่างบนหนังสือราชการ
+          มีอยู่แค่แถบล่างเท่านั้น (เลื่อนขึ้นไปวางที่อื่นจะไปทับเนื้อความ ซึ่งทำให้อ่านหนังสือไม่ได้)
+          <br/>ถ้าปั๊มผิดและอยากได้หนังสือสะอาด ให้กด <strong>♻️ เริ่มเดินเรื่องใหม่ทั้งฉบับ</strong>
+          ที่แถบปุ่มด้านบน เพื่อล้างตราทุกดวงแล้วปั๊มใหม่ — เลขทะเบียนเดิม ไม่ต้องลงทะเบียนใหม่
+        </div>
       </div>` : `<div class="alert alert-warning" id="lateRegistrarWarn" style="margin-top:.2rem">
         <strong>เสนอขึ้นไปแล้วแต่ยังไม่ได้ปั๊มตรานี้</strong>
         <div style="margin-top:.3rem;font-size:.9rem">
@@ -3853,16 +3859,23 @@ function canWriteRegistrarComment(stepId, actorUser) {
   return stepId ? directorTitleMode(stepId, actorUser) === 'generic' : true;
 }
 
-// ธุรการเขียนความเห็นบนหนังสือฉบับเดิมได้มากกว่าหนึ่งครั้ง (เช่น เสนอไปแล้ว ผอ. ส่งกลับแก้ไข แล้วเสนอใหม่)
-// ถ้าไม่ขยับตำแหน่ง ความเห็นรอบที่สองจะทับรอบแรกเป๊ะๆ จนอ่านไม่ออกทั้งคู่ — เลื่อนขึ้นทีละกล่องเหมือน
-// กรอบตราปั๊ม ผอ. โดยระยะต้องมากกว่าความสูงกล่อง (~160pt ≈ 19% ของหน้า) ไม่งั้นรอบที่ 2 ยังทับรอบแรก
-const REGISTRAR_BOX_STEP_Y = 20;
-const REGISTRAR_BOX_MIN_Y = 4;
-function registrarBoxYPercent(attachmentId) {
-  const { c } = db.prepare(`
-    SELECT COUNT(*) as c FROM audit_logs WHERE action = 'attachment_registrar_stamped' AND record_id = ?
-  `).get(attachmentId);
-  return Math.max(REGISTRAR_BOX_MIN_Y, DECISION_MAX_TOP_PERCENT - c * REGISTRAR_BOX_STEP_Y);
+/**
+ * ตำแหน่งขอบบนของกล่องความเห็นธุรการ — อยู่ที่แถบล่างของหน้าเสมอ ไม่ว่าจะปั๊มกี่ครั้ง
+ *
+ * เดิมเลื่อนขึ้นทีละ 20% ต่อหนึ่งครั้งที่เคยปั๊ม เพื่อไม่ให้กล่องรอบที่สองทับรอบแรก แต่ผู้ใช้ส่งภาพ
+ * หนังสือจริงมาว่ากล่องไปจอดกลางเนื้อความ — เพราะ "ที่ว่างบนกระดาษ" ของหนังสือราชการมีอยู่แค่
+ * แถบล่างเท่านั้น (บนคือหัวหนังสือ กลางคือเนื้อความ ขวาล่างคือกรอบตรา ผอ.) การเลื่อนขึ้นจึงพาไป
+ * จอดบนตัวหนังสือเสมอ:  ครั้งที่ 2 ได้ 52% · ครั้งที่ 3 ได้ 32%
+ *
+ * ชั่งน้ำหนักแล้วเลือกให้ทับกันเองดีกว่า: สองกล่องที่ทับกันยังอ่านออกว่ามีการเสนอสองรอบ และยังเห็น
+ * ข้อความบางส่วน แต่กล่องที่ทับ "ตัวหนังสือราชการ" ทำให้อ่านเนื้อความไม่ได้ หนังสือฉบับนั้นใช้
+ * อ้างอิงไม่ได้อีกเลย ซึ่งเป็นความเสียหายคนละระดับกัน
+ *
+ * ทางออกที่สะอาดจริงสำหรับคนที่ปั๊มผิดคือปุ่ม "เริ่มเดินเรื่องใหม่ทั้งฉบับ" ซึ่งล้างตราทุกดวงแล้ว
+ * คืนไฟล์เป็นสแกนต้นฉบับให้ปั๊มใหม่ — การ์ดปั๊มตามหลังจึงต้องบอกทางนี้ไว้ด้วย
+ */
+function registrarBoxYPercent() {
+  return DECISION_MAX_TOP_PERCENT;
 }
 
 async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser, comment, registrarMarks, registrarUnit, registrarX, registrarY, skipComment = false }) {
@@ -3904,7 +3917,7 @@ async function stampRegistrarCommentIfApplicable({ documentId, stepId, actorUser
       notifyUnit: unit,
       comment: text,
       xPercent: registrarX,
-      yPercent: registrarY ?? registrarBoxYPercent(att.id),
+      yPercent: registrarY ?? registrarBoxYPercent(),
     });
     await saveStampedCopy(att, stampedBuffer, getDocument(documentId)?.year_be);
     audit({ userId: actorUser.id, action: 'attachment_registrar_stamped', tableName: 'attachments', recordId: att.id, detail: { documentId, marks, unit, comment: text } });

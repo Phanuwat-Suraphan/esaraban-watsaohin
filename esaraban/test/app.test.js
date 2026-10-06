@@ -6670,6 +6670,53 @@ describe('ทะเบียนหนังสือส่ง: ออกเล�
       setSet('outgoing_number_prefix', '');
     });
 
+    // ตอนเพิ่งติดตั้งระบบ เลขที่ "ออกไปแล้ว" หลายตัวคือฉบับทดลองที่ไม่เคยพิมพ์ลงกระดาษจริง พอลบออกแล้ว
+    // ต้องดึงตัวนับกลับได้ ไม่งั้นโรงเรียนติดอยู่กับเลขที่กระโดดข้ามไปหลายเลขตั้งแต่ฉบับแรกของจริง
+    test('ดึงเลขถัดไปถอยกลับได้หลังลบฉบับทดลองออก แต่ต้องยืนยันก่อน', async () => {
+      setFloor(null, null);
+      setSet('outgoing_number_prefix', '');
+      // ออกไปสามฉบับ แล้วลบสองฉบับหลังทิ้ง (จำลองฉบับทดลองตอนเพิ่งติดตั้ง)
+      const keep = await issue((await ask(teacher(), { title: `ฉบับจริงที่เก็บไว้ ${++n}` })).json.id);
+      const junk = [];
+      for (let i = 0; i < 2; i++) junk.push(await issue((await ask(teacher(), { title: `ฉบับทดลอง ${++n}` })).json.id));
+      const keepRunning = getDocRow(keep.json.documentId).running_number;
+
+      const save = (body) => dispatchPost(registrar(), '/outgoing-requests/numbering',
+        { outgoing_number_start: String(keepRunning), outgoing_number_start_year: String(beYear()), ...body });
+
+      // ยังไม่ได้ลบ — ต้องปฏิเสธและบอกเลขที่ขวางอยู่ ไม่ใช่ยอมให้ออกเลขทับหนังสือที่ยังอยู่
+      const blocked = await save({});
+      assert.equal(blocked.status, 409, blocked.body);
+      assert.match(blocked.json.error, /ยังมีหนังสือในทะเบียนที่ใช้เลขถึง/);
+      assert.ok(!blocked.json.confirmRetry, 'กรณีนี้ยืนยันแล้วก็ยังไม่ควรให้ผ่าน ต้องไปลบก่อน');
+
+      for (const j of junk) {
+        assert.equal((await dispatchPost(registrar(), `/documents/${j.json.documentId}/force-delete`,
+          { pin: userPin('reg001'), reason: 'ฉบับทดลองตอนติดตั้ง' })).status, 200);
+      }
+
+      // ลบแล้ว — ยังต้องถามยืนยันก่อน ไม่ใช่ดึงกลับเงียบๆ
+      const ask1 = await save({});
+      assert.equal(ask1.status, 409, ask1.body);
+      assert.ok(ask1.json.confirmRetry, 'ต้องถามยืนยันก่อนดึงตัวนับกลับ');
+      assert.match(ask1.json.confirmRetry.message, new RegExp(`ได้เลข ${keepRunning + 1}`),
+        'ต้องบอกให้ชัดว่ายืนยันแล้วฉบับถัดไปจะได้เลขอะไร');
+
+      const done = await save({ rewindCounter: true });
+      assert.equal(done.status, 200, done.body);
+      assert.equal(done.json.rewound, true);
+      assert.equal(getDocRow((await issue((await ask(teacher(), { title: `ฉบับถัดไปหลังดึงกลับ ${++n}` })).json.id))
+        .json.documentId).running_number, keepRunning + 1, 'ฉบับถัดไปต้องได้เลขถัดจากฉบับจริงที่เก็บไว้');
+
+      // การดึงตัวนับทะเบียนราชการกลับต้องมีบันทึกไว้เสมอว่าใครทำและดึงไปที่เลขไหน
+      const log = db.prepare(`SELECT user_id, detail FROM audit_logs
+        WHERE action = 'outgoing_counter_rewound' ORDER BY created_at DESC LIMIT 1`).get();
+      assert.ok(log, 'ต้องบันทึกการดึงตัวนับกลับไว้');
+      assert.equal(log.user_id, seed.userIds.reg001);
+      assert.equal(JSON.parse(log.detail).next, keepRunning + 1);
+      setFloor(null, null);
+    });
+
     test('ครูตั้งรูปแบบเลขเองไม่ได้ และเลขที่ไม่มีปีกำกับต้องถูกปฏิเสธ', async () => {
       const bad = await dispatchPost(teacher(), '/outgoing-requests/numbering', { outgoing_number_prefix: 'ศธ 99999.99' });
       assert.equal(bad.status, 403, bad.body);
@@ -6838,6 +6885,37 @@ describe('ทะเบียนหนังสือส่ง: ออกเล�
         'ครูพิมพ์มาผิด', 'ใบคำขอต้องยังเก็บของเดิมที่ครูกรอกไว้');
     });
 
+    // เกิดขึ้นจริงที่โรงเรียน: หนังสือสองฉบับได้ ศธ 04047.109/206 เหมือนกันโดยไม่มีอะไรเตือนสักคำ
+    // createDocument คำนวณคำเตือนเลขซ้ำไว้ให้อยู่แล้ว แต่เส้นทางออกเลขไม่เคยอ่านค่านั้นออกมาส่งต่อ
+    test('ธุรการพิมพ์เลขที่ซ้ำกับฉบับอื่น ต้องถามยืนยันก่อน ไม่ใช่ปล่อยผ่านเงียบๆ', async () => {
+      const first = await ask(teacher());
+      const issuedFirst = await issue(first.json.id);
+      const taken = issuedFirst.json.docNumberDisplay;
+
+      const second = await ask(teacher());
+      const clash = await issue(second.json.id, { customDocNumber: taken });
+      assert.equal(clash.status, 409, `เลขซ้ำต้องถูกกันไว้ก่อน — ได้ ${clash.status} ${clash.body}`);
+      assert.ok(clash.json.confirmRetry, 'ต้องบอกหน้าเว็บว่าให้ถามยืนยันแล้วส่งมาใหม่ได้');
+      assert.match(clash.json.confirmRetry.message, /ลบเลขในช่อง/,
+        'ต้องบอกทางออกที่ถูกต้องด้วย คือเว้นช่องว่างให้ระบบออกเลขเอง');
+      // ปฏิเสธแล้วต้องไม่กินเลขทะเบียน และใบคำขอต้องยังรออยู่ ไม่ค้างครึ่งๆ กลางๆ
+      assert.equal(db.prepare('SELECT status FROM outgoing_number_requests WHERE id = ?').get(second.json.id).status,
+        'pending', 'ถูกปฏิเสธแล้วใบคำขอต้องยังรออยู่');
+
+      // ยืนยันแล้วต้องออกให้ได้ (ลงเลขซ้ำให้ตรงกับเล่มกระดาษที่เคยลงซ้ำไว้เป็นเรื่องที่เกิดขึ้นจริง)
+      const forced = await issue(second.json.id, { customDocNumber: taken, allowDuplicate: true });
+      assert.equal(forced.status, 200, forced.body);
+      assert.equal(forced.json.docNumberDisplay, taken);
+    });
+
+    test('เลขที่ระบบออกให้เองต้องไม่ติดด่านเลขซ้ำ แม้ออกติดกันหลายฉบับ', async () => {
+      const a = await issue((await ask(teacher())).json.id);
+      const b = await issue((await ask(teacher())).json.id);
+      assert.equal(a.status, 200, a.body);
+      assert.equal(b.status, 200, b.body);
+      assert.notEqual(a.json.docNumberDisplay, b.json.docNumberDisplay, 'เลขที่ระบบออกให้ต้องไม่ซ้ำกันเอง');
+    });
+
     test('ช่องที่ไม่ได้ส่งมาต้องใช้ของที่ครูกรอก ส่วนส่งค่าว่างมา = ตั้งใจล้างช่องนั้น', async () => {
       const res = await ask(teacher(), { fromName: 'ฝ่ายวิชาการ', actionNote: 'เพื่อโปรดทราบ' });
       const issued = await issue(res.json.id, { actionNote: '' });
@@ -6867,6 +6945,54 @@ describe('ทะเบียนหนังสือส่ง: ออกเล�
       assert.ok(fields.external_doc_date, 'ต้องบันทึกว่าช่องวันที่ถูกแก้');
       assert.equal(fields.external_doc_date.after, '2026-08-08');
       assert.ok(!fields.from_name, 'ช่องที่ไม่ได้แก้ต้องไม่ถูกบันทึกว่าแก้');
+    });
+  });
+
+  // ───────── ธุรการเก็บกวาดทะเบียนของตัวเองได้ ─────────
+  // เดิมลบเอกสารได้เฉพาะผู้ดูแลระบบ ทำให้ฉบับทดลองตอนเพิ่งติดตั้ง/ฉบับที่กดซ้ำ ค้างอยู่ในทะเบียนจนกว่า
+  // จะไปตามผู้ดูแลมาลบให้ทีละฉบับ — ทั้งที่ฉบับพวกนั้นเกิดบนหน้าจอของธุรการเอง
+  describe('ธุรการลบเอกสารออกจากทะเบียนได้', () => {
+    const del = (id, body) => dispatchPost(registrar(), `/documents/${id}/force-delete`, body);
+    const liveDoc = (id) => db.prepare('SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL').get(id);
+
+    test('ธุรการลบได้เมื่อใส่ PIN และเหตุผลครบ ครูลบไม่ได้', async () => {
+      const issued = await issue((await ask(teacher(), { title: `ฉบับทดลองที่ต้องลบ ${++n}` })).json.id);
+      const id = issued.json.documentId;
+
+      for (const [label, who, body, expect] of [
+        ['ครูลบเอง', teacher, { pin: userPin('teacher001'), reason: 'อยากลบ' }, 403],
+        ['ครูลบโดยไม่ใส่ PIN', teacher, { reason: 'อยากลบ' }, 403],
+        ['ธุรการไม่ใส่ PIN', registrar, { reason: 'ฉบับทดลอง' }, 401],
+        ['ธุรการ PIN ผิด', registrar, { pin: '000000', reason: 'ฉบับทดลอง' }, 401],
+        ['ธุรการไม่บอกเหตุผล', registrar, { pin: userPin('reg001'), reason: '  ' }, 400],
+      ]) {
+        const r = await dispatchPost(who(), `/documents/${id}/force-delete`, body);
+        assert.equal(r.status, expect, `${label} ควรได้ ${expect} — ได้ ${r.status} ${r.body}`);
+      }
+      assert.ok(liveDoc(id), 'ยังไม่ผ่านด่านไหนเลย เอกสารต้องยังอยู่ครบ');
+
+      const ok = await del(id, { pin: userPin('reg001'), reason: 'ฉบับทดลองตอนเพิ่งติดตั้งระบบ' });
+      assert.equal(ok.status, 200, ok.body);
+      assert.ok(!liveDoc(id), 'เอกสารต้องหายไปจากทะเบียน');
+
+      // ต้องตอบได้เสมอว่าใครลบฉบับไหนเพราะอะไร — เลขที่หายไปจากเล่มต้องอธิบายได้ตอนตรวจ
+      const log = db.prepare(`SELECT user_id, detail FROM audit_logs WHERE record_id = ?
+        AND action = 'document_force_deleted' ORDER BY created_at DESC LIMIT 1`).get(id);
+      assert.ok(log, 'การลบเอกสารต้องมีบันทึกไว้เสมอ');
+      assert.equal(log.user_id, seed.userIds.reg001);
+      assert.equal(JSON.parse(log.detail).docNumberDisplay, issued.json.docNumberDisplay,
+        'ต้องเก็บเลขที่ของฉบับที่ลบไว้ด้วย ไม่งั้นตอบไม่ได้ว่าเลขไหนหายไปจากเล่ม');
+    });
+
+    // นี่คือสิ่งที่แยก "ลบ" ออกจาก "ยกเลิกเอกสาร" และเป็นเหตุผลที่ยังต้องเตือนให้ใช้ปุ่มยกเลิกกับ
+    // หนังสือจริง — เลขที่ลบไปแล้วไม่ถูกนำกลับมาใช้ซ้ำ แต่มันหายไปจากเล่มโดยไม่มีบรรทัดอธิบายคาไว้
+    test('ลบแล้วเลขต้องไม่ถูกนำกลับมาใช้ซ้ำ', async () => {
+      const issued = await issue((await ask(teacher(), { title: `ลบแล้วเลขต้องไม่วนกลับ ${++n}` })).json.id);
+      const gone = issued.json.docNumberDisplay;
+      assert.equal((await del(issued.json.documentId, { pin: userPin('reg001'), reason: 'ลงซ้ำ' })).status, 200);
+
+      const next = await issue((await ask(teacher(), { title: `ฉบับถัดไปหลังลบ ${++n}` })).json.id);
+      assert.notEqual(next.json.docNumberDisplay, gone, 'เลขที่ถูกลบต้องไม่ถูกออกให้ฉบับใหม่');
     });
   });
 

@@ -208,7 +208,7 @@ export function recentReviewedOutgoingRequests(limit = 20) {
  * แล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ
  */
 export async function issueOutgoingNumber({
-  requestId, customDocNumber, docDate, isCircular,
+  requestId, customDocNumber, docDate, isCircular, allowDuplicate,
   title, correspondentName, fromName, actionNote, departmentId, priority, secretLevel,
   actorUser,
 }) {
@@ -239,6 +239,28 @@ export async function issueOutgoingNumber({
   // (ธุรการออกเลขแล้วครูเอาไปพิมพ์ลงหนังสือทันที) แต่ต้องแก้ย้อนหลังได้ เพราะหนังสือที่พิมพ์ลงวันที่
   // ไปแล้วเมื่อวานแต่มาขอเลขวันนี้เกิดขึ้นจริง และวันที่บนกระดาษกับในทะเบียนต้องตรงกัน
   const issuedDate = normalizeDate(docDate, 'วันที่ออกหนังสือ') || todayInBangkok();
+
+  // ธุรการพิมพ์เลขเองแล้วเลขนั้นมีอยู่แล้ว = หนังสือสองฉบับใช้เลขเดียวกัน ซึ่งอ้างอิงไม่ได้เลยในงาน
+  // สารบรรณ และแก้ทีหลังก็ไม่ได้แปลว่าเลขที่แจ้งออกไปแล้วจะเปลี่ยนตาม
+  //
+  // เดิมด่านนี้ไม่มีเลยในเส้นทางออกเลข: createDocument คำนวณคำเตือนเลขซ้ำไว้ให้ (duplicateDocNumberWarning)
+  // แต่ issueOutgoingNumber ไม่เคยอ่านค่านั้นออกมาส่งต่อ มันจึงถูกทิ้งเงียบๆ ทุกครั้ง — เกิดขึ้นจริงแล้ว
+  // ที่โรงเรียน มีหนังสือสองฉบับได้ ศธ 04047.109/206 เหมือนกันโดยไม่มีอะไรเตือนสักคำ
+  //
+  // ถามยืนยันแทนที่จะห้าม เพราะการลงเลขซ้ำให้ตรงกับเล่มกระดาษที่เคยลงซ้ำไว้เป็นเรื่องที่เกิดขึ้นจริง
+  // (เกณฑ์เดียวกับ editIssuedOutgoing และหน้าลงทะเบียนหนังสือ)
+  const typedNumber = asTextOrNull(customDocNumber);
+  if (typedNumber && allowDuplicate !== true) {
+    const dup = db.prepare('SELECT id FROM documents WHERE doc_number_display = ? AND deleted_at IS NULL').get(typedNumber);
+    if (dup) {
+      throw httpError(409, `เลข "${typedNumber}" ซ้ำกับหนังสืออีกฉบับที่มีอยู่แล้ว`, {
+        confirmRetry: {
+          field: 'allowDuplicate',
+          message: `เลข "${typedNumber}" ซ้ำกับหนังสืออีกฉบับในระบบแล้ว\n\nถ้าต้องการให้ระบบออกเลขถัดไปให้เอง กด "ยกเลิก" แล้วลบเลขในช่อง "เลขที่" ออก\n\nยืนยันใช้เลขซ้ำหรือไม่?`,
+        },
+      });
+    }
+  }
 
   let doc;
   db.exec('BEGIN IMMEDIATE');

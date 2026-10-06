@@ -115,6 +115,31 @@ export function outgoingCounterPosition(year = beYear()) {
     WHERE year_be = ? AND direction = 'outgoing' AND is_circular = 0`).get(year).m;
 }
 
+/**
+ * เลขสูงสุดของทะเบียนหนังสือส่งทั่วไปที่ "ยังมีตัวหนังสืออยู่จริง" ในปีนั้น
+ *
+ * ต่างจาก outgoingCounterPosition ตรงที่ไม่นับฉบับที่ถูกลบออกจากทะเบียนไปแล้ว — ใช้ตอบคำถามเดียว
+ * คือ "ถ้าดึงตัวนับถอยกลับไป จะไปทับเลขของหนังสือที่ยังอยู่หรือเปล่า"
+ */
+export function highestLiveOutgoing(year = beYear()) {
+  return db.prepare(`SELECT COALESCE(MAX(running_number), 0) m FROM documents
+    WHERE year_be = ? AND direction = 'outgoing' AND is_circular = 0 AND deleted_at IS NULL`).get(year).m;
+}
+
+/**
+ * ตั้งตัวนับทะเบียนหนังสือส่งใหม่ให้ฉบับถัดไปได้เลขที่ต้องการ
+ *
+ * ปกติเลขทะเบียนเดินหน้าอย่างเดียว เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ — แต่ตอนเพิ่งติดตั้ง
+ * ระบบ เลขที่ "ออกไปแล้ว" หลายตัวคือฉบับทดลองที่ไม่เคยถูกพิมพ์ลงกระดาษจริงเลย พอลบฉบับพวกนั้นออก
+ * จากทะเบียนแล้ว เลขเหล่านั้นก็ไม่เคยถูกใช้จริง การดึงตัวนับกลับมาเริ่มที่เลขนั้นจึงถูกต้อง
+ *
+ * ผู้เรียกต้องกันไว้เองแล้วว่าไม่ไปทับหนังสือที่ยังอยู่ (ดู highestLiveOutgoing) — ฟังก์ชันนี้แค่เขียนค่า
+ */
+export function setOutgoingCounter(position, year = beYear()) {
+  db.prepare(`INSERT INTO document_number_counters (year_be, direction, running_number) VALUES (?, 'outgoing', ?)
+    ON CONFLICT(year_be, direction) DO UPDATE SET running_number = excluded.running_number`).run(year, position);
+}
+
 /** ตัวอย่างเลขถัดไปที่จะออก — ใช้โชว์ให้ผู้ดูแลเห็นก่อนบันทึกค่ารหัส ไม่แตะตัวนับจริง */
 export function previewNextNumber(direction, prefixOverride, isCircular = false) {
   const year = beYear();

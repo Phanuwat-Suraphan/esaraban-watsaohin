@@ -10,8 +10,10 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
 import { layout, esc, fmtDate, fmtThaiDateShort, emptyState, priorityBadge, rowLink, envNumberWarningBox, LABELS } from '../render.js';
 import { requireApi, requirePage } from '../middleware.js';
-import { previewNextNumber, outgoingCounterPosition } from '../numbering.js';
-import { db, todayInBangkok, beYear } from '../db.js';
+import {
+  previewNextNumber, outgoingCounterPosition, highestLiveOutgoing, setOutgoingCounter,
+} from '../numbering.js';
+import { db, todayInBangkok, beYear, audit } from '../db.js';
 import {
   getSetting, setSetting, MAX_SETTING_LENGTH, missingOutgoingNumberEnv,
 } from '../services/settings.js';
@@ -468,21 +470,31 @@ router.get('/outgoing-requests', requirePage((ctx) => {
         var start = document.getElementById('numStart').value.trim();
         var year = document.getElementById('numStartYear').value.trim();
         if (start && !year) { toast('กรอกเลขล่าสุดแล้ว ต้องระบุปี พ.ศ. ของทะเบียนเล่มนั้นด้วย', 'warning'); return; }
-        window.setBtnLoading(btn, 'กำลังบันทึก...');
-        fetch('/outgoing-requests/numbering', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
-            outgoing_number_prefix: document.getElementById('numPrefix').value.trim(),
-            outgoing_number_start: start,
-            outgoing_number_start_year: year,
-          }),
-        }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
-          .then(function(res){
-            if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
-            toast('บันทึกแล้ว — ฉบับถัดไปจะได้เลข ' + res.d.nextOutgoingNumber, 'success');
-            setTimeout(function(){ location.reload(); }, 1200);
-          })
-          .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        send(false);
+        function send(rewindCounter) {
+          window.setBtnLoading(btn, 'กำลังบันทึก...');
+          fetch('/outgoing-requests/numbering', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              outgoing_number_prefix: document.getElementById('numPrefix').value.trim(),
+              outgoing_number_start: start,
+              outgoing_number_start_year: year,
+              rewindCounter: rewindCounter,
+            }),
+          }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){
+              // ขอเลขที่ต่ำกว่าที่ออกไปแล้ว = ต้องยืนยันก่อน ไม่ใช่เงียบๆ แล้วเลขไม่ขยับตามที่กรอก
+              if (!res.ok && res.d.confirmRetry) {
+                window.restoreBtn(btn);
+                if (confirm(res.d.confirmRetry.message)) send(true);
+                return;
+              }
+              if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
+              toast('บันทึกแล้ว — ฉบับถัดไปจะได้เลข ' + res.d.nextOutgoingNumber, 'success');
+              setTimeout(function(){ location.reload(); }, 1400);
+            })
+            .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        }
       }
 
       // ค่าของทุกช่องในใบหนึ่ง — รวมไว้ที่เดียวเพราะทั้งปุ่มอนุมัติและปุ่มบันทึกแทนครูส่งชุดเดียวกัน
@@ -507,16 +519,26 @@ router.get('/outgoing-requests', requirePage((ctx) => {
         var pin = await window.askPin('ยืนยันออกเลขทะเบียนส่ง — เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้');
         if (!pin) return;
         body.pin = pin;
-        window.setBtnLoading(btn, 'กำลังออกเลข...');
-        fetch('/outgoing-requests/' + id + '/issue', {
-          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
-        }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
-          .then(function(res){
-            if (!res.ok) throw new Error(res.d.error || 'ออกเลขไม่สำเร็จ');
-            toast('ออกเลข ' + res.d.docNumberDisplay + ' แล้ว — แจ้งผู้ขอทางไลน์ให้อัตโนมัติ', 'success');
-            setTimeout(function(){ location.reload(); }, 1200);
-          })
-          .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        send(false);
+        function send(allowDuplicate) {
+          body.allowDuplicate = allowDuplicate;
+          window.setBtnLoading(btn, 'กำลังออกเลข...');
+          fetch('/outgoing-requests/' + id + '/issue', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+          }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){
+              // เลขซ้ำไม่ใช่ข้อห้าม แต่ต้องยืนยันก่อน ไม่ใช่ปล่อยผ่านเงียบๆ จนหนังสือสองฉบับได้เลขเดียวกัน
+              if (!res.ok && res.d.confirmRetry) {
+                window.restoreBtn(btn);
+                if (confirm(res.d.confirmRetry.message)) send(true);
+                return;
+              }
+              if (!res.ok) throw new Error(res.d.error || 'ออกเลขไม่สำเร็จ');
+              toast('ออกเลข ' + res.d.docNumberDisplay + ' แล้ว — แจ้งผู้ขอทางไลน์ให้อัตโนมัติ', 'success');
+              setTimeout(function(){ location.reload(); }, 1200);
+            })
+            .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        }
       }
 
       async function recordOnBehalf(btn) {
@@ -721,11 +743,54 @@ router.post('/outgoing-requests/numbering', requireApi(async (ctx) => {
   if (start && !startYear) {
     throw httpError(400, 'กรอกเลขหนังสือส่งล่าสุดแล้ว ต้องระบุปี พ.ศ. ของทะเบียนเล่มนั้นด้วย');
   }
+
+  /*
+   * ขอให้เลขถัดไป "ย้อนกลับ" ไปต่ำกว่าที่ตัวนับเดินไปแล้ว
+   *
+   * เลขพื้นตามปกติดันเลขขึ้นอย่างเดียว ไม่ดึงถอยหลัง เพราะเลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ
+   * แต่ตอนเพิ่งติดตั้งระบบ เลขที่ "ออกไปแล้ว" หลายตัวคือฉบับทดลองที่ไม่เคยถูกพิมพ์ลงกระดาษจริง พอลบ
+   * ฉบับพวกนั้นออกจากทะเบียนแล้ว เลขเหล่านั้นก็ไม่เคยถูกใช้จริง — ถ้าไม่เปิดทางให้ดึงกลับเลย โรงเรียน
+   * จะติดอยู่กับเลขที่กระโดดข้ามไปหลายเลขตั้งแต่ฉบับแรกของจริง โดยอธิบายไม่ได้ว่าเลขที่หายไปคืออะไร
+   *
+   * ด่านที่กันไว้: ถ้ายังมีหนังสือ "ที่ยังอยู่ในทะเบียน" ถือเลขสูงกว่าที่ขอ จะปฏิเสธและบอกเลขที่ขวางอยู่
+   * ให้ไปจัดการก่อน — ไม่งั้นฉบับถัดไปจะได้เลขซ้ำกับหนังสือที่ส่งออกไปข้างนอกแล้วจริงๆ
+   */
+  let rewindTo = null;
+  if (start && Number(startYear) === beYear()) {
+    const wanted = Number(start);
+    if (wanted < outgoingCounterPosition()) {
+      const blocking = highestLiveOutgoing();
+      if (blocking > wanted) {
+        throw httpError(409, `ดึงเลขถอยกลับไม่ได้ เพราะยังมีหนังสือในทะเบียนที่ใช้เลขถึง ${blocking} อยู่`
+          + ` — ถ้าฉบับนั้นเป็นฉบับทดลอง ให้ลบออกจากทะเบียนก่อน แล้วค่อยกลับมาตั้งค่านี้อีกครั้ง`);
+      }
+      if (ctx.body?.rewindCounter !== true) {
+        throw httpError(409, `ตอนนี้ระบบออกเลขไปถึง ${outgoingCounterPosition()} แล้ว`, {
+          confirmRetry: {
+            field: 'rewindCounter',
+            message: `ระบบออกเลขไปถึง ${outgoingCounterPosition()} แล้ว แต่ไม่มีหนังสือฉบับไหนเหลืออยู่เกินเลข ${wanted}\n\n`
+              + `ยืนยันดึงตัวนับกลับ ให้ฉบับถัดไปได้เลข ${wanted + 1} หรือไม่?\n\n`
+              + 'ใช้ตอนเพิ่งติดตั้งระบบและลบฉบับทดลองออกไปแล้วเท่านั้น',
+          },
+        });
+      }
+      rewindTo = wanted;
+    }
+  }
+
   for (const key of ['outgoing_number_prefix', 'outgoing_number_start', 'outgoing_number_start_year']) {
     if (ctx.body?.[key] === undefined) continue;
     setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
   }
-  json(ctx, 200, { ok: true, nextOutgoingNumber: previewNextNumber('outgoing') });
+  // เขียนตัวนับหลังบันทึกค่าตั้งค่า เพื่อให้ previewNextNumber ที่ตอบกลับไปเป็นเลขจริงหลังดึงกลับแล้ว
+  if (rewindTo !== null) {
+    setOutgoingCounter(rewindTo);
+    audit({
+      userId: ctx.user.id, action: 'outgoing_counter_rewound', tableName: 'document_number_counters',
+      recordId: `${beYear()}:outgoing`, detail: { to: rewindTo, next: rewindTo + 1 },
+    });
+  }
+  json(ctx, 200, { ok: true, nextOutgoingNumber: previewNextNumber('outgoing'), rewound: rewindTo !== null });
 }));
 
 router.post('/outgoing-requests', requireApi(async (ctx) => {
@@ -741,6 +806,7 @@ router.post('/outgoing-requests', requireApi(async (ctx) => {
 // ค่าที่ธุรการแก้ได้ก่อนกดอนุมัติ — ไม่ส่งมา = ใช้ที่ครูกรอกไว้ (ดู issueOutgoingNumber)
 const issueOverrides = (body) => ({
   customDocNumber: body?.customDocNumber, docDate: body?.docDate, isCircular: body?.isCircular,
+  allowDuplicate: body?.allowDuplicate === true,
   title: body?.title, correspondentName: body?.correspondentName,
   fromName: body?.fromName, actionNote: body?.actionNote,
   departmentId: body?.departmentId, priority: body?.priority, secretLevel: body?.secretLevel,

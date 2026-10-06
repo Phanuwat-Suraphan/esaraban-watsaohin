@@ -1750,7 +1750,8 @@ router.get('/documents/:id', requirePage((ctx) => {
   // คู่ของ canVoid — ใครกดยกเลิกได้ ก็ต้องกู้กลับได้ ไม่งั้นคนที่กดผิดก็แก้เองไม่ได้อยู่ดี
   const canUnvoid = doc.status === 'voided' && isCreatorOrAdmin;
   const canArchive = doc.status === 'completed' && isCreatorOrAdmin;
-  const canForceDelete = ctx.user.roleCodes.includes('admin');
+  // ธุรการเก็บกวาดทะเบียนของตัวเองได้ (ดูเหตุผลที่ forceDeleteDocument) ด่านคือ PIN + ต้องพิมพ์เหตุผล
+  const canForceDelete = ctx.user.roleCodes.some((r) => r === 'admin' || r === 'registrar');
   /**
    * เริ่มเดินเรื่องใหม่ทั้งฉบับ — สำหรับเรื่องที่ทำผิดมาตั้งแต่ขั้นแรก
    *
@@ -2715,7 +2716,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         ${canResetWorkflow ? `<button class="btn btn-outline btn-sm" id="resetWorkflowBtn"
           style="color:var(--danger);border-color:var(--danger)"
           onclick="resetThisWorkflow(this)">♻️ เริ่มเดินเรื่องใหม่ทั้งฉบับ</button>` : ''}
-        ${canForceDelete ? `<button class="btn btn-danger btn-sm" onclick="forceDeleteThisDoc(this)">🗑️ ลบเอกสาร (แอดมิน)</button>` : ''}
+        ${canForceDelete ? `<button class="btn btn-danger btn-sm" onclick="forceDeleteThisDoc(this)">🗑️ ลบเอกสารออกจากทะเบียน</button>` : ''}
       </div>
     </div>
     ${canResetWorkflow ? `<script>
@@ -2741,14 +2742,18 @@ router.get('/documents/:id', requirePage((ctx) => {
       }
     </script>` : ''}
     ${canForceDelete ? `<script>
-      function forceDeleteThisDoc(btn){
-        var reason = prompt('สำหรับผู้ดูแลระบบเท่านั้น: ระบุเหตุผลที่ลบเอกสารนี้ถาวร (ใช้กับเอกสารที่ผิดพลาด/ค้างจากบั๊กเท่านั้น เอกสารจริงควรใช้ปุ่มยกเลิก/ทำลายตามขั้นตอนปกติแทน)');
+      async function forceDeleteThisDoc(btn){
+        // ย้ำให้ชัดว่าเลขจะหายไปจากทะเบียน เพราะนี่คือข้อแตกต่างเดียวที่สำคัญระหว่างปุ่มนี้กับ "ยกเลิกเอกสาร"
+        // และเป็นสิ่งที่ตรวจย้อนหลังแล้วอธิบายไม่ได้ ถ้าใช้ปุ่มผิดกับหนังสือจริง
+        var reason = prompt('ลบเอกสาร ${esc(doc.doc_number_display)} ออกจากทะเบียน — ใช้กับฉบับที่ผิดพลาด/ฉบับทดลองเท่านั้น\\n\\nถ้าเป็นหนังสือจริงที่สุดท้ายไม่ได้ใช้ ให้กด "ยกเลิกเอกสาร" แทน เลขจะได้คงอยู่ในลำดับพร้อมเหตุผล ไม่ขาดเป็นรูโหว่ตอนตรวจ\\n\\nระบุเหตุผลที่ลบ:');
         if (reason === null) return;
-        if (!confirm('ยืนยันลบเอกสารนี้ถาวร? การกระทำนี้ย้อนกลับไม่ได้')) return;
+        if (!reason.trim()) { toast('ต้องระบุเหตุผลที่ลบ', 'warning'); return; }
+        var pin = await window.askPin('ยืนยันลบเอกสาร ${esc(doc.doc_number_display)} ออกจากทะเบียน');
+        if (!pin) return;
         btn.disabled = true;
-        fetch('/documents/${doc.id}/force-delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({reason: reason}) })
+        fetch('/documents/${doc.id}/force-delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({reason: reason, pin: pin}) })
           .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
-          .then(function(res){ if(!res.ok) throw new Error(res.d.error); window.location.href = '/documents'; })
+          .then(function(res){ if(!res.ok) throw new Error(res.d.error); window.location.href = '/documents?direction=${esc(doc.direction)}'; })
           .catch(function(e){ toast(e.message, 'danger'); btn.disabled = false; });
       }
     </script>` : ''}
@@ -3639,6 +3644,14 @@ router.post('/documents/:id/unvoid', requireApi(async (ctx) => {
 }));
 
 router.post('/documents/:id/force-delete', requireApi(async (ctx) => {
+  // ตรวจสิทธิ์ก่อน PIN เสมอ คนที่ไม่มีสิทธิ์ต้องได้คำตอบว่า "ไม่มีสิทธิ์" ไม่ใช่ "PIN ไม่ถูกต้อง"
+  if (!ctx.user.roleCodes.some((r) => r === 'admin' || r === 'registrar')) {
+    throw httpError(403, 'ลบเอกสารได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
+  }
+  // ลบเอกสารออกจากทะเบียนราชการเป็นการกระทำที่ย้อนกลับไม่ได้จากหน้าเว็บ — PIN ยืนยันว่าคนที่กดคือ
+  // เจ้าของบัญชีจริง ไม่ใช่คนที่มานั่งที่เครื่องที่เปิดระบบค้างไว้ (เกณฑ์เดียวกับการออกเลข/ประทับตรา)
+  const { verifyPin } = await import('../auth.js');
+  if (!verifyPin(ctx.user.id, ctx.body?.pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
   await forceDeleteDocument({ documentId: ctx.params.id, reason: ctx.body.reason, actorUser: ctx.user });
   json(ctx, 200, { ok: true });
 }));

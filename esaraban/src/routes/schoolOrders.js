@@ -112,7 +112,7 @@ router.get('/orders', requirePage((ctx) => {
         <div class="field">
           <label for="ordSubject">เรื่อง *</label>
           <input type="text" id="ordSubject" maxlength="500" required
-            placeholder="เช่น แต่งตั้งคณะกรรมการดำเนินงานกิจกรรมวันเด็กแห่งชาติ ประจำปี 2569" />
+            placeholder="เช่น แต่งตั้งคณะกรรมการดำเนินงานกิจกรรมวันเด็กแห่งชาติ ประจำปี 2569" autocomplete="off" />
         </div>
         <div class="form-grid cols-2">
           <div class="field"><label for="ordSignedDate">วันที่ลงนาม</label>
@@ -122,7 +122,7 @@ router.get('/orders', requirePage((ctx) => {
         </div>
         <div class="field">
           <label for="ordNote">หมายเหตุ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
-          <input type="text" id="ordNote" maxlength="1000" placeholder="เช่น ยกเลิกคำสั่งที่ 12/2569" />
+          <input type="text" id="ordNote" maxlength="1000" placeholder="เช่น ยกเลิกคำสั่งที่ 12/2569" autocomplete="off" />
         </div>
         <div class="field">
           <label for="ordFile">แนบไฟล์${esc(k.noun)}ที่ลงนามแล้ว <span class="text-muted" style="font-weight:400">(เว้นว่างได้ แนบภายหลังได้)</span></label>
@@ -239,7 +239,7 @@ router.get('/orders', requirePage((ctx) => {
       <form method="get" action="/orders" class="flex gap-2 flex-wrap" style="margin-top:.6rem">
         <input type="hidden" name="kind" value="${esc(kind)}" />
         ${year ? `<input type="hidden" name="year" value="${year}" />` : ''}
-        <input type="search" name="q" value="${esc(q)}" placeholder="ค้นจากเรื่อง หรือเลขที่" style="max-width:320px" />
+        <input type="search" name="q" value="${esc(q)}" placeholder="ค้นจากเรื่อง หรือเลขที่" style="max-width:320px" autocomplete="off" />
         <label class="check-inline"><input type="checkbox" name="mine" value="1" ${mine ? 'checked' : ''} />
           <span>เฉพาะที่มีชื่อท่าน</span></label>
         <button class="btn btn-outline btn-sm" type="submit">ค้นหา</button>
@@ -469,7 +469,7 @@ router.get('/orders/:id', requirePage((ctx) => {
       </p>
       <div class="stack">
         <div class="field"><label for="edSubject">เรื่อง *</label>
-          <input type="text" id="edSubject" maxlength="500" value="${esc(order.subject)}" /></div>
+          <input type="text" id="edSubject" maxlength="500" value="${esc(order.subject)}" autocomplete="off" /></div>
         <div class="form-grid cols-2">
           <div class="field"><label for="edSignedDate">วันที่ลงนาม</label>
             <input type="date" id="edSignedDate" value="${esc(order.signed_date || '')}" /></div>
@@ -477,7 +477,7 @@ router.get('/orders/:id', requirePage((ctx) => {
             <select id="edSigner"><option value="">— ยังไม่ระบุ —</option>${signerOptions(order.signer_id)}</select></div>
         </div>
         <div class="field"><label for="edNote">หมายเหตุ</label>
-          <input type="text" id="edNote" maxlength="1000" value="${esc(order.note || '')}" /></div>
+          <input type="text" id="edNote" maxlength="1000" value="${esc(order.note || '')}" autocomplete="off" /></div>
         <div class="chip-row">
           <button class="btn btn-primary btn-sm" type="button" onclick="saveOrder(this)">บันทึกการแก้ไข</button>
           ${isAdmin ? `<button class="btn btn-danger btn-sm" type="button" onclick="deleteOrder(this)">ลบฉบับนี้</button>` : ''}

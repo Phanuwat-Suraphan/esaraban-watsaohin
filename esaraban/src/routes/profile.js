@@ -120,11 +120,11 @@ router.get('/profile', requirePage((ctx) => {
         <h3 style="margin-top:1.2rem">แก้ไขข้อมูลส่วนตัว</h3>
         <form id="infoForm" class="stack">
           <div class="form-grid cols-2">
-            <div class="field"><label>คำนำหน้า</label><input type="text" id="prefix" value="${esc(ctx.user.prefix || '')}" /></div>
-            <div class="field"><label>ชื่อ</label><input type="text" id="firstName" value="${esc(ctx.user.first_name)}" required /></div>
+            <div class="field"><label>คำนำหน้า</label><input type="text" id="prefix" value="${esc(ctx.user.prefix || '')}" autocomplete="off" /></div>
+            <div class="field"><label>ชื่อ</label><input type="text" id="firstName" value="${esc(ctx.user.first_name)}" required autocomplete="off" /></div>
           </div>
-          <div class="field"><label>นามสกุล</label><input type="text" id="lastName" value="${esc(ctx.user.last_name)}" required /></div>
-          <div class="field"><label>อีเมล</label><input type="email" id="email" value="${esc(ctx.user.email || '')}" /></div>
+          <div class="field"><label>นามสกุล</label><input type="text" id="lastName" value="${esc(ctx.user.last_name)}" required autocomplete="off" /></div>
+          <div class="field"><label>อีเมล</label><input type="email" id="email" value="${esc(ctx.user.email || '')}" autocomplete="off" /></div>
           <div class="field"><label>ตำแหน่ง</label>${positionInput({ id: 'position', value: ctx.user.position || '', listId: 'posProfile' })}
             <div class="help-text">เลือกจากรายการ หรือพิมพ์เองได้ — ตำแหน่งนี้จะถูกใช้เป็นตำแหน่งผู้ลงนามบนตราประทับและใบลา</div></div>
           <button class="btn btn-primary" type="submit">บันทึกข้อมูล</button>
@@ -132,14 +132,14 @@ router.get('/profile', requirePage((ctx) => {
 
         <h3 style="margin-top:1.2rem">เปลี่ยนรหัสผ่าน</h3>
         <form id="passwordForm" class="stack">
-          <div class="field"><label>รหัสผ่านปัจจุบัน</label><input type="password" id="curPasswordForPw" required /></div>
-          <div class="field"><label>รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)</label><input type="password" id="newPassword" minlength="8" required /></div>
+          <div class="field"><label>รหัสผ่านปัจจุบัน</label><input type="password" id="curPasswordForPw" required autocomplete="current-password" /></div>
+          <div class="field"><label>รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)</label><input type="password" id="newPassword" minlength="8" required autocomplete="new-password" /></div>
           <button class="btn btn-primary" type="submit">เปลี่ยนรหัสผ่าน</button>
         </form>
 
         <h3 style="margin-top:1.2rem">เปลี่ยน PIN (ใช้ยืนยันการรับทราบ/ลงนาม)</h3>
         <form id="pinForm" class="stack">
-          <div class="field"><label>รหัสผ่านปัจจุบัน</label><input type="password" id="curPassword" required /></div>
+          <div class="field"><label>รหัสผ่านปัจจุบัน</label><input type="password" id="curPassword" required autocomplete="current-password" /></div>
           <div class="field"><label>PIN ใหม่ (6 หลัก)</label><input type="password" id="newPin" inputmode="numeric" maxlength="6" required autocomplete="new-password" /></div>
           <button class="btn btn-primary" type="submit">บันทึก PIN ใหม่</button>
         </form>

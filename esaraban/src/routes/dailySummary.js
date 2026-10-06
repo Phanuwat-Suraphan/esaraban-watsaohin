@@ -227,12 +227,12 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
 
   const rowHtml = (it, i) => `
     <tr data-row>
-      <td><input name="priority" value="${esc(it.priority || '')}" list="priorityList" style="width:100%" ${canEdit ? '' : 'disabled'} /></td>
-      <td><textarea name="task_name" rows="2" style="width:100%" ${canEdit ? '' : 'disabled'}>${esc(it.task_name || '')}</textarea></td>
-      <td><textarea name="action_needed" rows="2" style="width:100%" ${canEdit ? '' : 'disabled'}>${esc(it.action_needed || '')}</textarea></td>
-      <td><input name="schedule" value="${esc(it.schedule || '')}" style="width:100%" ${canEdit ? '' : 'disabled'} /></td>
-      <td><textarea name="detail" rows="2" style="width:100%" ${canEdit ? '' : 'disabled'}>${esc(it.detail || '')}</textarea></td>
-      <td><input name="source_ref" value="${esc(it.source_ref || '')}" style="width:100%" ${canEdit ? '' : 'disabled'} /></td>
+      <td><input name="priority" value="${esc(it.priority || '')}" list="priorityList" style="width:100%" ${canEdit ? '' : 'disabled'} autocomplete="off" /></td>
+      <td><textarea name="task_name" rows="2" style="width:100%" ${canEdit ? '' : 'disabled'} autocomplete="off">${esc(it.task_name || '')}</textarea></td>
+      <td><textarea name="action_needed" rows="2" style="width:100%" ${canEdit ? '' : 'disabled'} autocomplete="off">${esc(it.action_needed || '')}</textarea></td>
+      <td><input name="schedule" value="${esc(it.schedule || '')}" style="width:100%" ${canEdit ? '' : 'disabled'} autocomplete="off" /></td>
+      <td><textarea name="detail" rows="2" style="width:100%" ${canEdit ? '' : 'disabled'} autocomplete="off">${esc(it.detail || '')}</textarea></td>
+      <td><input name="source_ref" value="${esc(it.source_ref || '')}" style="width:100%" ${canEdit ? '' : 'disabled'} autocomplete="off" /></td>
       <td style="text-align:center"><input type="checkbox" name="is_done" ${it.is_done ? 'checked' : ''} ${canEdit ? '' : 'disabled'} /></td>
       <td>${canEdit ? '<button type="button" class="btn btn-outline btn-sm" onclick="this.closest(\'tr\').remove()">ลบ</button>' : ''}</td>
     </tr>`;
@@ -357,12 +357,12 @@ router.get('/daily-summary/:id', requirePage((ctx) => {
         var tb = document.querySelector('#itemsTable tbody');
         var tr = document.createElement('tr');
         tr.setAttribute('data-row', '');
-        tr.innerHTML = '<td><input name="priority" list="priorityList" style="width:100%" /></td>' +
-          '<td><textarea name="task_name" rows="2" style="width:100%"></textarea></td>' +
-          '<td><textarea name="action_needed" rows="2" style="width:100%"></textarea></td>' +
-          '<td><input name="schedule" style="width:100%" /></td>' +
-          '<td><textarea name="detail" rows="2" style="width:100%"></textarea></td>' +
-          '<td><input name="source_ref" style="width:100%" /></td>' +
+        tr.innerHTML = '<td><input name="priority" list="priorityList" style="width:100%" autocomplete="off" /></td>' +
+          '<td><textarea name="task_name" rows="2" style="width:100%" autocomplete="off"></textarea></td>' +
+          '<td><textarea name="action_needed" rows="2" style="width:100%" autocomplete="off"></textarea></td>' +
+          '<td><input name="schedule" style="width:100%" autocomplete="off" /></td>' +
+          '<td><textarea name="detail" rows="2" style="width:100%" autocomplete="off"></textarea></td>' +
+          '<td><input name="source_ref" style="width:100%" autocomplete="off" /></td>' +
           '<td style="text-align:center"><input type="checkbox" name="is_done" /></td>' +
           '<td><button type="button" class="btn btn-outline btn-sm" onclick="this.closest(\\'tr\\').remove()">ลบ</button></td>';
         tb.appendChild(tr);

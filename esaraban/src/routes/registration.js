@@ -56,12 +56,12 @@ function registerPage({ error, done, values = {} } = {}) {
     </div>` : ''}
     <form method="post" action="/register">
       <div class="form-grid cols-2">
-        <div class="field"><label>คำนำหน้า</label><input type="text" name="prefix" value="${v('prefix')}" placeholder="เช่น นาง, นาย" /></div>
-        <div class="field"><label>รหัสพนักงาน / Username *</label><input type="text" name="employeeCode" value="${v('employeeCode')}" required placeholder="เช่น teacher012" /></div>
+        <div class="field"><label>คำนำหน้า</label><input type="text" name="prefix" value="${v('prefix')}" placeholder="เช่น นาง, นาย" autocomplete="off" /></div>
+        <div class="field"><label>รหัสพนักงาน / Username *</label><input type="text" name="employeeCode" value="${v('employeeCode')}" required placeholder="เช่น teacher012" autocomplete="off" /></div>
       </div>
       <div class="form-grid cols-2">
-        <div class="field"><label>ชื่อ *</label><input type="text" name="firstName" value="${v('firstName')}" required /></div>
-        <div class="field"><label>นามสกุล *</label><input type="text" name="lastName" value="${v('lastName')}" required /></div>
+        <div class="field"><label>ชื่อ *</label><input type="text" name="firstName" value="${v('firstName')}" required autocomplete="off" /></div>
+        <div class="field"><label>นามสกุล *</label><input type="text" name="lastName" value="${v('lastName')}" required autocomplete="off" /></div>
       </div>
       <div class="field"><label>ฝ่าย *</label>
         <select name="departmentId" required>
@@ -76,7 +76,7 @@ function registerPage({ error, done, values = {} } = {}) {
         </select>
         <div class="help-text">เป็นเพียงคำขอ — ผู้ดูแลระบบเป็นผู้กำหนดบทบาทจริงตอนอนุมัติ</div>
       </div>
-      <div class="field"><label>อีเมล</label><input type="email" name="email" value="${v('email')}" /></div>
+      <div class="field"><label>อีเมล</label><input type="email" name="email" value="${v('email')}" autocomplete="off" /></div>
       <!-- ต้องกรอกซ้ำทั้งรหัสผ่านและ PIN
            นี่คือจุดเสี่ยงที่สุดของทั้งกระบวนการ: ทั้งสองช่องเป็นช่องปิด กรอกครั้งเดียว และ "ไม่มีใครในระบบ
            รู้ค่าที่ครูตั้งไว้เลยแม้แต่ผู้ดูแล" (ตั้งใจ) ถ้าพิมพ์ผิดตัวเดียวโดยไม่รู้ตัว ครูจะเข้าระบบไม่ได้เลย
@@ -100,7 +100,7 @@ function registerPage({ error, done, values = {} } = {}) {
       <div class="help-text">PIN ใช้แทนการลงลายมือชื่อเวลากด "รับทราบ"/ลงนาม จึงต้องเป็นความลับเฉพาะตัว
         ห้ามใช้เลขซ้ำทั้งหมด (111111) หรือเลขเรียงติดกัน (123456)</div>
       <div class="field"><label>ข้อความถึงผู้ดูแล</label>
-        <textarea name="note" rows="2" placeholder="เช่น ครูประจำชั้น ป.4 เพิ่งย้ายมาเทอมนี้">${v('note')}</textarea>
+        <textarea name="note" rows="2" placeholder="เช่น ครูประจำชั้น ป.4 เพิ่งย้ายมาเทอมนี้" autocomplete="off">${v('note')}</textarea>
         <div class="help-text">ช่วยให้ผู้ดูแลยืนยันตัวตนคุณได้เร็วขึ้น</div></div>
       <button class="btn btn-primary btn-block" type="submit">ส่งคำขอลงทะเบียน</button>
     </form>
@@ -247,10 +247,10 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
              จำนวนหนึ่งก็ไม่ได้กลับมากรอกใหม่จริงๆ กลายเป็นคนที่หายไปจากระบบเงียบๆ -->
         <tr><td class="text-muted" style="white-space:nowrap">รหัสพนักงาน (ID)</td><td>
           <input type="text" id="code-${esc(r.id)}" value="${esc(r.employee_code)}" maxlength="${MAX_EMPLOYEE_CODE}"
-                 autocapitalize="off" autocorrect="off" spellcheck="false" style="max-width:220px" />
+                 autocapitalize="off" autocorrect="off" spellcheck="false" style="max-width:220px" autocomplete="off" />
         </td></tr>
         <tr><td class="text-muted" style="white-space:nowrap">อีเมล</td><td>
-          <input type="email" id="email-${esc(r.id)}" value="${esc(r.email || '')}" placeholder="เว้นว่างได้" style="max-width:280px" />
+          <input type="email" id="email-${esc(r.id)}" value="${esc(r.email || '')}" placeholder="เว้นว่างได้" style="max-width:280px" autocomplete="off" />
         </td></tr>
         <tr><td></td><td>
           <button class="btn btn-outline btn-sm" type="button" onclick="saveReq('${esc(r.id)}', this)">💾 บันทึก ID / อีเมล</button>
@@ -296,7 +296,7 @@ router.get('/admin/registrations', ADMIN_ONLY(requirePage((ctx) => {
     <div class="card">
       <h3 class="mt-0">ลิงก์สำหรับส่งให้ครู</h3>
       <div class="flex gap-2 items-center">
-        <input type="text" id="regUrl" readonly value="${esc(registerUrl)}" style="flex:1" />
+        <input type="text" id="regUrl" readonly value="${esc(registerUrl)}" style="flex:1" autocomplete="off" />
         <button class="btn btn-outline btn-sm" type="button" onclick="copyRegUrl()">คัดลอก</button>
       </div>
       <!-- ช่องทางที่โรงเรียนใช้สื่อสารกันจริงคือกลุ่มไลน์ — ปุ่มนี้เปิดหน้าต่างแชร์ของ LINE พร้อม

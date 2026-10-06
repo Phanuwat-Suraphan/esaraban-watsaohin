@@ -67,7 +67,7 @@ export const isKnownPosition = (value) => ALL.includes(String(value || '').trim(
  */
 export function positionInput({ id = '', name = '', value = '', listId = 'schoolPositions' } = {}) {
   return `<input type="text" ${id ? `id="${id}"` : ''} ${name ? `name="${name}"` : ''}
-    value="${escapeAttr(value)}" list="${listId}" placeholder="เลือกจากรายการ หรือพิมพ์เอง" />
+    value="${escapeAttr(value)}" list="${listId}" placeholder="เลือกจากรายการ หรือพิมพ์เอง" autocomplete="off" />
     ${positionDatalist(listId)}`;
 }
 

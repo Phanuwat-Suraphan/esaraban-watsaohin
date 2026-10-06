@@ -374,7 +374,7 @@ function renderAppShell({ user, currentPath, content, flash, avatar }) {
           <!-- ค้นรวมทั้งหนังสือเข้าและหนังสือออก — เดิมไม่ได้ส่ง direction ไปด้วย เส้นทางจึง default เป็น
                incoming เสมอ ค้นเลขหนังสือออกจากแถบนี้แล้วไม่เจออะไรเลยทั้งที่มีอยู่จริง -->
           <input type="hidden" name="direction" value="all" />
-          <input type="text" id="globalSearchInput" name="q" aria-label="ค้นหาหนังสือ" placeholder="ค้นหา... (Ctrl+K)" />
+          <input type="text" id="globalSearchInput" name="q" aria-label="ค้นหาหนังสือ" placeholder="ค้นหา... (Ctrl+K)" autocomplete="off" />
         </form>
       </div>
       <div class="topbar-spacer"></div>

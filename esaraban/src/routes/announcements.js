@@ -145,8 +145,8 @@ router.get('/announcements/new', requireRole(...CAN_POST_ROLES)(requirePage((ctx
           <label>ประเภท *</label>
           <select name="category">${CATEGORIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
         </div>
-        <div class="field"><label>หัวข้อ *</label><input type="text" name="title" required /></div>
-        <div class="field"><label>รายละเอียด</label><textarea name="body" placeholder="รายละเอียดประกาศ (ถ้ามี)"></textarea></div>
+        <div class="field"><label>หัวข้อ *</label><input type="text" name="title" required autocomplete="off" /></div>
+        <div class="field"><label>รายละเอียด</label><textarea name="body" placeholder="รายละเอียดประกาศ (ถ้ามี)" autocomplete="off"></textarea></div>
         <div class="field">
           <label>แนบไฟล์ PDF (ถ้ามี)</label>
           <input type="file" id="fileInput" accept="application/pdf" onchange="attachFilePreview(this,'filePreview')" />

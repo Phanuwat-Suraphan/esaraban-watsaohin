@@ -99,7 +99,7 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
         <div class="field">
           <label>ชื่อโรงเรียน (เต็ม) *</label>
           <input type="text" id="school_name" required maxlength="${MAX_SETTING_LENGTH.school_name}"
-            value="${esc(getSetting('school_name'))}" placeholder="เช่น โรงเรียนบ้านห้วยแก้ว" />
+            value="${esc(getSetting('school_name'))}" placeholder="เช่น โรงเรียนบ้านห้วยแก้ว" autocomplete="off" />
           <div class="help-text">
             ต้องมีคำว่า <strong>“โรงเรียน”</strong> นำหน้าด้วย เพราะระบบนำไปต่อท้ายคำอื่นตรงๆ
             เช่น “ผู้อำนวยการ<u>โรงเรียนบ้านห้วยแก้ว</u>” และ “เขียนที่ <u>โรงเรียนบ้านห้วยแก้ว</u>” บนใบลา
@@ -108,20 +108,20 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
         <div class="field">
           <label>ชื่อย่อ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <input type="text" id="school_short_name" maxlength="${MAX_SETTING_LENGTH.school_short_name}"
-            value="${esc(getSetting('school_short_name'))}" placeholder="ไม่กรอก = ${esc(schoolShortName())}" />
+            value="${esc(getSetting('school_short_name'))}" placeholder="ไม่กรอก = ${esc(schoolShortName())}" autocomplete="off" />
           <div class="help-text">ใช้ในแถบเมนูด้านข้างและชื่อแอปบนมือถือ — ไม่กรอกระบบจะย่อ “โรงเรียน” เป็น “ร.ร.” ให้เอง</div>
         </div>
         <div class="field">
           <label>ตัวอักษรย่อในโลโก้ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <input type="text" id="school_initials" maxlength="${MAX_SETTING_LENGTH.school_initials}"
-            value="${esc(getSetting('school_initials'))}" placeholder="ไม่กรอก = ${esc(schoolInitials())}" style="max-width:8rem" />
+            value="${esc(getSetting('school_initials'))}" placeholder="ไม่กรอก = ${esc(schoolInitials())}" style="max-width:8rem" autocomplete="off" />
           <div class="help-text">ตัวอักษรในวงกลมมุมบนซ้ายและหน้าเข้าสู่ระบบ — 1-2 ตัวกำลังดี</div>
         </div>
         <div class="field">
           <label for="outgoing_number_prefix">รหัสหนังสือของโรงเรียน <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <input type="text" id="outgoing_number_prefix" maxlength="${MAX_SETTING_LENGTH.outgoing_number_prefix}"
             value="${esc(getSetting('outgoing_number_prefix'))}" placeholder="เช่น ศธ 04056.12" style="max-width:16rem"
-            oninput="updateNumberPreview()" />
+            oninput="updateNumberPreview()" autocomplete="off" />
           <div class="help-text">
             ตามระเบียบงานสารบรรณ ช่อง <strong>“ที่”</strong> ของหนังสือที่ส่งออกไปข้างนอก คือ
             <strong>รหัสส่วนราชการ ทับ เลขทะเบียนหนังสือส่ง</strong> — กรอกรหัสที่นี่ครั้งเดียว
@@ -292,17 +292,17 @@ router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {
       <div class="card">
         <h3 class="mt-0">เพิ่มผู้ใช้ใหม่</h3>
         <form id="newUserForm" class="stack">
-          <div class="field"><label>รหัสพนักงาน (username)</label><input type="text" id="employeeCode" required /></div>
+          <div class="field"><label>รหัสพนักงาน (username)</label><input type="text" id="employeeCode" required autocomplete="off" /></div>
           <div class="form-grid cols-2">
-            <div class="field"><label>คำนำหน้า</label><input type="text" id="prefix" placeholder="นาย/นาง/นางสาว" /></div>
-            <div class="field"><label>ชื่อ-สกุล</label><input type="text" id="firstName" required /></div>
+            <div class="field"><label>คำนำหน้า</label><input type="text" id="prefix" placeholder="นาย/นาง/นางสาว" autocomplete="off" /></div>
+            <div class="field"><label>ชื่อ-สกุล</label><input type="text" id="firstName" required autocomplete="off" /></div>
           </div>
-          <div class="field"><label>นามสกุล</label><input type="text" id="lastName" required /></div>
-          <div class="field"><label>อีเมล</label><input type="email" id="email" /></div>
+          <div class="field"><label>นามสกุล</label><input type="text" id="lastName" required autocomplete="off" /></div>
+          <div class="field"><label>อีเมล</label><input type="email" id="email" autocomplete="off" /></div>
           <div class="field"><label>ตำแหน่ง</label>${positionInput({ id: 'position', listId: 'posNew' })}</div>
           <div class="field"><label>ฝ่าย</label><select id="departmentId">${depts.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
           <div class="field"><label>บทบาท</label><select id="roleId">${roles.map((r) => `<option value="${r.id}">${esc(r.name_th)}</option>`).join('')}</select></div>
-          <div class="field"><label>รหัสผ่านเริ่มต้น</label><input type="text" id="password" required placeholder="เช่น Welcome@2569" /></div>
+          <div class="field"><label>รหัสผ่านเริ่มต้น</label><input type="text" id="password" required placeholder="เช่น Welcome@2569" autocomplete="off" /></div>
           <div class="field"><label>PIN เริ่มต้น (6 หลัก)</label><input type="password" id="pin" inputmode="numeric" maxlength="6" required autocomplete="new-password" /></div>
           <button class="btn btn-primary" type="submit">สร้างผู้ใช้</button>
         </form>
@@ -541,7 +541,7 @@ function userEditPage(ctx, target, { error, depts, roles, currentRoleId }) {
         <div class="field">
           <label>รหัสประจำตัว (ID ที่ใช้เข้าสู่ระบบ) *</label>
           <input type="text" name="employeeCode" value="${esc(target.employee_code)}"
-                 maxlength="${MAX_EMPLOYEE_CODE}" required autocapitalize="off" autocorrect="off" spellcheck="false" />
+                 maxlength="${MAX_EMPLOYEE_CODE}" required autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off" />
           <div class="help-text">
             แก้ได้เมื่อกรอกผิดตอนสมัคร — ประวัติเอกสาร ลายเซ็น และงานที่ค้างอยู่ทั้งหมดยังอยู่ครบเหมือนเดิม
             <strong>แต่เจ้าตัวต้องใช้ ID ใหม่นี้เข้าระบบครั้งต่อไป</strong> อย่าลืมแจ้งให้ทราบด้วย
@@ -550,13 +550,13 @@ function userEditPage(ctx, target, { error, depts, roles, currentRoleId }) {
         </div>
         <div class="form-grid cols-3">
           <div class="field"><label>คำนำหน้า</label>
-            <input type="text" name="prefix" value="${esc(target.prefix || '')}" placeholder="นาย/นาง/นางสาว" /></div>
+            <input type="text" name="prefix" value="${esc(target.prefix || '')}" placeholder="นาย/นาง/นางสาว" autocomplete="off" /></div>
           <div class="field"><label>ชื่อ *</label>
-            <input type="text" name="firstName" value="${esc(target.first_name)}" required /></div>
+            <input type="text" name="firstName" value="${esc(target.first_name)}" required autocomplete="off" /></div>
           <div class="field"><label>นามสกุล *</label>
-            <input type="text" name="lastName" value="${esc(target.last_name)}" required /></div>
+            <input type="text" name="lastName" value="${esc(target.last_name)}" required autocomplete="off" /></div>
           <div class="field"><label>อีเมล</label>
-            <input type="email" name="email" value="${esc(target.email || '')}" /></div>
+            <input type="email" name="email" value="${esc(target.email || '')}" autocomplete="off" /></div>
           <div class="field"><label>ตำแหน่ง</label>
             ${positionInput({ name: 'position', value: target.position || '', listId: 'posEdit' })}</div>
           <div class="field"><label>ฝ่าย</label>
@@ -809,11 +809,11 @@ router.get('/admin/audit', requireRole('admin')(requirePage((ctx) => {
       <form method="get" action="/admin/audit" class="filter-row" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem">
         <div style="flex:1;min-width:180px">
           <label for="auditDoc">เลขที่หนังสือ</label>
-          <input type="text" id="auditDoc" name="document" value="${esc(docFilter)}" placeholder="เช่น 0066/2569" />
+          <input type="text" id="auditDoc" name="document" value="${esc(docFilter)}" placeholder="เช่น 0066/2569" autocomplete="off" />
         </div>
         <div style="flex:1;min-width:180px">
           <label for="auditQ">ค้นหา (การกระทำ / ผู้ใช้ / รายละเอียด)</label>
-          <input type="text" id="auditQ" name="q" value="${esc(q)}" placeholder="เช่น ยกเลิก, สมชาย" />
+          <input type="text" id="auditQ" name="q" value="${esc(q)}" placeholder="เช่น ยกเลิก, สมชาย" autocomplete="off" />
         </div>
         <div style="display:flex;gap:.5rem">
           <button type="submit" class="btn">ค้นหา</button>
@@ -899,7 +899,7 @@ router.get('/admin/google-drive', requireRole('admin')(requirePage(async (ctx) =
         </p>
         <div class="copy-row">
           <textarea id="driveRedirectUri" readonly rows="2" spellcheck="false"
-            data-redirect-uri="${esc(redirectUri)}">${esc(redirectUri)}</textarea>
+            data-redirect-uri="${esc(redirectUri)}" autocomplete="off">${esc(redirectUri)}</textarea>
           <button class="btn btn-outline btn-sm" type="button"
             onclick="window.copyField('driveRedirectUri')">📋 คัดลอก</button>
         </div>
@@ -1259,7 +1259,7 @@ router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(asyn
         <div class="field">
           <label for="driveLabel">ชื่อเรียกไดรฟ์นี้ *</label>
           <input type="text" id="driveLabel" maxlength="${MAX_DRIVE_LABEL}"
-            value="${esc(newAccount?.email || '')}" placeholder="เช่น ไดรฟ์โรงเรียน ชุดที่ 2" />
+            value="${esc(newAccount?.email || '')}" placeholder="เช่น ไดรฟ์โรงเรียน ชุดที่ 2" autocomplete="off" />
         </div>
         <input type="hidden" id="driveToken" value="${esc(tokens.refresh_token)}" />
         <button class="btn btn-primary" type="button" onclick="saveNewDrive(this)">บันทึกและใช้เก็บไฟล์ใหม่</button>
@@ -1288,7 +1288,7 @@ router.get('/admin/google-drive/callback', requireRole('admin')(requirePage(asyn
     <div class="card">
       ${tokens.refresh_token ? `
         <p>คัดลอกค่านี้ไปตั้งเป็น environment variable <code>GOOGLE_OAUTH_REFRESH_TOKEN</code> บนเซิร์ฟเวอร์ แล้ว redeploy อีกครั้ง (ค่านี้เป็นความลับ ห้ามแชร์ให้ใครเห็น):</p>
-        <textarea readonly style="width:100%;font-family:monospace;font-size:.85rem" rows="3" onclick="this.select()">${esc(tokens.refresh_token)}</textarea>
+        <textarea readonly style="width:100%;font-family:monospace;font-size:.85rem" rows="3" onclick="this.select()" autocomplete="off">${esc(tokens.refresh_token)}</textarea>
         <p class="text-muted" style="font-size:.8rem;margin-top:.5rem">อย่าลืมตั้ง <code>STORAGE_PROVIDER=google_drive</code> ด้วยถ้ายังไม่ได้ตั้ง</p>
       ` : `
         <div class="alert alert-warning">Google ไม่ได้ส่ง refresh token กลับมารอบนี้ (มักเกิดเมื่อเคยยินยอมมาก่อนแล้ว) — ไปที่ <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">การอนุญาตของบัญชี Google</a> เพิกถอนสิทธิ์ของแอปนี้ก่อน แล้วกด "เชื่อมต่อบัญชีใหม่" อีกครั้ง</div>
@@ -1392,7 +1392,7 @@ router.get('/admin/holidays', requireRole('admin')(requirePage((ctx) => {
       <div class="form-grid cols-2">
         <div class="field"><label>วันที่</label><input type="date" id="hDate" value="${year}-01-01" /></div>
         <div class="field"><label>ชื่อวันหยุด</label>
-          <input type="text" id="hName" maxlength="120" placeholder="เช่น วันวิสาขบูชา, วันหยุดชดเชย" /></div>
+          <input type="text" id="hName" maxlength="120" placeholder="เช่น วันวิสาขบูชา, วันหยุดชดเชย" autocomplete="off" /></div>
       </div>
       <button class="btn btn-primary" onclick="addHoliday(this)">เพิ่ม</button>
     </div>

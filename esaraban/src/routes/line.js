@@ -337,7 +337,7 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
       <h3 class="mt-0">ที่อยู่ Webhook ที่ต้องกรอกใน LINE Developers</h3>
       <p class="text-muted" style="font-size:.88rem">คัดลอกบรรทัดนี้ไปวางในช่อง Webhook URL แล้วกดเปิด "Use webhook"</p>
       <div class="flex gap-2 items-center">
-        <input type="text" id="webhookUrl" readonly value="${esc(webhookUrl)}" style="flex:1" />
+        <input type="text" id="webhookUrl" readonly value="${esc(webhookUrl)}" style="flex:1" autocomplete="off" />
         <button class="btn btn-outline btn-sm" type="button" onclick="copyWebhook()">คัดลอก</button>
       </div>
     </div>

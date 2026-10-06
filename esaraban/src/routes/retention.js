@@ -60,11 +60,11 @@ router.get('/retention', requireRole(...CAN_MANAGE, ...CAN_APPROVE)(requirePage(
           ${canManage ? `
           <div class="field" style="margin-top:1rem">
             <label>รายชื่อคณะกรรมการทำลายหนังสือ * (ตามระเบียบ อย่างน้อย 3 คน)</label>
-            <textarea name="committeeNames" required placeholder="เช่น 1. นายกก. ประธาน 2. นางกก. กรรมการ 3. นายกก. กรรมการและเลขานุการ"></textarea>
+            <textarea name="committeeNames" required placeholder="เช่น 1. นายกก. ประธาน 2. นางกก. กรรมการ 3. นายกก. กรรมการและเลขานุการ" autocomplete="off"></textarea>
           </div>
           <div class="field">
             <label>เหตุผล/หมายเหตุ</label>
-            <textarea name="reason" placeholder="เช่น เอกสารการเงินประจำปี 2558 ครบกำหนดเก็บ 5 ปีตามระเบียบ"></textarea>
+            <textarea name="reason" placeholder="เช่น เอกสารการเงินประจำปี 2558 ครบกำหนดเก็บ 5 ปีตามระเบียบ" autocomplete="off"></textarea>
           </div>
           <button class="btn btn-danger" type="submit">เสนอขอทำลาย (รายการที่เลือก)</button>
         </form>

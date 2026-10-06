@@ -59,7 +59,7 @@ router.get('/delegations', requirePage((ctx) => {
           <div class="field"><label>ตั้งแต่วันที่ *</label><input type="date" id="startDate" name="startDate" required /></div>
           <div class="field"><label>ถึงวันที่ *</label><input type="date" id="endDate" name="endDate" required /></div>
         </div>
-        <div class="field"><label>เหตุผล/หมายเหตุ</label><input type="text" id="reason" name="reason" placeholder="เช่น ไปราชการอบรมที่กรุงเทพฯ" /></div>
+        <div class="field"><label>เหตุผล/หมายเหตุ</label><input type="text" id="reason" name="reason" placeholder="เช่น ไปราชการอบรมที่กรุงเทพฯ" autocomplete="off" /></div>
         <button class="btn btn-primary" type="submit">มอบหมาย</button>
       </form>
     </div>

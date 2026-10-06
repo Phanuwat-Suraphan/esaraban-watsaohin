@@ -133,15 +133,15 @@ router.get('/leave/new', requirePage((ctx) => {
         <div class="callout-tip" id="dayCountHint" style="display:none"></div>
         <div class="field" id="destinationField" style="display:none">
           <label>สถานที่ไปราชการ</label>
-          <input type="text" id="destination" placeholder="เช่น สพฐ., โรงแรม..." />
+          <input type="text" id="destination" placeholder="เช่น สพฐ., โรงแรม..." autocomplete="off" />
         </div>
         <div class="field">
           <label>เหตุผล *</label>
-          <textarea id="reason" required placeholder="ระบุเหตุผลการลา/ไปราชการ"></textarea>
+          <textarea id="reason" required placeholder="ระบุเหตุผลการลา/ไปราชการ" autocomplete="off"></textarea>
         </div>
         <div class="field">
           <label>ช่องทางติดต่อระหว่างลา (ถ้ามี)</label>
-          <input type="text" id="contactInfo" placeholder="เบอร์โทร/LINE" />
+          <input type="text" id="contactInfo" placeholder="เบอร์โทร/LINE" autocomplete="off" />
         </div>
         <div class="field">
           <label>มอบหมายผู้รักษาการแทน (ถ้ามี)</label>

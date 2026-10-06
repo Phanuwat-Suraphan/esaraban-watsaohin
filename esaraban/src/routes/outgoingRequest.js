@@ -38,11 +38,11 @@ function requestFormCard(user) {
       <form id="outReqForm" class="stack">
         <div class="field">
           <label for="orTitle">เรื่อง *</label>
-          <input type="text" id="orTitle" maxlength="300" required placeholder="เช่น ขออนุญาตพานักเรียนไปทัศนศึกษา" />
+          <input type="text" id="orTitle" maxlength="300" required placeholder="เช่น ขออนุญาตพานักเรียนไปทัศนศึกษา" autocomplete="off" />
         </div>
         <div class="field">
           <label for="orTo">เรียน / หน่วยงานปลายทาง *</label>
-          <input type="text" id="orTo" maxlength="300" required placeholder="เช่น ผู้อำนวยการสำนักงานเขตพื้นที่การศึกษา" />
+          <input type="text" id="orTo" maxlength="300" required placeholder="เช่น ผู้อำนวยการสำนักงานเขตพื้นที่การศึกษา" autocomplete="off" />
         </div>
         <div class="form-grid cols-3">
           <div class="field"><label for="orDept">ฝ่ายที่รับผิดชอบ</label>
@@ -67,7 +67,7 @@ function requestFormCard(user) {
         </div>
         <div class="field">
           <label for="orNote">ข้อความถึงธุรการ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
-          <input type="text" id="orNote" maxlength="300" placeholder="เช่น ขอใช้ส่งวันศุกร์นี้" />
+          <input type="text" id="orNote" maxlength="300" placeholder="เช่น ขอใช้ส่งวันศุกร์นี้" autocomplete="off" />
         </div>
         <!-- ธุรการต้องได้เห็นตัวหนังสือก่อนตัดสินใจออกเลข เดิมเห็นแค่ชื่อเรื่องแล้วต้องไปตามขอไฟล์กัน
              ทางไลน์ทุกครั้ง ทั้งที่เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ -->
@@ -225,7 +225,7 @@ router.get('/outgoing-requests', requirePage((ctx) => {
       </div>
       <div class="field" style="margin-top:.6rem">
         <label for="num-${esc(r.id)}">เลขทะเบียนส่งที่ <span class="text-muted" style="font-weight:400">(เว้นว่าง = ให้ระบบออกเลขถัดไปให้)</span></label>
-        <input type="text" id="num-${esc(r.id)}" maxlength="60" placeholder="เว้นว่างให้ระบบออกเลขอัตโนมัติ" style="max-width:280px" />
+        <input type="text" id="num-${esc(r.id)}" maxlength="60" placeholder="เว้นว่างให้ระบบออกเลขอัตโนมัติ" style="max-width:280px" autocomplete="off" />
         <div class="help-text">พิมพ์เองได้ถ้าโรงเรียนใช้รูปแบบตามระเบียบ เช่น <code>ศธ 04xxx.yy/45</code> — ระบบจะใช้เลขนี้ทุกที่ (ทะเบียน/ตราประทับ/หน้าพิมพ์)</div>
       </div>
       <div class="chip-row">

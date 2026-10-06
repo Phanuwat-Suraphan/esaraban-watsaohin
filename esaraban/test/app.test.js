@@ -12244,6 +12244,80 @@ describe('หน้ารายละเอียดหนังสือ: เ�
  * โค้ดเบสนี้เคยแก้บั๊กแบบนี้มาแล้วที่ voidDocument (มีคอมเมนต์อธิบายไว้ในนั้น) แต่แก้เป็นรายจุด
  * ด่านนี้ปิดทั้งคลาส: เส้นทางใหม่ที่ลืมตรวจค่าก่อนเอาไปใช้จะถูกจับได้ทันที
  */
+/**
+ * ช่องกรอกทุกช่องต้องประกาศ autocomplete — ไม่งั้นเบราว์เซอร์เติมชื่อผู้ใช้ลงไปเอง
+ *
+ * เกิดขึ้นจริงและผู้ใช้ส่งภาพมาให้ดู: ตราธุรการบนหนังสือราชการขึ้นว่า
+ *   "เพื่อแจ้งฝ่ายงานreg001"
+ * ช่อง "ฝ่ายงานที่จะแจ้ง" ถูกเบราว์เซอร์เติมชื่อผู้ใช้ที่จำไว้ลงไป แล้วค่านั้นถูกปั๊มลงไฟล์ PDF
+ * ของหนังสือราชการจริง ซึ่งส่งออกไปข้างนอกแล้วแก้ไม่ได้
+ *
+ * ต้นเหตุคือหน้าเข้าสู่ระบบประกาศ autocomplete="username" ไว้ถูกต้อง (ซึ่งควรเป็นแบบนั้น
+ * เพื่อให้ตัวจัดการรหัสผ่านทำงาน) เบราว์เซอร์จึงจำรหัสประจำตัวไว้ แล้วเอาไปเสนอ/เติมให้กับ
+ * ช่องข้อความอื่นที่ไม่ได้ประกาศอะไรกำกับไว้เลย
+ *
+ * ด่านนี้คุมทั้งระบบ ไม่ใช่เฉพาะช่องที่เจอปัญหา เพราะช่องใหม่ที่ถูกเพิ่มทีหลังก็จะเจอแบบเดียวกัน
+ * และปลายทางของหลายช่องคือ "ตัวหนังสือราชการ" ซึ่งผิดแล้วเรียกคืนไม่ได้
+ */
+describe('ช่องกรอกต้องกันเบราว์เซอร์เติมชื่อผู้ใช้ลงไปเอง', () => {
+  // ค่าที่ยอมรับได้: off (ช่องทั่วไป) และค่าของช่องรหัสผ่านจริงซึ่งต้องให้ตัวจัดการรหัสผ่านทำงาน
+  const ALLOWED = new Set(['off', 'username', 'current-password', 'new-password']);
+  const TEXTY = new Set(['text', 'search', 'tel', 'email', 'number', 'password']);
+
+  const scan = () => {
+    const bad = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { walk(full); continue; }
+        if (!e.name.endsWith('.js')) continue;
+        const src = fs.readFileSync(full, 'utf8');
+        for (const m of src.matchAll(/<(input|textarea)\b[^>]*>/g)) {
+          const tag = m[0];
+          if (m[1] === 'input') {
+            const t = /type="([^"]+)"/.exec(tag)?.[1] || 'text';
+            if (!TEXTY.has(t)) continue;
+          }
+          const ac = /autocomplete="([^"]*)"/.exec(tag)?.[1];
+          if (ac === undefined || !ALLOWED.has(ac)) {
+            const line = src.slice(0, m.index).split('\n').length;
+            const id = /\bid="([^"]+)"/.exec(tag)?.[1] || /\bname="([^"]+)"/.exec(tag)?.[1] || '(ไม่มีชื่อ)';
+            bad.push(`${path.relative(process.cwd(), full)}:${line} ${id} → ${ac === undefined ? 'ไม่ประกาศเลย' : ac}`);
+          }
+        }
+      }
+    };
+    walk(new URL('../src', import.meta.url).pathname);
+    return bad;
+  };
+
+  test('ทุกช่องกรอกข้อความต้องประกาศ autocomplete', () => {
+    const bad = scan();
+    assert.deepEqual(bad, [],
+      `ช่องที่ไม่ได้กันไว้ ${bad.length} ช่อง — เบราว์เซอร์จะเติมชื่อผู้ใช้ลงไปเองได้:\n  ${bad.join('\n  ')}`);
+  });
+
+  // ช่องที่ค่าถูกปั๊มลงไฟล์ PDF ของหนังสือราชการ คือจุดที่ผิดแล้วเสียหายที่สุด เพราะส่งออกไปแล้ว
+  // เรียกคืนไม่ได้ — ยืนยันเป็นรายช่องไว้ด้วย ไม่ใช่พึ่งด่านรวมอย่างเดียว
+  test('ช่องที่ค่าไปขึ้นบนตราประทับ ต้องปิดการเติมอัตโนมัติแน่นอน', () => {
+    const src = fs.readFileSync(new URL('../src/routes/documents.js', import.meta.url), 'utf8');
+    for (const id of ['registrarUnit', 'assignRegistrarUnit', 'lateRegistrarUnit',
+      'decisionNotify', 'lateDirectorNotify', 'registrarNote', 'decisionNote',
+      'lateRegistrarNote', 'lateDirectorNote']) {
+      const tag = new RegExp(`<(?:input|textarea)[^>]*\\bid="${id}"[^>]*>`).exec(src)?.[0];
+      assert.ok(tag, `ไม่พบช่อง ${id}`);
+      assert.match(tag, /autocomplete="off"/, `${id} ต้องปิดการเติมอัตโนมัติ — ค่านี้ถูกปั๊มลงหนังสือราชการจริง`);
+    }
+  });
+
+  // หน้าเข้าสู่ระบบต้องยังให้ตัวจัดการรหัสผ่านทำงานตามปกติ ห้ามปิดไปด้วยความเผลอ
+  test('หน้าเข้าสู่ระบบต้องยังให้ตัวจัดการรหัสผ่านทำงานได้', () => {
+    const src = fs.readFileSync(new URL('../src/routes/auth.js', import.meta.url), 'utf8');
+    assert.match(src, /name="employeeCode"[^>]*autocomplete="username"/);
+    assert.match(src, /id="loginPassword"[^>]*autocomplete="current-password"/);
+  });
+});
+
 describe('ทุกเส้นทางต้องตอบด้วยภาษาที่คนอ่านรู้เรื่อง ไม่ใช่ข้อความของเครื่อง', () => {
   test('ยิงทุกเส้นทาง POST ด้วยข้อมูลว่าง ต้องไม่มีอันไหน 5xx หรือพ่นภาษาเครื่อง', () => {
     const raw = execFileSync(process.execPath, ['--no-warnings', 'test/postRouteSweep.mjs'], {

@@ -291,7 +291,7 @@ router.get('/documents', requirePage((ctx) => {
         <!-- ช่องนี้ค้นได้มากกว่าที่คนเดาเอง (เลขที่ต้นทาง และชื่อไฟล์แนบ) ถ้าไม่บอกไว้ตรงนี้ก็ไม่มีใครลอง -->
         <input type="text" name="q" value="${esc(q)}" aria-label="ค้นหาในทะเบียน" placeholder="ค้นเลขทะเบียน / เรื่อง / ที่ต้นทาง / ชื่อไฟล์แนบ"
           title="ค้นได้จาก: เลขทะเบียน, ชื่อเรื่อง, สาระสำคัญ, หน่วยงานต้นทาง/ปลายทาง, เลขที่หนังสือต้นทาง และชื่อไฟล์ที่แนบไว้"
-          style="max-width:320px" />
+          style="max-width:320px" autocomplete="off" />
         <select name="status" aria-label="กรองตามสถานะ" style="max-width:180px">
           <option value="">ทุกสถานะ</option>
           ${Object.entries(LABELS.STATUS_LABEL).map(([k, v]) => opt(k, v, statusFilter)).join('')}
@@ -422,7 +422,7 @@ router.get('/documents', requirePage((ctx) => {
           <option value="">— เลือกผู้รับมอบหมาย —</option>
           ${listUserOptions(ctx.user.id)}
         </select>
-        <input type="text" id="bulkInstruction" maxlength="500" placeholder="ข้อความเกษียณ/สั่งการ (เว้นว่างได้)" style="max-width:320px" />
+        <input type="text" id="bulkInstruction" maxlength="500" placeholder="ข้อความเกษียณ/สั่งการ (เว้นว่างได้)" style="max-width:320px" autocomplete="off" />
         <button class="btn btn-primary btn-sm" type="button" onclick="submitBulkAssign(this)">เสนอ/มอบหมายที่เลือก</button>
         <button class="btn btn-outline btn-sm" type="button" onclick="clearPicks()">ล้างที่เลือก</button>
       </div>
@@ -556,11 +556,11 @@ router.get('/documents/new', requirePage((ctx) => {
         <div class="form-grid cols-2">
           <div class="field">
             <label>ชื่อเรื่อง *</label>
-            <input type="text" name="title" required placeholder="เช่น ขออนุมัติจัดโครงการ..." />
+            <input type="text" name="title" required placeholder="เช่น ขออนุมัติจัดโครงการ..." autocomplete="off" />
           </div>
           <div class="field">
             <label>${direction === 'incoming' ? 'หน่วยงาน/บุคคลต้นทาง' : 'หน่วยงาน/บุคคลปลายทาง'} *</label>
-            <input type="text" name="correspondentName" required placeholder="เช่น สพฐ., ผู้ปกครอง..." />
+            <input type="text" name="correspondentName" required placeholder="เช่น สพฐ., ผู้ปกครอง..." autocomplete="off" />
           </div>
           <div class="field">
             <label>ฝ่ายที่รับผิดชอบ *</label>
@@ -576,7 +576,7 @@ router.get('/documents/new', requirePage((ctx) => {
         </div>
         <div class="field">
           <label>สาระสำคัญ / หมายเหตุ</label>
-          <textarea name="subject" placeholder="สรุปใจความสำคัญของหนังสือ"></textarea>
+          <textarea name="subject" placeholder="สรุปใจความสำคัญของหนังสือ" autocomplete="off"></textarea>
         </div>
         <!-- ช่องของ "ทะเบียนหนังสือรับ" อยู่นอกปุ่มตัวเลือกเพิ่มเติมโดยตั้งใจ — สี่ช่องนี้คือคอลัมน์หลัก
              ของทะเบียนหนังสือรับตามระเบียบงานสารบรรณ (ทะเบียนรับที่ / ที่ / ลงวันที่ / วันที่รับ)
@@ -585,7 +585,7 @@ router.get('/documents/new', requirePage((ctx) => {
         <div class="form-grid cols-2">
           <div class="field">
             <label>ทะเบียน${direction === 'incoming' ? 'รับ' : 'ส่ง'}ที่ (กำหนดเอง)</label>
-            <input type="text" name="customDocNumber" placeholder="เว้นว่างให้ระบบออกเลขให้อัตโนมัติ (เช่น ${esc(previewNextNumber(direction))})" />
+            <input type="text" name="customDocNumber" placeholder="เว้นว่างให้ระบบออกเลขให้อัตโนมัติ (เช่น ${esc(previewNextNumber(direction))})" autocomplete="off" />
             <div class="help-text">พิมพ์เลขเองได้ถ้าไม่ต้องการเลขเรียงอัตโนมัติ — ระบบจะใช้เลขที่พิมพ์นี้ทุกที่ (ทะเบียน/ตราประทับ/พิมพ์เอกสาร) และแก้ทีหลังได้</div>
           </div>
           ${direction === 'outgoing' ? `
@@ -610,7 +610,7 @@ router.get('/documents/new', requirePage((ctx) => {
           </div>` : ''}
           <div class="field">
             <label>เลขหนังสือ${direction === 'incoming' ? 'จากต้นทาง (ถ้ามี)' : 'อ้างอิง (ถ้ามี)'}</label>
-            <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" />
+            <input type="text" name="externalDocNumber" placeholder="เช่น ศธ 04123/55 หรือเว้นว่างถ้าไม่มี" autocomplete="off" />
           </div>
           <div class="field">
             <label>ลงวันที่ (วันที่ในหนังสือต้นฉบับ)</label>
@@ -848,7 +848,7 @@ router.get('/documents/bulk', requirePage((ctx) => {
       <div class="form-grid cols-3">
         <div class="field">
           <label>${isIn ? 'หน่วยงาน/บุคคลต้นทาง' : 'หน่วยงาน/บุคคลปลายทาง'}</label>
-          <input type="text" id="defCorrespondent" placeholder="เช่น สพป.เชียงใหม่ เขต 1" />
+          <input type="text" id="defCorrespondent" placeholder="เช่น สพป.เชียงใหม่ เขต 1" autocomplete="off" />
         </div>
         <div class="field">
           <label>ฝ่ายที่รับผิดชอบ</label>
@@ -956,9 +956,9 @@ router.get('/documents/bulk', requirePage((ctx) => {
             + '</div>'
             + '<div class="form-grid cols-3">'
             +   '<div class="field"><label>ชื่อเรื่อง *</label>'
-            +     '<input type="text" data-f="title" data-i="' + i + '" value="' + esc(r.title) + '" placeholder="ชื่อเรื่องของหนังสือฉบับนี้" /></div>'
+            +     '<input type="text" data-f="title" data-i="' + i + '" value="' + esc(r.title) + '" placeholder="ชื่อเรื่องของหนังสือฉบับนี้" autocomplete="off" /></div>'
             +   '<div class="field"><label>' + (DIRECTION === 'incoming' ? 'หน่วยงานต้นทาง *' : 'หน่วยงานปลายทาง *') + '</label>'
-            +     '<input type="text" data-f="correspondentName" data-i="' + i + '" value="' + esc(r.correspondentName) + '" /></div>'
+            +     '<input type="text" data-f="correspondentName" data-i="' + i + '" value="' + esc(r.correspondentName) + '" autocomplete="off" /></div>'
             +   '<div class="field"><label>ฝ่ายที่รับผิดชอบ</label>'
             +     '<select data-f="departmentId" data-i="' + i + '">' + deptHtml + '</select></div>'
             +   '<div class="field"><label>ความเร็ว</label>'
@@ -1802,9 +1802,9 @@ router.get('/documents/:id', requirePage((ctx) => {
             <span>${esc(m.label)}</span>
           </label>`).join('')}
           <input type="text" id="registrarUnit" maxlength="60" placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)"
-                 style="margin-top:.4rem" oninput="window.updateRegistrarPreview && window.updateRegistrarPreview()" />
+                 style="margin-top:.4rem" oninput="window.updateRegistrarPreview && window.updateRegistrarPreview()" autocomplete="off" />
           <textarea id="registrarNote" style="margin-top:.4rem" placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)"
-                    oninput="window.updateRegistrarPreview && window.updateRegistrarPreview()"></textarea>
+                    oninput="window.updateRegistrarPreview && window.updateRegistrarPreview()" autocomplete="off"></textarea>
           <div class="callout-tip">
             ✍️ ตรานี้ไม่มีลายเซ็นของคุณอยู่บนหน้ากระดาษแล้ว — ปั๊มแล้วส่งขึ้นไปได้เลย
             ระบบยังบันทึกไว้อยู่ว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่ ทั้งในประวัติการใช้งานและในความเห็นของหนังสือฉบับนี้
@@ -1823,7 +1823,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               const body = (m) => (m.fillable
                 ? `<span>แจ้งให้</span>
                    <input type="text" id="decisionNotify" placeholder="ระบุชื่อ/ฝ่าย" style="max-width:180px"
-                          oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" />
+                          oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" autocomplete="off" />
                    <span>ทราบ</span>`
                 : esc(m.label));
               // อนุญาต/ไม่อนุญาต และ อนุมัติ/ไม่อนุมัติ วางคู่กันในบรรทัดเดียวเหมือนตรายางจริง —
@@ -1843,7 +1843,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             <label style="margin-bottom:0"><span class="step-num">3</span> ข้อความบนตราประทับ "เห็นควรให้..." <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
             <button type="button" class="btn btn-outline btn-sm" style="flex:0 0 auto;white-space:nowrap" onclick="window.clearDecisionInputs()">🗑️ ล้างค่า</button>
           </div>
-          <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง" oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()"></textarea>
+          <textarea id="decisionNote" placeholder="พิมพ์ข้อความที่จะแสดงบนตราประทับในไฟล์ PDF จริง" oninput="window.updateDecisionMarksPreview && window.updateDecisionMarksPreview()" autocomplete="off"></textarea>
           <div class="callout-tip">
             💡 กด <strong>👁️ ดูตัวอย่าง</strong> ที่ไฟล์แนบไฟล์แรก เพื่อดูว่าตราประทับจะออกมาหน้าตาแบบไหนก่อนกดยืนยัน
           </div>
@@ -1990,7 +1990,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         <div class="stack">
           <div class="field">
             <label>ข้อความเพิ่มเติม <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
-            <input type="text" id="broadcastNote" placeholder="เช่น ขอเชิญคณะครูทุกท่านเข้าร่วม" />
+            <input type="text" id="broadcastNote" placeholder="เช่น ขอเชิญคณะครูทุกท่านเข้าร่วม" autocomplete="off" />
           </div>
           <button class="btn btn-primary" onclick="doBroadcast(this)">📢 ${broadcasts.length ? 'ประชาสัมพันธ์ซ้ำอีกครั้ง' : 'ประชาสัมพันธ์ให้ทุกคน'}</button>
           ${!broadcasts.length && !currentStep(doc.id) && !['completed', 'archived'].includes(doc.status)
@@ -2078,7 +2078,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             </div>
             <div class="field">
               <label>เหตุผล *</label>
-              <input type="text" id="fixWhy-${esc(st.id)}" maxlength="200" placeholder="เช่น ครูลาคลอด / เลือกผิดคน" />
+              <input type="text" id="fixWhy-${esc(st.id)}" maxlength="200" placeholder="เช่น ครูลาคลอด / เลือกผิดคน" autocomplete="off" />
             </div>
           </div>
           <div class="chip-row">
@@ -2103,7 +2103,7 @@ router.get('/documents/:id', requirePage((ctx) => {
           </div>
           <div class="field">
             <label>เหตุผล <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
-            <input type="text" id="addWhy" maxlength="200" placeholder="เช่น ตกหล่นตอนสั่งการ" />
+            <input type="text" id="addWhy" maxlength="200" placeholder="เช่น ตกหล่นตอนสั่งการ" autocomplete="off" />
           </div>
         </div>
         <div class="field">
@@ -2225,7 +2225,7 @@ router.get('/documents/:id', requirePage((ctx) => {
         </div>
         <div class="field">
           <label>ข้อความ/คำสั่ง</label>
-          <textarea id="assignInstruction" placeholder="เช่น เพื่อโปรดพิจารณา"></textarea>
+          <textarea id="assignInstruction" placeholder="เช่น เพื่อโปรดพิจารณา" autocomplete="off"></textarea>
         </div>
         ${stampAtt && ctx.user.roleCodes.includes('registrar') ? `
         <div class="field">
@@ -2236,9 +2236,9 @@ router.get('/documents/:id', requirePage((ctx) => {
             <span>${esc(m.label)}</span>
           </label>`).join('')}
           <input type="text" id="assignRegistrarUnit" maxlength="60" style="margin-top:.4rem"
-                 placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)" />
+                 placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)" autocomplete="off" />
           <textarea id="assignRegistrarNote" style="margin-top:.4rem"
-                    placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)"></textarea>
+                    placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)" autocomplete="off"></textarea>
           <div class="callout-tip">
             ✍️ ระบบจะปั๊มตรานี้ลงไฟล์ PDF จริงที่มุมซ้ายล่าง — <strong>ไม่มีลายเซ็นของคุณอยู่บนตราแล้ว</strong>
             ปั๊มแล้วส่งขึ้นไปให้ ผอ. ได้เลย ระบบยังบันทึกไว้อยู่ว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่
@@ -2351,9 +2351,9 @@ router.get('/documents/:id', requirePage((ctx) => {
             <span>${esc(m.label)}</span>
           </label>`).join('')}
           <input type="text" id="lateDirectorNotify" maxlength="60" style="margin-top:.4rem"
-                 placeholder="ชื่อผู้ที่ต้องแจ้ง (เติมในข้อ &quot;แจ้งให้ ........ ทราบ&quot;)" />
+                 placeholder="ชื่อผู้ที่ต้องแจ้ง (เติมในข้อ &quot;แจ้งให้ ........ ทราบ&quot;)" autocomplete="off" />
           <textarea id="lateDirectorNote" style="margin-top:.4rem"
-                    placeholder="ความเห็น/คำสั่งการที่จะปั๊มลงหนังสือ"></textarea>
+                    placeholder="ความเห็น/คำสั่งการที่จะปั๊มลงหนังสือ" autocomplete="off"></textarea>
         </div>
         <button class="btn btn-primary" type="button" onclick="doLateDirectorStamp(this)">🖋️ ปั๊มความเห็นลงไฟล์</button>
         <div class="help-text">ปั๊มลงไฟล์ PDF จริงที่มุมขวาล่าง พร้อมลายเซ็นและตำแหน่งของท่าน
@@ -2404,9 +2404,9 @@ router.get('/documents/:id', requirePage((ctx) => {
             <span>${esc(m.label)}</span>
           </label>`).join('')}
           <input type="text" id="lateRegistrarUnit" maxlength="60" style="margin-top:.4rem"
-                 placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)" />
+                 placeholder="ฝ่ายงานที่จะแจ้ง (เติมในข้อ &quot;เพื่อแจ้งฝ่ายงาน&quot;)" autocomplete="off" />
           <textarea id="lateRegistrarNote" style="margin-top:.4rem"
-                    placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)"></textarea>
+                    placeholder="ความคิดเห็นที่จะเสนอ ผอ. (เติมในข้อ &quot;เสนอความคิดเห็น&quot;)" autocomplete="off"></textarea>
         </div>
         <button class="btn btn-primary" type="button" onclick="doLateRegistrarStamp(this)">✍️ ปั๊มตราเสนอ ผอ. ลงไฟล์</button>
         <div class="help-text">ปั๊มลงไฟล์ PDF จริงที่มุมซ้ายล่าง และบันทึกไว้ในระบบว่าคุณเป็นผู้เสนอเรื่องนี้เมื่อไหร่
@@ -2491,7 +2491,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             </div>
             <div class="field">
               <label for="sentNote">เลขพัสดุ / ผู้รับ / หมายเหตุ <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
-              <input type="text" id="sentNote" maxlength="200" value="${esc(doc.sent_note || '')}" placeholder="เช่น EX123456789TH หรือ มอบคุณครูสมชายนำไปส่ง" />
+              <input type="text" id="sentNote" maxlength="200" value="${esc(doc.sent_note || '')}" placeholder="เช่น EX123456789TH หรือ มอบคุณครูสมชายนำไปส่ง" autocomplete="off" />
             </div>
             <div class="chip-row">
               <button class="btn btn-primary btn-sm" type="button" onclick="saveDispatch(this)">บันทึกการส่ง</button>
@@ -2795,7 +2795,7 @@ router.get('/documents/:id', requirePage((ctx) => {
             <div class="form-grid cols-2" style="margin-top:.7rem">
               <div class="field">
                 <label for="regNumEdit">ทะเบียน${doc.direction === 'incoming' ? 'รับ' : 'ส่ง'}ที่</label>
-                <input type="text" id="regNumEdit" value="${esc(doc.doc_number_display)}" />
+                <input type="text" id="regNumEdit" value="${esc(doc.doc_number_display)}" autocomplete="off" />
               </div>
               ${doc.direction === 'incoming' ? `<div class="field">
                 <label for="recvDateEdit">วันที่รับ</label>
@@ -3195,7 +3195,7 @@ router.get('/documents/:id', requirePage((ctx) => {
               <div>${esc(c.message)}</div></div>`).join('') || '<p class="text-muted">ยังไม่มีความคิดเห็น</p>'}
           </div>
           <form id="commentForm" style="margin-top:.7rem" class="flex gap-2">
-            <input type="text" id="commentInput" placeholder="แสดงความคิดเห็น..." style="flex:1" />
+            <input type="text" id="commentInput" placeholder="แสดงความคิดเห็น..." style="flex:1" autocomplete="off" />
             <button class="btn btn-outline" type="submit">ส่ง</button>
           </form>
           <script>

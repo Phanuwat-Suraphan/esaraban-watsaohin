@@ -139,7 +139,7 @@ router.get('/admin/migrate', ADMIN_ONLY(requirePage((ctx) => {
       <div class="chip-row" style="margin-top:.6rem">
         <button class="btn btn-outline btn-sm" onclick="copyNames()">คัดลอกรายชื่อตัวแปรที่ตั้งไว้ (${setVars.length} ตัว)</button>
       </div>
-      <textarea id="varNames" readonly style="display:none">${esc(setVars.map((v) => v.name).join('\n'))}</textarea>
+      <textarea id="varNames" readonly style="display:none" autocomplete="off">${esc(setVars.map((v) => v.name).join('\n'))}</textarea>
     </div>
 
     <!-- แสดงเสมอ ไม่ใช่เฉพาะตอนที่มีตัวค้างอยู่ — ตอนย้ายเซิร์ฟเวอร์คนมักคัดลอกตัวแปร "ทั้งหมด"

@@ -178,7 +178,7 @@ export function lineShareBlock({ key, text, copyLabel = '📋 คัดลอก
   const box = `<details style="${inline ? 'flex-basis:100%;margin:0' : 'margin-top:.4rem'}">
       <summary class="text-muted" style="font-size:.82rem;cursor:pointer">ดูข้อความที่จะส่ง</summary>
       <textarea id="${id}" readonly rows="${rows}" onclick="this.select()"
-        style="width:100%;margin-top:.4rem;font:inherit;font-size:.85rem">${esc(text)}</textarea>
+        style="width:100%;margin-top:.4rem;font:inherit;font-size:.85rem" autocomplete="off">${esc(text)}</textarea>
     </details>`;
   return inline ? `${buttons}\n    ${box}` : `<div class="chip-row">\n      ${buttons}\n    </div>\n    ${box}`;
 }

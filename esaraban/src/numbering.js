@@ -125,6 +125,31 @@ export function runningNumberFromDisplay(display) {
 }
 
 /**
+ * ซ่อมแถวที่ "เลขลำดับในเล่ม" ไม่ตรงกับ "เลขที่แสดง" ของทะเบียนหนังสือส่งปีนั้น
+ *
+ * ของเก่าที่ถูกแก้เลขไว้ก่อนที่ระบบจะซิงก์สองค่านี้ให้ (ดู runningNumberFromDisplay) ยังค้างอยู่ใน
+ * ฐานข้อมูล และมองจากหน้าจอไม่เห็นเลย — เห็นแต่อาการ คือฉบับถัดไปได้เลขกระโดด และด่านดึงเลขกลับ
+ * บอกว่าติดเลขที่ไม่มีฉบับไหนแสดงอยู่จริง ซึ่งผู้ใช้หาต้นตอเองไม่ได้
+ *
+ * เรียกตอนธุรการกดบันทึกรูปแบบเลข เพราะนั่นคือจังหวะที่เขากำลังจัดการเรื่องเลขของเล่มอยู่พอดี
+ * และเป็นจังหวะเดียวกับที่ด่านดึงเลขกลับจะอ่านค่าสูงสุด — ซ่อมก่อนอ่านจึงได้ค่าที่ตรงความจริง
+ *
+ * แถวที่อ่านเลขจากเลขที่แสดงไม่ได้ (เช่น "ศธ 04047.109/พิเศษ") ถูกข้ามไป ไม่ไปแตะของเดิม
+ */
+export function repairOutgoingRunningNumbers(year = beYear()) {
+  const rows = db.prepare(`SELECT id, doc_number_display, running_number FROM documents
+    WHERE year_be = ? AND direction = 'outgoing' AND deleted_at IS NULL`).all(year);
+  const fixed = [];
+  for (const r of rows) {
+    const n = runningNumberFromDisplay(r.doc_number_display);
+    if (n === null || n === r.running_number) continue;
+    db.prepare('UPDATE documents SET running_number = ? WHERE id = ?').run(n, r.id);
+    fixed.push({ id: r.id, display: r.doc_number_display, before: r.running_number, after: n });
+  }
+  return fixed;
+}
+
+/**
  * ตำแหน่งปัจจุบันของทะเบียนหนังสือส่งทั่วไป โดย "ยังไม่คิดเลขพื้น" — ฉบับถัดไปคือค่านี้ + 1
  *
  * มีไว้ให้หน้าเว็บคำนวณตัวอย่างเลขสดๆ ตอนที่ธุรการกำลังพิมพ์เลขพื้นอยู่ ซึ่งตอนนั้นค่ายังไม่ถูกบันทึก

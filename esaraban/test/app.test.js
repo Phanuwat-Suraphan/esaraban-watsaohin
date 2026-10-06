@@ -6991,6 +6991,36 @@ describe('ทะเบียนหนังสือส่ง: ออกเล�
         assert.equal(runningOf(doc.json.documentId), 931, 'ต้องไม่อ่านปี พ.ศ. มาเป็นเลขลำดับ');
       });
 
+      // ของเก่าที่ถูกแก้เลขไว้ก่อนมีการซิงก์ ยังค้างอยู่ในฐานข้อมูลและมองจากหน้าจอไม่เห็นเลย
+      // เห็นแต่อาการ คือฉบับถัดไปได้เลขกระโดด และด่านดึงเลขกลับติดเลขที่ไม่มีฉบับไหนแสดงอยู่จริง
+      test('กดบันทึกรูปแบบเลข ต้องซ่อมแถวเก่าที่เลขลำดับไม่ตรงกับเลขที่แสดงให้เอง', async () => {
+        const req = await ask(teacher(), { title: `แถวเก่าที่รอการซ่อม ${++n}` });
+        const doc = await issue(req.json.id);
+        const id = doc.json.documentId;
+        const stale = runningOf(id);
+        const shown = stale - 4;
+        // จำลองของเก่า: แก้แต่เลขที่แสดง ปล่อยเลขลำดับค้างไว้ (คือบั๊กที่เพิ่งแก้ไป)
+        db.prepare('UPDATE documents SET doc_number_display = ? WHERE id = ?').run(`ศธ 04047.109/${shown}`, id);
+
+        const saved = await dispatchPost(registrar(), '/outgoing-requests/numbering',
+          { outgoing_number_prefix: 'ศธ 04047.109' });
+        assert.equal(saved.status, 200, saved.body);
+        assert.ok(saved.json.repaired >= 1, `ต้องบอกว่าซ่อมไปกี่ฉบับ — ได้ ${saved.json.repaired}`);
+        assert.equal(runningOf(id), shown, 'แถวเก่าต้องถูกซ่อมให้ตรงกับเลขที่แสดง');
+
+        // ต้องตรวจย้อนได้ว่าระบบไปแก้เลขลำดับของฉบับไหนจากอะไรเป็นอะไร
+        const log = db.prepare(`SELECT user_id, detail FROM audit_logs
+          WHERE action = 'outgoing_running_numbers_repaired' ORDER BY created_at DESC LIMIT 1`).get();
+        assert.ok(log, 'การซ่อมเลขลำดับต้องมีบันทึกไว้');
+        assert.equal(log.user_id, seed.userIds.reg001);
+        assert.ok(JSON.parse(log.detail).fixed.some((f) => f.id === id && f.after === shown));
+
+        // กดซ้ำอีกครั้งต้องไม่มีอะไรให้ซ่อมแล้ว ไม่ใช่ไล่แก้วนไปเรื่อยๆ
+        const again = await dispatchPost(registrar(), '/outgoing-requests/numbering',
+          { outgoing_number_prefix: 'ศธ 04047.109' });
+        assert.equal(again.json.repaired, 0, 'ซ่อมแล้วต้องนิ่ง ไม่มีอะไรให้ซ่อมซ้ำ');
+      });
+
       // เส้นทางแก้ทะเบียนที่หน้าหนังสือเป็นคนละเส้นกับหน้าออกเลข ต้องซิงก์เหมือนกันทั้งคู่
       test('แก้เลขที่หน้าหนังสือก็ต้องซิงก์เลขลำดับเหมือนกัน', async () => {
         const req = await ask(teacher(), { title: `แก้ที่หน้าหนังสือ ${++n}` });

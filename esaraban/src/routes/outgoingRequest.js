@@ -12,6 +12,7 @@ import { layout, esc, fmtDate, fmtThaiDateShort, emptyState, priorityBadge, rowL
 import { requireApi, requirePage } from '../middleware.js';
 import {
   previewNextNumber, outgoingCounterPosition, highestLiveOutgoing, setOutgoingCounter,
+  repairOutgoingRunningNumbers,
 } from '../numbering.js';
 import { db, todayInBangkok, beYear, audit } from '../db.js';
 import {
@@ -490,7 +491,8 @@ router.get('/outgoing-requests', requirePage((ctx) => {
                 return;
               }
               if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
-              toast('บันทึกแล้ว — ฉบับถัดไปจะได้เลข ' + res.d.nextOutgoingNumber, 'success');
+              toast('บันทึกแล้ว — ฉบับถัดไปจะได้เลข ' + res.d.nextOutgoingNumber
+                + (res.d.repaired ? ' (ซ่อมเลขลำดับที่ไม่ตรงกับเลขที่แสดง ' + res.d.repaired + ' ฉบับ)' : ''), 'success');
               setTimeout(function(){ location.reload(); }, 1400);
             })
             .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
@@ -755,6 +757,16 @@ router.post('/outgoing-requests/numbering', requireApi(async (ctx) => {
    * ด่านที่กันไว้: ถ้ายังมีหนังสือ "ที่ยังอยู่ในทะเบียน" ถือเลขสูงกว่าที่ขอ จะปฏิเสธและบอกเลขที่ขวางอยู่
    * ให้ไปจัดการก่อน — ไม่งั้นฉบับถัดไปจะได้เลขซ้ำกับหนังสือที่ส่งออกไปข้างนอกแล้วจริงๆ
    */
+  // ซ่อมแถวที่เลขลำดับไม่ตรงกับเลขที่แสดงก่อนเสมอ — ต้องทำก่อนอ่านค่าสูงสุดในด่านข้างล่าง ไม่งั้นด่าน
+  // จะอ่านเลขเก่าที่ค้างอยู่แล้วบอกว่าติดเลขที่ไม่มีฉบับไหนแสดงอยู่จริง ซึ่งผู้ใช้หาต้นตอเองไม่ได้
+  const repaired = repairOutgoingRunningNumbers();
+  if (repaired.length) {
+    audit({
+      userId: ctx.user.id, action: 'outgoing_running_numbers_repaired', tableName: 'documents',
+      recordId: `${beYear()}:outgoing`, detail: { count: repaired.length, fixed: repaired },
+    });
+  }
+
   let rewindTo = null;
   if (start && Number(startYear) === beYear()) {
     const wanted = Number(start);
@@ -790,7 +802,10 @@ router.post('/outgoing-requests/numbering', requireApi(async (ctx) => {
       recordId: `${beYear()}:outgoing`, detail: { to: rewindTo, next: rewindTo + 1 },
     });
   }
-  json(ctx, 200, { ok: true, nextOutgoingNumber: previewNextNumber('outgoing'), rewound: rewindTo !== null });
+  json(ctx, 200, {
+    ok: true, nextOutgoingNumber: previewNextNumber('outgoing'),
+    rewound: rewindTo !== null, repaired: repaired.length,
+  });
 }));
 
 router.post('/outgoing-requests', requireApi(async (ctx) => {

@@ -491,19 +491,32 @@ const EDITABLE_LABEL = {
  * ลบเฉพาะ "บันทึกคำขอ" เท่านั้น ถ้าออกเลขไปแล้วตัวหนังสือยังอยู่ในทะเบียนตามเดิมโดยตั้งใจ — ลบหนังสือ
  * ทิ้งพร้อมกันจะทำให้เลขทะเบียนขาดเป็นรูโหว่ในเล่มที่อธิบายไม่ได้ตอนตรวจ ถ้าหนังสือไม่ได้ใช้จริงต้อง
  * ไป "ยกเลิกเอกสาร" ที่ตัวหนังสือ ซึ่งเลขยังคงอยู่ในลำดับพร้อมเหตุผลกำกับ ตามหลักงานสารบรรณ
+ *
+ * เปิดให้ธุรการลบได้เหมือนกับการแก้ ด้วยเหตุผลเดียวกัน: รายการคำขอเป็นหน้าทำงานของธุรการ ใบที่กดซ้ำ
+ * ใบที่พิมพ์เล่น ใบที่ครูขอมาแล้วไม่ได้ใช้ ล้วนเป็นขยะบนหน้าจอของธุรการเอง ซึ่งคนที่ต้องเก็บกวาดก็คือ
+ * ธุรการ ไม่ใช่คนที่ต้องไปตามผู้ดูแลระบบมาลบให้ทีละใบ
+ *
+ * สิ่งที่กันไว้แทนคือ: ด่าน PIN ที่ชั้น route, ตัวหนังสือที่ออกเลขไปแล้วไม่ถูกแตะเลย (เลขยังอยู่ในเล่ม)
+ * และ audit log ที่เก็บเนื้อใบที่ลบทิ้งไว้ครบ จึงยังตอบได้เสมอว่าใบที่หายไปคืออะไรและใครลบ
  */
 export function deleteOutgoingRequest({ requestId, actorUser }) {
-  if (!actorUser?.roleCodes.includes('admin')) {
-    throw httpError(403, 'ลบคำขอเลขหนังสือส่งได้เฉพาะผู้ดูแลระบบเท่านั้น');
+  if (!canIssueOutgoingNumber(actorUser)) {
+    throw httpError(403, 'ลบคำขอเลขหนังสือส่งได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
   }
   const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(requestId);
   if (!req) throw httpError(404, 'ไม่พบคำขอนี้');
 
   db.prepare('DELETE FROM outgoing_request_files WHERE request_id = ?').run(requestId);
   db.prepare('DELETE FROM outgoing_number_requests WHERE id = ?').run(requestId);
+  // เก็บเนื้อใบไว้ให้ครบ ไม่ใช่แค่ชื่อเรื่อง — ใบที่ลบไปแล้วเรียกคืนจากตารางไม่ได้ ถ้าลบผิดใบ
+  // บันทึกนี้คือสิ่งเดียวที่บอกได้ว่าในใบนั้นมีอะไรเขียนไว้ และพิมพ์กลับเข้าไปใหม่ได้
   audit({
     userId: actorUser.id, action: 'outgoing_number_request_deleted', tableName: 'outgoing_number_requests', recordId: requestId,
-    detail: { title: req.title, status: req.status, documentId: req.document_id || null, requesterId: req.requester_id },
+    detail: {
+      title: req.title, status: req.status, documentId: req.document_id || null, requesterId: req.requester_id,
+      correspondentName: req.correspondent_name, fromName: req.from_name || null, actionNote: req.action_note || null,
+      note: req.note || null, createdAt: req.created_at,
+    },
   });
   return { ok: true, documentKept: Boolean(req.document_id), documentId: req.document_id || null };
 }

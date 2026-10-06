@@ -75,6 +75,26 @@ export function fmtThaiDateLong(iso) {
 // วันที่แบบสั้นอ่านง่าย "25 ส.ค. 2569" — ใช้กับตารางและหน้ารายละเอียดทั่วไป ที่ต้องการเห็นวันเร็วๆ
 // (ห้ามโชว์รูปแบบดิบจากฐานข้อมูลอย่าง "2026-08-25" ให้ผู้ใช้เห็น — เป็น ค.ศ. และไม่ใช่รูปแบบไทย
 //  อ่านแล้วต้องแปลงในหัวเองทุกครั้ง หน้าอื่นๆ ในระบบก็แสดงเป็น พ.ศ. อยู่แล้ว จะสับสนกันเอง)
+/**
+ * กล่องเตือนว่าค่าตั้งเลขทะเบียนหนังสือส่งยังไม่ได้ตั้งเป็น env var
+ *
+ * รับผลของ missingOutgoingNumberEnv() มาเรนเดอร์ — อยู่ที่นี่เพราะมีสองหน้าที่ตั้งค่าชุดนี้ได้
+ * (ตั้งค่าโรงเรียนของผู้ดูแล และหน้าขอเลขหนังสือส่งของธุรการ) ถ้าก๊อปกล่องนี้ไว้ทั้งสองที่
+ * วันหนึ่งจะแก้ที่เดียวแล้วอีกหน้าเตือนด้วยข้อความเก่าที่ไม่ตรงกัน
+ */
+export function envNumberWarningBox(missing) {
+  if (!missing?.length) return '';
+  return `
+    <div class="alert alert-warning" style="margin-top:.6rem">
+      ⚠️ <strong>ตั้งค่านี้ไว้ในหน้าเว็บอย่างเดียวยังไม่ปลอดภัย</strong>
+      — ถ้าเซิร์ฟเวอร์นี้เป็นแบบที่ดิสก์ถูกล้างตอน deploy (เช่น Render แบบฟรี) ค่าที่กรอกไว้จะหายไป
+      แล้วหนังสือฉบับถัดไปจะได้เลขย้อนกลับไปเริ่มใหม่ <strong>โดยไม่มีอะไรเตือน</strong>
+      <div style="margin-top:.4rem">ให้ไปตั้ง Environment Variable เหล่านี้บนเซิร์ฟเวอร์ด้วย แล้วค่าจะอยู่รอดทุก deploy:</div>
+      <pre style="margin:.4rem 0 0;white-space:pre-wrap;word-break:break-all">${
+  missing.map((m) => `${m.envName}=${esc(m.value)}`).join('\n')}</pre>
+    </div>`;
+}
+
 export function fmtThaiDateShort(iso) {
   if (!iso) return '-';
   const { d, tz, ok } = parseForDisplay(iso);

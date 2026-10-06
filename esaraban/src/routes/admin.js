@@ -1,5 +1,5 @@
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateLong, emptyState, schoolName, schoolShortName, schoolInitials } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateLong, emptyState, schoolName, schoolShortName, schoolInitials, envNumberWarningBox } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit, beYear, todayInBangkok, starterModeActive, clearStarterCredentials, TEST_MODE_ON } from '../db.js';
 import { seedFixedHolidays, listHolidays, holidayYears, addHoliday, removeHoliday } from '../services/holidays.js';
@@ -7,7 +7,7 @@ import { readTable, planUserImport, applyUserImport, templateCsv, generatePasswo
 import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
 import { asText, asTextOrNull, normalizeEmployeeCode, MAX_EMPLOYEE_CODE } from '../services/validate.js';
-import { getSetting, setSetting, MAX_SETTING_LENGTH } from '../services/settings.js';
+import { getSetting, setSetting, MAX_SETTING_LENGTH, missingOutgoingNumberEnv } from '../services/settings.js';
 import { reminderTime, sendTestReminder } from '../services/dailyReminder.js';
 import { previewNextNumber } from '../numbering.js';
 import { originFromHeaders } from '../services/publicUrl.js';
@@ -88,33 +88,11 @@ function configuredOauthOrigin() {
 // ชื่อโรงเรียนถูกพิมพ์ลงบน "ตัวเอกสารราชการจริง" — หัวหนังสือ ตราประทับใน PDF และแบบฟอร์มใบลา
 // จึงต้องให้โรงเรียนแก้เองได้ ไม่ใช่ต้องรอผู้พัฒนามาแก้โค้ดแล้ว deploy ใหม่เพียงเพราะพิมพ์ผิดหนึ่งตัว
 
-/**
- * เตือนให้ตั้ง env var คู่กับค่าที่กรอกในหน้าเว็บ สำหรับรหัสหนังสือและเลขตั้งต้นของทะเบียนส่ง
- *
- * ทำไมค่าสองตัวนี้โดยเฉพาะ: บนโฮสต์ฟรี (Render free tier) ดิสก์ไม่ถาวร ฐานข้อมูลถูกล้างทุกครั้งที่
- * deploy ค่าที่ตั้งในหน้าเว็บจึงหายไปด้วย ค่าอื่นที่หายแล้วเห็นได้ทันที (ชื่อโรงเรียนกลับเป็นค่าตั้งต้น
- * ก็เห็นบนหัวจอ) แต่สองตัวนี้หายแล้ว "ระบบยังทำงานปกติ" — มันแค่เงียบๆ ย้อนไปออกเลข 0001/2569
- * ให้หนังสือฉบับถัดไป ซึ่งทับเลขที่ส่งออกไปข้างนอกจริงแล้ว และตามกลับมาแก้ไม่ได้
- *
- * env var อยู่รอดการล้างดิสก์ จึงเป็นที่เดียวที่ค่าเหล่านี้ปลอดภัยจริงบนโฮสต์แบบนี้
- */
-function envNumberStartWarning() {
-  const missing = [
-    ['OUTGOING_NUMBER_PREFIX', 'outgoing_number_prefix'],
-    ['OUTGOING_NUMBER_START', 'outgoing_number_start'],
-    ['OUTGOING_NUMBER_START_YEAR', 'outgoing_number_start_year'],
-  ].filter(([envName, key]) => getSetting(key) && !asText(process.env[envName]));
-  if (!missing.length) return '';
-  return `
-    <div class="alert alert-warning" style="margin-top:.6rem">
-      ⚠️ <strong>ตั้งค่านี้ไว้ในหน้าเว็บอย่างเดียวยังไม่ปลอดภัย</strong>
-      — ถ้าเซิร์ฟเวอร์นี้เป็นแบบที่ดิสก์ถูกล้างตอน deploy (เช่น Render แบบฟรี) ค่าที่กรอกไว้จะหายไป
-      แล้วหนังสือฉบับถัดไปจะได้เลขย้อนกลับไปเริ่มใหม่ <strong>โดยไม่มีอะไรเตือน</strong>
-      <div style="margin-top:.4rem">ให้ไปตั้ง Environment Variable เหล่านี้บนเซิร์ฟเวอร์ด้วย แล้วค่าจะอยู่รอดทุก deploy:</div>
-      <pre style="margin:.4rem 0 0;white-space:pre-wrap;word-break:break-all">${
-  missing.map(([envName, key]) => `${envName}=${esc(getSetting(key))}`).join('\n')}</pre>
-    </div>`;
-}
+// เตือนให้ตั้ง env var คู่กับค่าที่กรอกในหน้าเว็บ — ดูเหตุผลเต็มที่ missingOutgoingNumberEnv()
+// หน้า "ขอเลขหนังสือส่ง" ของธุรการใช้กล่องเดียวกันนี้ (ดู routes/outgoingRequest.js) เพราะทั้งสองหน้า
+// ตั้งค่าตัวเดียวกันได้ ถ้าเตือนแค่หน้าเดียวคนที่ตั้งจากอีกหน้าจะไม่เคยเห็นคำเตือนเลย
+const envNumberStartWarning = () => envNumberWarningBox(missingOutgoingNumberEnv());
+
 router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
   const content = `
     <h2>🏫 ตั้งค่าโรงเรียน</h2>

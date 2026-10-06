@@ -75,6 +75,25 @@ export function outgoingNumberPrefix() { return getSetting('outgoing_number_pref
  * คืนค่าเฉพาะเมื่อปีตรงกับปีที่ตั้งไว้ ปีถัดไปค่านี้หมดอายุเอง ทะเบียนเล่มใหม่จึงเริ่มที่ 1 ตามระเบียบ
  * โดยไม่ต้องมีใครกลับมาล้างค่าทิ้ง (ซึ่งถ้าลืมก็จะไม่มีใครรู้จนกว่าจะออกเลขผิดไปแล้ว)
  */
+/**
+ * ค่าตั้งเลขทะเบียนหนังสือส่งที่ตั้งไว้ในหน้าเว็บแล้ว แต่ยังไม่ได้ตั้งเป็น env var
+ *
+ * คืนรายการ { envName, value } ให้ผู้เรียกเอาไปขึ้นเป็นบรรทัดที่ก๊อปไปวางได้ — ว่างเปล่า = ครบแล้ว
+ *
+ * ทำไมสามค่านี้ต้องเตือนเป็นพิเศษ: บนโฮสต์ที่ดิสก์ถูกล้างทุกครั้งที่ deploy (Render free tier)
+ * ค่าที่ตั้งในหน้าเว็บหายไปพร้อมฐานข้อมูล ค่าอื่นที่หายแล้วเห็นได้ทันที (ชื่อโรงเรียนกลับเป็นค่าตั้งต้น
+ * ก็เห็นบนหัวจอ) แต่สามตัวนี้หายแล้ว "ระบบยังทำงานปกติ" — มันแค่เงียบๆ ย้อนไปออกเลข 0001/2569
+ * ให้หนังสือฉบับถัดไป ซึ่งทับเลขที่ส่งออกไปข้างนอกจริงแล้ว และตามกลับมาแก้ไม่ได้
+ */
+export function missingOutgoingNumberEnv() {
+  return [
+    ['OUTGOING_NUMBER_PREFIX', 'outgoing_number_prefix'],
+    ['OUTGOING_NUMBER_START', 'outgoing_number_start'],
+    ['OUTGOING_NUMBER_START_YEAR', 'outgoing_number_start_year'],
+  ].filter(([envName, key]) => getSetting(key) && !asText(process.env[envName]))
+    .map(([envName, key]) => ({ envName, value: getSetting(key) }));
+}
+
 export function outgoingNumberFloor(yearBe) {
   const year = Number.parseInt(getSetting('outgoing_number_start_year'), 10);
   const start = Number.parseInt(getSetting('outgoing_number_start'), 10);

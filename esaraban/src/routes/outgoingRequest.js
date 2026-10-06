@@ -8,11 +8,14 @@
 // ออกให้เองตอนธุรการอนุมัติ และธุรการแก้ได้ทุกช่องก่อนกด ที่เหลือ (ฝ่าย ชั้นความเร็ว ชั้นความลับ
 // หนังสือเวียน ร่างหนังสือ) ซ่อนไว้ใต้ "ตัวเลือกเพิ่มเติม" เพราะค่าเริ่มต้นถูกเกือบทุกครั้ง
 import { router, html, json, redirect, contentDispositionHeader } from '../router.js';
-import { layout, esc, fmtDate, fmtThaiDateShort, emptyState, priorityBadge, rowLink, LABELS } from '../render.js';
+import { layout, esc, fmtDate, fmtThaiDateShort, emptyState, priorityBadge, rowLink, envNumberWarningBox, LABELS } from '../render.js';
 import { requireApi, requirePage } from '../middleware.js';
-import { previewNextNumber } from '../numbering.js';
-import { db, todayInBangkok } from '../db.js';
-import { httpError } from '../services/validate.js';
+import { previewNextNumber, outgoingCounterPosition } from '../numbering.js';
+import { db, todayInBangkok, beYear } from '../db.js';
+import {
+  getSetting, setSetting, MAX_SETTING_LENGTH, missingOutgoingNumberEnv,
+} from '../services/settings.js';
+import { httpError, asText } from '../services/validate.js';
 // ร่างหนังสือแนบใหม่ไม่ได้แล้ว (ดู submitOutgoingRequest) แต่เส้นทางเปิด/ดาวน์โหลดยังอยู่ เพราะคำขอ
 // ที่ยื่นไว้ก่อนหน้านี้อาจมีร่างค้างอยู่ — ถ้าตัดทิ้งพร้อมกัน ไฟล์พวกนั้นจะเข้าถึงไม่ได้โดยไม่มีใครรู้
 import { VIEWABLE_MIME, fallbackFilename } from '../services/attachments.js';
@@ -200,6 +203,68 @@ router.get('/outgoing-requests/mine', requirePage((ctx) => {
 
 // ---------------- หน้าธุรการ ----------------
 
+/**
+ * ตั้งรูปแบบเลขทะเบียนหนังสือส่ง จากหน้าของธุรการเอง
+ *
+ * เดิมค่าสองตัวนี้อยู่แต่ในหน้า "ตั้งค่าโรงเรียน" ซึ่งเปิดได้เฉพาะผู้ดูแลระบบ ผลคือธุรการ — คนที่ถือเล่ม
+ * ทะเบียนจริง เป็นคนเดียวที่รู้ว่าเล่มกระดาษออกเลขไปถึงเท่าไร และเป็นคนที่เห็นเลขผิดเป็นคนแรก —
+ * แก้เองไม่ได้เลย ต้องไปตามผู้ดูแลระบบมากรอกให้ ระหว่างนั้นหนังสือทุกฉบับที่ออกไปก็ได้เลขผิดไปเรื่อยๆ
+ * และเลขที่ออกไปแล้วตามกลับมาแก้ไม่ได้ จึงย้ายมาไว้ตรงจุดที่ธุรการทำงานอยู่แล้วด้วย
+ *
+ * กางออกมาเองเมื่อยังไม่ได้ตั้งค่า เพราะเลขที่ออกตอนนั้นเป็นรูปแบบทะเบียนภายใน (0001/2569) ซึ่ง
+ * "ดูเหมือนใช้ได้" จนกว่าจะมีคนทักว่าหนังสือที่ส่งออกไปข้างนอกต้องมีรหัสส่วนราชการนำหน้า
+ */
+function numberingCard() {
+  const prefix = getSetting('outgoing_number_prefix');
+  const start = getSetting('outgoing_number_start');
+  const startYear = getSetting('outgoing_number_start_year');
+  const unset = !prefix || !start;
+  return `
+    <details class="card alert-fold" data-fold="outNumbering"${unset ? ' open' : ''}>
+      <summary>🔧 รูปแบบเลขทะเบียนหนังสือส่ง
+        ${unset
+    ? '<span class="badge badge-warning">ยังไม่ได้ตั้ง</span>'
+    : `<span class="badge badge-success">${esc(previewNextNumber('outgoing'))}</span>`}</summary>
+      <div class="alert-fold-body">
+        ${unset ? `
+          <div class="alert alert-warning">
+            ตอนนี้ระบบออกเลขเป็น <strong>${esc(previewNextNumber('outgoing'))}</strong>
+            ซึ่งเป็นรูปแบบของ<strong>ทะเบียนภายใน</strong> ไม่ใช่เลขที่ใช้บนหนังสือที่ส่งออกไปข้างนอก
+            — ตามระเบียบงานสารบรรณ ช่อง “ที่” ต้องเป็น <strong>รหัสส่วนราชการ ทับ เลขทะเบียนหนังสือส่ง</strong>
+            เช่น <code>ศธ 04047.109/206</code> กรอกสองช่องข้างล่างนี้ครั้งเดียว แล้วทุกฉบับถัดไปจะได้รูปแบบนี้เอง
+          </div>` : ''}
+        <div class="field">
+          <label for="numPrefix">รหัสหนังสือของโรงเรียน</label>
+          <input type="text" id="numPrefix" maxlength="${MAX_SETTING_LENGTH.outgoing_number_prefix}"
+            value="${esc(prefix)}" placeholder="เช่น ศธ 04047.109" style="max-width:16rem"
+            oninput="previewNum()" autocomplete="off" />
+          <div class="help-text">ได้มาจากสำนักงานเขตพื้นที่การศึกษาต้นสังกัด — พิมพ์ให้ตรงกับที่ใช้บนหนังสือจริง เว้นวรรคตรงไหนก็พิมพ์ตรงนั้น</div>
+        </div>
+        <div class="field">
+          <label for="numStart">เลขหนังสือส่งล่าสุดที่ออกไปแล้ว</label>
+          <div class="flex gap-2 flex-wrap items-center">
+            <input type="text" inputmode="numeric" id="numStart" maxlength="${MAX_SETTING_LENGTH.outgoing_number_start}"
+              value="${esc(start)}" placeholder="เช่น 205" style="max-width:8rem" oninput="previewNum()" autocomplete="off" />
+            <span class="text-muted">ของทะเบียนปี พ.ศ.</span>
+            <input type="text" inputmode="numeric" id="numStartYear" maxlength="${MAX_SETTING_LENGTH.outgoing_number_start_year}"
+              value="${esc(startYear || String(beYear()))}" style="max-width:6rem" oninput="previewNum()" autocomplete="off" />
+          </div>
+          <div class="help-text">
+            เลขสุดท้ายในเล่มกระดาษก่อนมาใช้ระบบนี้ — กรอก <code>205</code> แล้วฉบับถัดไปได้ <code>206</code>
+            <div style="margin-top:.3rem">
+              ผูกกับปีเพราะทะเบียนหนังสือส่ง<strong>เริ่มนับ 1 ใหม่ทุกวันที่ 1 มกราคม</strong>
+              พอขึ้นปีใหม่ค่านี้หมดอายุเอง ไม่ต้องกลับมาล้าง · ถ้าระบบออกเลขไปไกลกว่านี้แล้ว
+              ค่านี้จะไม่ดึงเลขถอยหลัง (เลขที่ออกไปแล้วใช้ซ้ำไม่ได้)
+            </div>
+          </div>
+        </div>
+        <div class="callout-tip">เลขฉบับถัดไปจะเป็น: <strong id="numPreviewOut">${esc(previewNextNumber('outgoing'))}</strong></div>
+        ${envNumberWarningBox(missingOutgoingNumberEnv())}
+        <button class="btn btn-primary" type="button" onclick="saveNumbering(this)" style="margin-top:.6rem">บันทึกรูปแบบเลข</button>
+      </div>
+    </details>`;
+}
+
 router.get('/outgoing-requests', requirePage((ctx) => {
   // ครูที่กดลิงก์นี้ (หรือกดจากการแจ้งเตือนเก่า) ต้องไปหน้าของตัวเอง ไม่ใช่เจอ 403 เปล่าๆ
   if (!canIssueOutgoingNumber(ctx.user)) return redirect(ctx, '/outgoing-requests/mine');
@@ -207,9 +272,6 @@ router.get('/outgoing-requests', requirePage((ctx) => {
   const pending = listPendingOutgoingRequests();
   const reviewed = recentReviewedOutgoingRequests();
   const today = todayInBangkok();
-  // ลบแถวคำขอทิ้งคือการทำให้บันทึกหายไปจากรายการ ไม่ใช่การแก้ค่า จึงยังเป็นของผู้ดูแลระบบเท่านั้น
-  // (ส่วน "แก้" เปิดให้ธุรการแล้ว — ดูเหตุผลใน services/outgoingRequest.js)
-  const isAdmin = ctx.user.roleCodes.includes('admin');
 
   // ช่อง "เลขที่" ตั้งใจเว้นว่างไว้ ไม่ prefill ด้วยเลขตัวอย่าง: ถ้า prefill ธุรการสองคนที่เปิดหน้านี้
   // พร้อมกันจะได้เลขเดียวกันติดมาในฟอร์มทั้งคู่ แล้วกดอนุมัติทั้งสองใบ → หนังสือสองฉบับมีเลขแสดงซ้ำกัน
@@ -332,7 +394,8 @@ router.get('/outgoing-requests', requirePage((ctx) => {
     </details>`;
 
   const content = `
-    <h2>🔢 คำขอเลขหนังสือส่ง</h2>
+    <h2>🔢 ขอเลขหนังสือส่ง</h2>
+    ${numberingCard()}
     <p class="text-muted" style="margin-top:-.5rem">
       ครูกรอก จาก / ถึง / เรื่อง / การปฏิบัติ มาให้ — คุณเป็นผู้อนุมัติ <strong>เลขที่กับวันที่ระบบออกให้เอง</strong>
       และคุณแก้ได้ทุกช่องก่อนกด เมื่ออนุมัติ ระบบจะสร้างหนังสือส่งโดยมีครูผู้ขอเป็นผู้บันทึกเอกสาร
@@ -363,19 +426,58 @@ router.get('/outgoing-requests', requirePage((ctx) => {
                   data-from="${esc(r.doc_from || '')}" data-to="${esc(r.doc_to || '')}"
                   data-title="${esc(r.doc_title || '')}" data-action="${esc(r.doc_action || '')}"
                   onclick="editOutDoc('${esc(r.id)}', this)">✏️ แก้</button>` : ''}
-            ${isAdmin ? `<button class="btn btn-outline btn-sm" type="button"
-              onclick="deleteOutReq('${esc(r.id)}', ${r.status === 'issued' ? 'true' : 'false'}, this)">🗑️ ลบ</button>` : ''}
+            <button class="btn btn-outline btn-sm" type="button"
+              onclick="deleteOutReq('${esc(r.id)}', ${r.status === 'issued' ? 'true' : 'false'}, this)">🗑️ ลบ</button>
           </td>
         </tr>`).join('')}
       </table></div>
       <p class="text-muted" style="font-size:.8rem;margin-top:.4rem">
         ✏️ "แก้" แก้ที่ตัวหนังสือจริง ทะเบียน/ตราประทับ/หน้าพิมพ์จะเปลี่ยนตามทั้งหมด แจ้งผู้ขอให้อัตโนมัติ
         และต้องยืนยันด้วย PIN ทุกครั้ง (ทุกการแก้ถูกบันทึกไว้ว่าใครแก้ช่องไหนจากอะไรเป็นอะไร)
-        ${isAdmin ? `· 🗑️ "ลบ" ลบเฉพาะแถวคำขอนี้ หนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียนตามเดิม
-        (ถ้าไม่ได้ใช้จริงให้กด "ยกเลิกเอกสาร" ที่ตัวหนังสือ เลขจะได้คงอยู่ในลำดับตามระเบียบ)` : ''}
+        · 🗑️ "ลบ" ลบเฉพาะแถวคำขอนี้ออกจากรายการ <strong>หนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียนตามเดิม</strong>
+        (ถ้าไม่ได้ใช้จริงให้กด "ยกเลิกเอกสาร" ที่ตัวหนังสือ เลขจะได้คงอยู่ในลำดับตามระเบียบ ไม่ขาดเป็นรูโหว่)
+        — ใช้ PIN เหมือนกัน และเนื้อใบที่ลบถูกเก็บไว้ในประวัติการใช้งาน
       </p>` : ''}
 
     <script>
+      // ตัวอย่างเลขต้องขยับตามที่พิมพ์ทันที — ธุรการกรอก "เลขล่าสุดในเล่มกระดาษ" แล้วต้องเห็นเดี๋ยวนั้นว่า
+      // ฉบับถัดไปจะได้เลขอะไร ไม่ใช่กดบันทึกก่อนแล้วค่อยมาพบว่าผิด (เลขที่ออกไปแล้วแก้ย้อนหลังไม่ได้)
+      // คิดด้วยสูตรเดียวกับฝั่งเซิร์ฟเวอร์เป๊ะ: max(ตำแหน่งตัวนับตอนนี้, เลขพื้นถ้าปีตรง) + 1
+      var COUNTER_POS = ${JSON.stringify(outgoingCounterPosition())};
+      var CUR_YEAR_BE = ${JSON.stringify(beYear())};
+      function previewNum() {
+        var prefix = document.getElementById('numPrefix').value.trim();
+        var start = parseInt(document.getElementById('numStart').value.trim(), 10);
+        var year = document.getElementById('numStartYear').value.trim();
+        var base = COUNTER_POS;
+        if (start > 0 && year === String(CUR_YEAR_BE)) base = Math.max(base, start);
+        var n = base + 1;
+        document.getElementById('numPreviewOut').textContent =
+          prefix ? prefix + '/' + n : ('0000' + n).slice(-4) + '/' + CUR_YEAR_BE;
+      }
+      window.previewNum = previewNum;
+
+      function saveNumbering(btn) {
+        var start = document.getElementById('numStart').value.trim();
+        var year = document.getElementById('numStartYear').value.trim();
+        if (start && !year) { toast('กรอกเลขล่าสุดแล้ว ต้องระบุปี พ.ศ. ของทะเบียนเล่มนั้นด้วย', 'warning'); return; }
+        window.setBtnLoading(btn, 'กำลังบันทึก...');
+        fetch('/outgoing-requests/numbering', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            outgoing_number_prefix: document.getElementById('numPrefix').value.trim(),
+            outgoing_number_start: start,
+            outgoing_number_start_year: year,
+          }),
+        }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+          .then(function(res){
+            if (!res.ok) throw new Error(res.d.error || 'บันทึกไม่สำเร็จ');
+            toast('บันทึกแล้ว — ฉบับถัดไปจะได้เลข ' + res.d.nextOutgoingNumber, 'success');
+            setTimeout(function(){ location.reload(); }, 1200);
+          })
+          .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+      }
+
       // ค่าของทุกช่องในใบหนึ่ง — รวมไว้ที่เดียวเพราะทั้งปุ่มอนุมัติและปุ่มบันทึกแทนครูส่งชุดเดียวกัน
       function fieldsOf(id) {
         return {
@@ -495,14 +597,19 @@ router.get('/outgoing-requests', requirePage((ctx) => {
         }
       }
 
-      function deleteOutReq(id, issued, btn) {
+      async function deleteOutReq(id, issued, btn) {
         var msg = issued
           ? 'ลบแถวคำขอนี้ออกจากรายการ?\\n\\nหนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียนตามเดิม ถ้าไม่ได้ใช้จริง ให้กด "ยกเลิกเอกสาร" ที่ตัวหนังสือแทน เลขจะได้คงอยู่ในลำดับตามระเบียบ'
           : 'ลบแถวคำขอนี้ออกจากรายการ?';
         if (!confirm(msg)) return;
+        // ใบที่ลบไปแล้วเรียกคืนจากรายการไม่ได้ — ด่าน PIN เดียวกับการออกเลข/แก้เลข ยืนยันว่าคนที่กดคือ
+        // เจ้าของบัญชีจริง ไม่ใช่คนที่มานั่งที่เครื่องที่เปิดระบบค้างไว้
+        var pin = await window.askPin('ยืนยันลบคำขอนี้ออกจากรายการ');
+        if (!pin) return;
         window.setBtnLoading(btn, 'กำลังลบ...');
-        fetch('/outgoing-requests/' + id + '/delete', { method: 'POST' })
-          .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+        fetch('/outgoing-requests/' + id + '/delete', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin: pin }),
+        }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
           .then(function(res){
             if (!res.ok) throw new Error(res.d.error || 'ลบไม่สำเร็จ');
             var row = document.getElementById('outreq-row-' + id);
@@ -588,6 +695,32 @@ function requireRegistrar(ctx) {
   }
 }
 
+/**
+ * ธุรการตั้งรูปแบบเลขทะเบียนหนังสือส่งเอง
+ *
+ * แยกจาก POST /admin/settings โดยตั้งใจ แทนที่จะคลายสิทธิ์ของเส้นทางนั้น — เส้นทางนั้นเขียนชื่อโรงเรียน
+ * ที่ไปขึ้นบนหัวหนังสือราชการทุกใบและเวลาเตือนงานค้างของทั้งโรงเรียนด้วย ซึ่งไม่ใช่งานของธุรการ
+ * ตรงนี้รับเฉพาะสามค่าของเล่มทะเบียนหนังสือส่ง ซึ่งเป็นสมุดของธุรการตามระเบียบงานสารบรรณอยู่แล้ว
+ *
+ * ไม่ต้องใส่ PIN ต่างจากการออกเลข/แก้เลข เพราะค่านี้ไม่ได้เขียนอะไรลงทะเบียนและไม่ได้แตะหนังสือสักฉบับ
+ * — มันแค่ตั้งว่า "ฉบับต่อไปจะได้เลขอะไร" ซึ่งเห็นผลทันทีบนหน้าจอและแก้กลับได้ทันทีถ้าพิมพ์ผิด
+ */
+router.post('/outgoing-requests/numbering', requireApi(async (ctx) => {
+  requireRegistrar(ctx);
+  const start = asText(ctx.body?.outgoing_number_start);
+  const startYear = asText(ctx.body?.outgoing_number_start_year);
+  // เลขที่ไม่มีปีกำกับ = เลขพื้นที่ไม่ตรงกับเล่มไหนเลยแล้วเงียบหายไป (outgoingNumberFloor คืน 0
+  // เมื่อปีไม่ตรง) ซึ่งอ่านจากหน้าเว็บไม่ออกว่าทำไมเลขไม่ขยับตามที่กรอก
+  if (start && !startYear) {
+    throw httpError(400, 'กรอกเลขหนังสือส่งล่าสุดแล้ว ต้องระบุปี พ.ศ. ของทะเบียนเล่มนั้นด้วย');
+  }
+  for (const key of ['outgoing_number_prefix', 'outgoing_number_start', 'outgoing_number_start_year']) {
+    if (ctx.body?.[key] === undefined) continue;
+    setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
+  }
+  json(ctx, 200, { ok: true, nextOutgoingNumber: previewNextNumber('outgoing') });
+}));
+
 router.post('/outgoing-requests', requireApi(async (ctx) => {
   json(ctx, 200, submitOutgoingRequest({
     title: ctx.body?.title, correspondentName: ctx.body?.correspondentName,
@@ -657,8 +790,10 @@ router.post('/outgoing-requests/:id/number', requireApi(async (ctx) => {
   }));
 }));
 
-// ผู้ดูแลระบบลบแถวคำขอออกจากรายการ (หนังสือที่ออกเลขไปแล้วยังอยู่ ดูเหตุผลใน service)
+// ธุรการ/ผู้ดูแลลบแถวคำขอออกจากรายการ (หนังสือที่ออกเลขไปแล้วยังอยู่ ดูเหตุผลใน service)
 router.post('/outgoing-requests/:id/delete', requireApi(async (ctx) => {
+  requireRegistrar(ctx);
+  await requirePin(ctx);
   json(ctx, 200, deleteOutgoingRequest({ requestId: ctx.params.id, actorUser: ctx.user }));
 }));
 

@@ -100,6 +100,21 @@ export function formatNumber({ direction, runningNumber, year = beYear(), isCirc
   return `${circular ? 'ว ' : ''}${String(runningNumber).padStart(4, '0')}/${year}`;
 }
 
+/**
+ * ตำแหน่งปัจจุบันของทะเบียนหนังสือส่งทั่วไป โดย "ยังไม่คิดเลขพื้น" — ฉบับถัดไปคือค่านี้ + 1
+ *
+ * มีไว้ให้หน้าเว็บคำนวณตัวอย่างเลขสดๆ ตอนที่ธุรการกำลังพิมพ์เลขพื้นอยู่ ซึ่งตอนนั้นค่ายังไม่ถูกบันทึก
+ * เซิร์ฟเวอร์จึงคำนวณให้ไม่ได้ ถ้าไม่มีตัวนี้ หน้าเว็บต้องเดาเองว่าตัวนับอยู่ตรงไหน แล้วตัวอย่างที่โชว์
+ * จะไม่ตรงกับเลขที่ออกจริง ซึ่งแย่กว่าไม่โชว์เลย
+ */
+export function outgoingCounterPosition(year = beYear()) {
+  const counter = db.prepare('SELECT running_number FROM document_number_counters WHERE year_be = ? AND direction = ?')
+    .get(year, 'outgoing');
+  if (counter) return counter.running_number;
+  return db.prepare(`SELECT COALESCE(MAX(running_number), 0) m FROM documents
+    WHERE year_be = ? AND direction = 'outgoing' AND is_circular = 0`).get(year).m;
+}
+
 /** ตัวอย่างเลขถัดไปที่จะออก — ใช้โชว์ให้ผู้ดูแลเห็นก่อนบันทึกค่ารหัส ไม่แตะตัวนับจริง */
 export function previewNextNumber(direction, prefixOverride, isCircular = false) {
   const year = beYear();

@@ -3232,6 +3232,9 @@ router.get('/documents/:id', requirePage((ctx) => {
 
 // ---------------- workflow actions ----------------
 router.post('/documents/:id/assign', requireApi(async (ctx) => {
+  // ตรวจก่อนแตะสถานะใดๆ — ถ้าไปตรวจตอนประทับ (ซึ่งเกิดหลังขั้นตอน workflow เดินไปแล้ว)
+  // จะได้ "เรื่องเดินไปแล้วแต่ตอบว่าพัง" ซึ่งเป็นบั๊กคลาสเดียวกับตอนไดรฟ์เต็ม
+  assertStampFieldsClean(ctx.body);
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
   if (!ctx.body.assigneeId) throw httpError(400, 'กรุณาเลือกผู้รับมอบหมาย');
@@ -3274,6 +3277,9 @@ router.post('/documents/:id/assign', requireApi(async (ctx) => {
  * ใครเป็นผู้เสนอเรื่องนี้ขึ้นไปและเสนอว่าอะไร
  */
 router.post('/documents/:id/registrar-stamp', requireApi(async (ctx) => {
+  // ตรวจก่อนแตะสถานะใดๆ — ถ้าไปตรวจตอนประทับ (ซึ่งเกิดหลังขั้นตอน workflow เดินไปแล้ว)
+  // จะได้ "เรื่องเดินไปแล้วแต่ตอบว่าพัง" ซึ่งเป็นบั๊กคลาสเดียวกับตอนไดรฟ์เต็ม
+  assertStampFieldsClean(ctx.body);
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
   if (!canWriteRegistrarComment(null, ctx.user)) throw httpError(403, 'เฉพาะธุรการเท่านั้นที่ประทับตราเสนอ ผอ. ได้');
@@ -3359,6 +3365,9 @@ function lastDirectorStepOf(documentId, actorUser) {
  * สองเส้นทางจะค่อยๆ เลื่อนจากกันจนตราซ้อนทับกันเอง (มีด่านในชุดเทสต์ยึดโครงสร้างนี้ไว้)
  */
 router.post('/documents/:id/director-stamp', requireApi(async (ctx) => {
+  // ตรวจก่อนแตะสถานะใดๆ — ถ้าไปตรวจตอนประทับ (ซึ่งเกิดหลังขั้นตอน workflow เดินไปแล้ว)
+  // จะได้ "เรื่องเดินไปแล้วแต่ตอบว่าพัง" ซึ่งเป็นบั๊กคลาสเดียวกับตอนไดรฟ์เต็ม
+  assertStampFieldsClean(ctx.body);
   const doc = getDocument(ctx.params.id);
   if (!doc || !canUserSeeDocument(ctx.user, doc)) throw httpError(404, 'ไม่พบเอกสาร');
   // กล่องนี้คือลายมือชื่อของ ผอ. การให้คนอื่น (แม้แต่แอดมิน) กดแทนเท่ากับเซ็นแทนกัน
@@ -3413,6 +3422,32 @@ function parseNotifyTarget(raw) {
   return raw.trim().slice(0, 60);
 }
 
+/**
+ * กันรหัสประจำตัวผู้ใช้หลุดลงไปอยู่บนตราประทับ — ตาข่ายชั้นสองของปัญหาเบราว์เซอร์เติมค่าให้เอง
+ *
+ * ชั้นแรกคือ autocomplete ซึ่งพึ่งพฤติกรรมของเบราว์เซอร์ และ Chrome ประกาศเองว่าจงใจมองข้าม
+ * autocomplete="off" กับช่องที่มันคิดว่าเป็นช่องล็อกอิน เราจึงไล่ตามมันไม่ทันตลอดไป
+ *
+ * แต่ "ช่องที่ควรเป็นชื่อฝ่ายงาน/ชื่อผู้รับแจ้ง กลับมีค่าตรงกับรหัสประจำตัวของผู้ใช้ในระบบเป๊ะๆ"
+ * ตรวจจับได้แม่นมากและแทบไม่มีทางเป็นสิ่งที่คนตั้งใจพิมพ์ — ปลายทางคือตัวหนังสือราชการที่ส่งออกไป
+ * แล้วเรียกคืนไม่ได้ จึงคุ้มที่จะปฏิเสธไปเลยพร้อมบอกสาเหตุ แทนที่จะปั๊มของผิดลงไปเงียบๆ
+ *
+ * ปฏิเสธ ไม่ใช่ตัดทิ้งเงียบๆ เพราะถ้าตัดทิ้ง ผู้ใช้จะได้ตราที่ช่องว่างเปล่าโดยไม่รู้ว่าเกิดอะไรขึ้น
+ * แล้วก็จะกรอกแบบเดิมอีกในครั้งหน้า
+ */
+function assertStampFieldsClean(body) {
+  assertNotAnEmployeeCode(body?.registrarUnit, 'ฝ่ายงานที่จะแจ้ง');
+  assertNotAnEmployeeCode(body?.decisionNotify, 'แจ้งให้ ... ทราบ');
+}
+
+function assertNotAnEmployeeCode(value, fieldLabel) {
+  const v = String(value || '').trim();
+  if (!v) return;
+  const hit = db.prepare('SELECT employee_code FROM users WHERE employee_code = ? COLLATE NOCASE').get(v);
+  if (!hit) return;
+  throw httpError(400, `ช่อง "${fieldLabel}" มีรหัสประจำตัวผู้ใช้ (${hit.employee_code}) อยู่ — มักเกิดจากเบราว์เซอร์เติมให้เองโดยที่เราไม่ได้พิมพ์ กรุณาลบออกแล้วพิมพ์${fieldLabel}จริง ก่อนปั๊มลงหนังสือ`);
+}
+
 /** ข้อที่ธุรการฝนเลือกบนตราของตัวเอง — กรองแบบเดียวกับ parseDecisionMarks ด้วยเหตุผลเดียวกัน */
 function parseRegistrarMarks(raw) {
   if (!Array.isArray(raw)) return [];
@@ -3421,6 +3456,9 @@ function parseRegistrarMarks(raw) {
 
 
 router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) => {
+  // ตรวจก่อนแตะสถานะใดๆ — ถ้าไปตรวจตอนประทับ (ซึ่งเกิดหลังขั้นตอน workflow เดินไปแล้ว)
+  // จะได้ "เรื่องเดินไปแล้วแต่ตอบว่าพัง" ซึ่งเป็นบั๊กคลาสเดียวกับตอนไดรฟ์เต็ม
+  assertStampFieldsClean(ctx.body);
   const { pin, nextAssigneeId, nextAssigneeIds, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
@@ -3448,6 +3486,9 @@ router.post('/documents/:id/workflow/:stepId/approve', requireApi(async (ctx) =>
 }));
 
 router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx) => {
+  // ตรวจก่อนแตะสถานะใดๆ — ถ้าไปตรวจตอนประทับ (ซึ่งเกิดหลังขั้นตอน workflow เดินไปแล้ว)
+  // จะได้ "เรื่องเดินไปแล้วแต่ตอบว่าพัง" ซึ่งเป็นบั๊กคลาสเดียวกับตอนไดรฟ์เต็ม
+  assertStampFieldsClean(ctx.body);
   const { pin, comment, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
   const { verifyPin } = await import('../auth.js');
   if (!verifyPin(ctx.user.id, pin)) throw httpError(401, 'PIN ไม่ถูกต้อง');
@@ -3468,6 +3509,9 @@ router.post('/documents/:id/workflow/:stepId/acknowledge', requireApi(async (ctx
 }));
 
 router.post('/documents/:id/workflow/:stepId/reject', requireApi(async (ctx) => {
+  // ตรวจก่อนแตะสถานะใดๆ — ถ้าไปตรวจตอนประทับ (ซึ่งเกิดหลังขั้นตอน workflow เดินไปแล้ว)
+  // จะได้ "เรื่องเดินไปแล้วแต่ตอบว่าพัง" ซึ่งเป็นบั๊กคลาสเดียวกับตอนไดรฟ์เต็ม
+  assertStampFieldsClean(ctx.body);
   const { reason, markX, markY, decisionX, decisionY, decisionNote, decisionMarks, decisionNotify, registrarNote, registrarMarks, registrarUnit, registrarX, registrarY } = ctx.body;
   // decisionNote ว่างเปล่าจะใช้ reason แทนตอนประทับ จึงต้องตรวจ reason ตามเพดานของตราประทับด้วย
   assertStampTextFits({ decisionNote: decisionNote || reason, registrarNote });

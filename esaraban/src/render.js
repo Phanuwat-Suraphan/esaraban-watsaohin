@@ -299,12 +299,17 @@ export function layout({ user, title, path: currentPath, content, flash }) {
 </head>
 <body>
 ${user ? renderAppShell({ user, currentPath, content, flash, avatar }) : content}
+<!-- autocomplete ของช่อง PIN ด้านล่างสำคัญกว่าที่เห็น: กล่องนี้อยู่ใน layout ของทุกหน้า
+     ถ้าประกาศเป็นรหัสผ่านธรรมดา Chrome จะตัดสินว่า "ทุกหน้าคือหน้าล็อกอิน" แล้วเติมรหัสประจำตัว
+     ที่จำไว้ลงช่องข้อความที่อยู่ใกล้ที่สุดของหน้านั้น โดยจงใจมองข้าม autocomplete="off" ของช่องนั้น
+     (เกิดขึ้นจริง: รหัสผู้ใช้ไปโผล่ในช่อง "ฝ่ายงานที่จะแจ้ง" แล้วถูกปั๊มลงหนังสือราชการ)
+     one-time-code ตรงกับความจริงด้วย — PIN ที่นี่ใช้ยืนยันการลงนามแต่ละครั้ง ไม่ใช่รหัสเข้าระบบ -->
 <div id="pinModal" class="modal-backdrop">
   <div class="modal">
     <h3 id="pinModalTitle">ยืนยันตัวตนด้วย PIN</h3>
     <p class="text-muted" style="font-size:.82rem">กรอกรหัส PIN 6 หลักของคุณเพื่อยืนยันการทำรายการนี้ (ตาม Business Rule: ต้องยืนยันตัวตนก่อนรับทราบ/ลงนามทุกครั้ง)</p>
     <div class="field">
-      <input type="password" inputmode="numeric" maxlength="6" id="pinInput" aria-label="รหัส PIN 6 หลัก" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="off" />
+      <input type="password" inputmode="numeric" maxlength="6" id="pinInput" aria-label="รหัส PIN 6 หลัก" placeholder="••••••" style="text-align:center;font-size:1.4rem;letter-spacing:.4em" autocomplete="one-time-code" />
     </div>
     <div class="flex gap-2">
       <button class="btn btn-outline btn-block" onclick="closePinModal(false)">ยกเลิก</button>

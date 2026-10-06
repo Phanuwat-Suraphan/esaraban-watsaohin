@@ -12260,8 +12260,9 @@ describe('หน้ารายละเอียดหนังสือ: เ�
  * และปลายทางของหลายช่องคือ "ตัวหนังสือราชการ" ซึ่งผิดแล้วเรียกคืนไม่ได้
  */
 describe('ช่องกรอกต้องกันเบราว์เซอร์เติมชื่อผู้ใช้ลงไปเอง', () => {
-  // ค่าที่ยอมรับได้: off (ช่องทั่วไป) และค่าของช่องรหัสผ่านจริงซึ่งต้องให้ตัวจัดการรหัสผ่านทำงาน
-  const ALLOWED = new Set(['off', 'username', 'current-password', 'new-password']);
+  // ค่าที่ยอมรับได้: off (ช่องทั่วไป), ค่าของช่องรหัสผ่านจริงซึ่งต้องให้ตัวจัดการรหัสผ่านทำงาน
+  // และ one-time-code สำหรับช่อง PIN ยืนยันรายการ ซึ่งไม่ใช่รหัสผ่านของบัญชี
+  const ALLOWED = new Set(['off', 'username', 'current-password', 'new-password', 'one-time-code']);
   const TEXTY = new Set(['text', 'search', 'tel', 'email', 'number', 'password']);
 
   const scan = () => {
@@ -12310,11 +12311,95 @@ describe('ช่องกรอกต้องกันเบราว์เซ�
     }
   });
 
+  /**
+   * ช่อง PIN อยู่ใน layout ของทุกหน้า และเป็น type="password" — Chrome จึงตัดสินว่าทุกหน้าคือหน้า
+   * ล็อกอิน แล้วเติมรหัสประจำตัวที่จำไว้ลงช่องข้อความที่อยู่ใกล้ที่สุด โดย "จงใจมองข้าม"
+   * autocomplete="off" (เป็นพฤติกรรมที่ Chrome ประกาศไว้ว่าทำแบบนั้นกับช่องล็อกอิน)
+   *
+   * ทางแก้คือบอกให้ชัดว่าช่องนี้ไม่ใช่รหัสผ่านของบัญชี แต่เป็นรหัสยืนยันรายการ (one-time-code)
+   * ซึ่งตรงกับความจริงด้วย — PIN ที่นี่ใช้ยืนยันการลงนามแต่ละครั้ง ไม่ใช่รหัสเข้าระบบ
+   */
+  test('ช่อง PIN ต้องไม่ถูกเข้าใจว่าเป็นรหัสผ่านของบัญชี', () => {
+    const src = fs.readFileSync(new URL('../src/render.js', import.meta.url), 'utf8');
+    const tag = /<input[^>]*\bid="pinInput"[^>]*>/.exec(src)?.[0];
+    assert.ok(tag, 'ไม่พบช่อง PIN');
+    assert.match(tag, /autocomplete="one-time-code"/,
+      'ช่อง PIN อยู่ทุกหน้า ถ้าเบราว์เซอร์คิดว่าเป็นรหัสผ่านบัญชี จะเติมชื่อผู้ใช้ลงช่องอื่นทั้งหน้า');
+  });
+
   // หน้าเข้าสู่ระบบต้องยังให้ตัวจัดการรหัสผ่านทำงานตามปกติ ห้ามปิดไปด้วยความเผลอ
   test('หน้าเข้าสู่ระบบต้องยังให้ตัวจัดการรหัสผ่านทำงานได้', () => {
     const src = fs.readFileSync(new URL('../src/routes/auth.js', import.meta.url), 'utf8');
     assert.match(src, /name="employeeCode"[^>]*autocomplete="username"/);
     assert.match(src, /id="loginPassword"[^>]*autocomplete="current-password"/);
+  });
+});
+
+/**
+ * ตาข่ายชั้นสอง: รหัสประจำตัวผู้ใช้ต้องไม่หลุดลงไปอยู่บนตราประทับ ไม่ว่าจะมาได้ยังไง
+ *
+ * ชั้นแรก (autocomplete) พึ่งพฤติกรรมของเบราว์เซอร์ ซึ่งเปลี่ยนได้ตลอดและเราไล่ตามไม่ทัน —
+ * Chrome เองก็ประกาศว่าจงใจมองข้าม autocomplete="off" กับช่องที่มันคิดว่าเป็นช่องล็อกอิน
+ *
+ * แต่ "ช่องที่ควรเป็นชื่อฝ่ายงาน กลับมีค่าตรงกับรหัสประจำตัวของผู้ใช้ในระบบเป๊ะๆ" เป็นสิ่งที่
+ * ตรวจจับได้แม่นมาก และแทบไม่มีทางเป็นสิ่งที่คนตั้งใจพิมพ์ — ปลายทางคือตัวหนังสือราชการที่
+ * ส่งออกไปแล้วเรียกคืนไม่ได้ จึงคุ้มที่จะกันไว้อีกชั้นแทนที่จะเชื่อเบราว์เซอร์อย่างเดียว
+ */
+describe('รหัสประจำตัวผู้ใช้ต้องไม่หลุดลงไปบนตราประทับ', () => {
+  const pdfB64 = Buffer.from(`%PDF-1.4\n${'x'.repeat(1200)}\ntrailer<</Root 1 0 R>>\n%%EOF\n`, 'latin1').toString('base64');
+  const docWithPdf = async () => {
+    const res = await dispatchPost(registrarUser, '/documents', {
+      direction: 'incoming', title: `หนังสือสำหรับตรวจรหัสผู้ใช้ ${Math.random().toString(36).slice(2, 8)}`,
+      correspondentName: 'สพป.', departmentId: deptId, allowDuplicate: true,
+      fileName: 'letter.pdf', fileType: 'application/pdf', fileDataBase64: pdfB64,
+    });
+    const id = /\/documents\/([0-9a-f-]{36})/.exec(res.body)[1];
+    assignStep({ documentId: id, assigneeId: seed.userIds.director01, instruction: 'เสนอ', actorUser: registrarUser });
+    return id;
+  };
+
+  test('ช่องฝ่ายงานที่มีค่าเป็นรหัสประจำตัว ต้องถูกปฏิเสธพร้อมบอกว่าทำไม', async () => {
+    const id = await docWithPdf();
+    const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+      pin: userPin('reg001'), registrarMarks: ['เพื่อแจ้งฝ่ายงาน'], registrarUnit: 'reg001',
+    });
+    assert.equal(res.status, 400, res.body);
+    assert.match(res.body, /เบราว์เซอร์/, 'ต้องบอกว่าน่าจะเป็นค่าที่เบราว์เซอร์เติมให้เอง');
+    assert.match(res.body, /ฝ่ายงาน/, 'และบอกว่าควรใส่อะไรแทน');
+  });
+
+  test('ชื่อฝ่ายงานจริงต้องผ่านตามปกติ ไม่ใช่กันมั่วไปหมด', async () => {
+    const id = await docWithPdf();
+    const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+      pin: userPin('reg001'), registrarMarks: ['เพื่อแจ้งฝ่ายงาน'], registrarUnit: 'ฝ่ายบริหารงานทั่วไป',
+    });
+    assert.equal(res.status, 200, res.body);
+  });
+
+  test('ช่อง "แจ้งให้ ... ทราบ" ของ ผอ. ก็ต้องกันแบบเดียวกัน', async () => {
+    const id = await docWithPdf();
+    const step = db.prepare("SELECT id FROM workflow_steps WHERE document_id = ? AND status = 'waiting'").get(id);
+    const before = db.prepare('SELECT status FROM documents WHERE id = ?').get(id).status;
+    const res = await dispatchPost(loadUserForTest(seed.userIds.director01),
+      `/documents/${id}/workflow/${step.id}/approve`, {
+        pin: userPin('director01'), nextAssigneeIds: [seed.userIds.teacher001],
+        decisionMarks: ['แจ้งให้ทราบ'], decisionNotify: 'director01',
+      });
+    assert.equal(res.status, 400, res.body);
+    assert.match(res.body, /เบราว์เซอร์/);
+    // ต้องถูกตรวจ "ก่อน" แตะสถานะ ไม่ใช่ตรวจตอนประทับซึ่งเกิดหลังขั้นตอนเดินไปแล้ว
+    assert.equal(db.prepare('SELECT status FROM documents WHERE id = ?').get(id).status, before,
+      'ถูกปฏิเสธแล้วต้องไม่เดินเรื่องต่อไปด้วย');
+    assert.equal(db.prepare("SELECT status FROM workflow_steps WHERE id = ?").get(step.id).status, 'waiting',
+      'ขั้นตอนของ ผอ. ต้องยังค้างอยู่เหมือนเดิม');
+  });
+
+  test('รหัสของคนอื่นก็ต้องกัน ไม่ใช่เฉพาะของคนที่กำลังกด', async () => {
+    const id = await docWithPdf();
+    const res = await dispatchPost(registrarUser, `/documents/${id}/registrar-stamp`, {
+      pin: userPin('reg001'), registrarMarks: ['เพื่อแจ้งฝ่ายงาน'], registrarUnit: 'teacher001',
+    });
+    assert.equal(res.status, 400, res.body);
   });
 });
 

@@ -401,6 +401,13 @@ router.get('/outgoing-requests', requirePage((ctx) => {
       และคุณแก้ได้ทุกช่องก่อนกด เมื่ออนุมัติ ระบบจะสร้างหนังสือส่งโดยมีครูผู้ขอเป็นผู้บันทึกเอกสาร
       และแจ้งเลขกลับไปให้เจ้าตัวทันทีทั้งในระบบและทางไลน์
     </p>
+    <!-- เล่มทะเบียนอยู่คนละหน้ากับที่ธุรการออกเลข และทางเข้าเดิมคือปุ่มเล็กๆ ที่ซ่อนอยู่ในตัวกรองของ
+         หน้ารายการหนังสือ ซึ่งแทบไม่มีใครเจอ — คนที่เพิ่งออกเลขเสร็จคือคนที่อยากเปิดเล่มมากที่สุด -->
+    <div class="chip-row" style="margin-bottom:1rem">
+      <a class="btn btn-outline btn-sm" href="/documents?direction=outgoing">📚 เปิดทะเบียนหนังสือส่ง</a>
+      <a class="btn btn-outline btn-sm" href="/documents/register?direction=outgoing" target="_blank" rel="noopener">🖨️ พิมพ์เล่มทะเบียน / PDF</a>
+      <a class="btn btn-outline btn-sm" href="/documents/export.xlsx?direction=outgoing">⬇️ ดาวน์โหลด Excel</a>
+    </div>
     ${onBehalfCard}
     <h3>รออนุมัติ ${pending.length ? `<span class="badge badge-warning">${pending.length}</span>` : ''}</h3>
     ${pending.length ? pending.map(card).join('') : '<div class="card"><p class="text-muted" style="margin:0">ไม่มีคำขอรออนุมัติ</p></div>'}

@@ -388,6 +388,29 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
    ที่ต้องอ่านยืนยัน ไม่ใช่คำแนะนำที่กวาดตาผ่านได้ (ดูเหตุผลทั้งหมดที่ thaiDateEcho ใน public/app.js) */
 .thai-date-echo { color: var(--text); font-weight: 500; }
 
+/* ช่องวันที่แบบไทย วว/ดด/ปปปป พ.ศ. (ดูเหตุผลทั้งหมดที่ thaiDateFields ใน public/app.js)
+   ช่อง <input type="date"> ตัวจริงยังอยู่ในหน้าและยังถือค่าจริง แค่ย้ายออกไปนอกสายตา — ห้ามใช้
+   display:none เพราะ showPicker() เปิดปฏิทินของเครื่องให้ไม่ได้ถ้า element ไม่ถูกเรนเดอร์ */
+.thai-date { display: inline-flex; align-items: stretch; gap: .35rem; width: 100%; position: relative; }
+.thai-date-text { flex: 1 1 auto; min-width: 0; }
+/* เจาะจงกว่า input[type="date"] ของธีมหลัก (0,2,1 ชนะ 0,1,1) ไม่งั้นช่องที่ซ่อนอยู่ยังกว้างเท่าเดิม
+   แล้วกล่องมองไม่เห็นขนาดเท่าช่องจริงไปทับพื้นที่ช่องไทยอยู่ (ไม่ขวางการกดเพราะ pointer-events:none
+   แต่ทำให้ตัวเลือกข้อความและเครื่องอ่านหน้าจอเจอของที่ไม่ควรมีอยู่ตรงนั้น) */
+.thai-date input.thai-date-native {
+  position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; min-width: 0;
+  opacity: 0; pointer-events: none; border: 0; padding: 0; margin: 0;
+}
+.thai-date-pick {
+  flex: 0 0 auto; cursor: pointer; font-size: 1.05rem; line-height: 1;
+  padding: 0 .7rem; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); color: var(--text);
+  /* 44px คือขนาดที่นิ้วแตะพลาดยาก — ปุ่มนี้คือทางเข้าปฏิทินของเครื่องซึ่งเป็นวิธีหลักบนมือถือ */
+  min-height: 44px; min-width: 44px;
+}
+.thai-date-pick:hover { background: var(--info-bg); }
+.thai-date-pick:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.thai-date-pick:disabled { opacity: .5; cursor: not-allowed; }
+
 /* ---------- Progressive disclosure: "ตัวเลือกเพิ่มเติม" (keeps forms short for first-time users) ---------- */
 .field-more { margin-bottom: 1rem; }
 .field-more summary {

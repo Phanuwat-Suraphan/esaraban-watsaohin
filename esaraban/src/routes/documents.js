@@ -1132,6 +1132,19 @@ function assertStampTextFits({ decisionNote, registrarNote }) {
   assertMaxLength(registrarNote, MAX_STAMP_TEXT, 'ความเห็นธุรการที่จะประทับลงหนังสือ');
 }
 
+/**
+ * ลำดับแถวของ "เล่มทะเบียน" — เรียงตามเลขทะเบียนจากน้อยไปมาก ไม่ใช่ใหม่สุดขึ้นก่อน
+ *
+ * หน้ารายการงานเรียงใหม่สุดขึ้นก่อนถูกแล้ว เพราะคนเปิดมาดูว่า "มีอะไรเข้ามาใหม่" แต่สิ่งที่พิมพ์ออกไป
+ * เก็บเข้าแฟ้มคือ "สมุดทะเบียน" ซึ่งเขียนเรียงเลขลงไปทีละบรรทัดตั้งแต่เลข 1 ของปี — ทะเบียนที่พิมพ์
+ * ออกมาเป็น 208, 207, 206 ไล่ลงใช้แทนเล่มกระดาษไม่ได้เลย หาเลขไม่เจอและไม่มีทางรู้ว่าเลขไหนขาด
+ *
+ * is_circular มาก่อน running_number เพราะหนังสือเวียนเป็นทะเบียนคนละเล่มที่มีเลข 1 ของตัวเอง
+ * (ดู CIRCULAR_REGISTER ใน numbering.js) ถ้าเรียงปนกันจะได้ 1, ว 1, 2, ว 2 สลับกันไปซึ่งไม่ใช่เล่มไหนเลย
+ * — จัดแบบนี้คือพิมพ์เล่มทั่วไปจบก่อน แล้วต่อด้วยเล่มเวียน ซึ่งตรงกับที่ธุรการเก็บจริง
+ */
+const REGISTER_ORDER_SQL = 'd.year_be ASC, d.is_circular ASC, d.running_number ASC, d.rowid ASC';
+
 // ---------------- ส่งออกทะเบียนหนังสือ ----------------
 // รูปแบบคอลัมน์อ้างอิงทะเบียนหนังสือรับ/ทะเบียนหนังสือส่งตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ
 // พ.ศ. 2526 (แบบที่ 13 และ 14) เพื่อให้พิมพ์ออกมาแล้วใช้แทนสมุดทะเบียนกระดาษได้จริง ไม่ใช่ตารางทั่วไป
@@ -1141,14 +1154,19 @@ function registerColumns(direction) {
   return [
     // ทะเบียนหนังสือส่งมีคอลัมน์ "การส่ง" เพิ่มมาอีกช่อง ช่องเลขทะเบียนจึงถูกบีบจนเลขขึ้นบรรทัดใหม่
     // กลางเลข (0003/256 / 9) ทั้งที่เป็นเลขหลักของแถว — กันที่ไว้ให้พอตั้งแต่ต้น
-    { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: isIn ? 15 : 17, get: (d) => d.doc_number_display },
+    // เล่มส่งต้องกว้างกว่าเล่มรับ เพราะเลขของเล่มส่งมีรหัสส่วนราชการนำหน้าด้วย (ศธ 04047.109/206)
+    // ไม่ใช่เลขสี่หลักเหมือนเล่มรับ — วัดจากหน้าพิมพ์จริงแล้วที่ 17 เลขขึ้นบรรทัดใหม่กลางรหัส
+    // ("ศธ 04047.10 / 9/206") ซึ่งอ่านเป็นคนละเลขไปเลย ทั้งที่เป็นเลขหลักของแถว
+    { head: isAll ? 'เลขทะเบียน' : (isIn ? 'ทะเบียนรับที่' : 'ทะเบียนส่งที่'), width: isIn ? 15 : 31, get: (d) => d.doc_number_display },
     // "วันที่รับ" อยู่ถัดจากเลขทะเบียนรับทันที ตามแบบทะเบียนหนังสือรับ (แบบที่ 13) ซึ่งจัดสองช่องนี้
     // ไว้เป็นกลุ่ม "ทะเบียนรับ" ด้วยกัน — และเป็นวันที่หนังสือมาถึงจริง ไม่ใช่เวลาที่พิมพ์เข้าระบบ
     // ธุรการลงทะเบียนย้อนหลังเป็นชุดบ่อยมาก ถ้าใช้ created_at วันที่ในทะเบียนราชการจะผิดทุกฉบับ
     ...(isIn ? [{ head: 'วันที่รับ', width: 13, get: (d) => fmtThaiDateShort(d.received_date || d.created_at) }] : []),
     // โหมดค้นหารวมมีทั้งหนังสือเข้าและออกปนกัน ต้องมีคอลัมน์บอกว่าแถวไหนเป็นอะไร ไม่งั้นอ่านไม่รู้เรื่อง
     ...(isAll ? [{ head: 'ประเภท', width: 13, get: (d) => (d.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก') }] : []),
-    { head: 'ที่ (หนังสือต้นทาง)', width: 18, get: (d) => d.external_doc_number || '' },
+    // เล่มส่ง: ช่อง "ที่" ของหนังสือคือเลขทะเบียนส่งเอง (คอลัมน์แรก) ช่องนี้จึงเป็นเลขอ้างอิงถึงหนังสือ
+    // ฉบับที่กำลังตอบ ซึ่งมีไม่บ่อย — ตั้งชื่อให้ตรงและบีบให้แคบลง เอาที่ไปให้คอลัมน์ที่ใช้ทุกแถวแทน
+    { head: isIn ? 'ที่ (หนังสือต้นทาง)' : 'อ้างอิงถึง', width: isIn ? 18 : 13, get: (d) => d.external_doc_number || '' },
     { head: 'ลงวันที่', width: 13, get: (d) => (d.external_doc_date ? fmtThaiDateShort(d.external_doc_date) : '') },
     // ทะเบียนหนังสือส่ง (แบบที่ 14) มีช่อง "จาก" (เจ้าของเรื่องในโรงเรียน) แยกจากช่อง "ถึง" (ปลายทาง)
     // ทะเบียนหนังสือรับไม่มี เพราะช่อง "จาก" ของเล่มรับคือต้นทางข้างนอก ซึ่งคือ correspondent_name เอง
@@ -1156,7 +1174,7 @@ function registerColumns(direction) {
     // text: true = ช่องข้อความยาว หน้าพิมพ์จะชิดซ้ายและตัดบรรทัดในช่องแทนการดันจนล้นกรอบ
     { head: isAll ? 'จาก/ถึง' : (isIn ? 'จาก' : 'ถึง'), width: 26, text: true, get: (d) => d.correspondent_name || '' },
     { head: 'เรื่อง', width: 42, text: true, get: (d) => d.title },
-    { head: 'ฝ่ายที่รับผิดชอบ', width: 20, text: true, get: (d) => d.dept_name },
+    { head: 'ฝ่ายที่รับผิดชอบ', width: 16, text: true, get: (d) => d.dept_name },
     { head: 'ความเร็ว', width: 13, get: (d) => LABELS.PRIORITY_LABEL[d.priority] || d.priority },
     { head: 'ชั้นความลับ', width: 13, get: (d) => LABELS.SECRET_LABEL[d.secret_level] || d.secret_level },
     // "การปฏิบัติ" ของทะเบียนหนังสือส่งคือข้อความที่เจ้าของเรื่องเขียนว่าให้ปลายทางทำอะไรต่อ ไม่ใช่
@@ -1192,7 +1210,8 @@ router.get('/documents/export.xlsx', requirePage((ctx) => {
   const query = buildDocumentQuery(ctx.user, ctx.query);
   // กรองซ้ำด้วยตัวตรวจรายฉบับอีกชั้นเหมือนหน้ารายการ — ไฟล์ที่ส่งออกไปแล้วเรียกคืนไม่ได้ ถ้าหนังสือลับ
   // หลุดติดไปในไฟล์ที่ถูกส่งต่อทางไลน์/อีเมล จะไม่มีทางแก้ย้อนหลังได้เลย
-  const rows = listDocuments(query).filter((d) => canUserSeeDocument(ctx.user, d));
+  const rows = listDocuments({ ...query, orderSql: REGISTER_ORDER_SQL, orderParams: {} })
+    .filter((d) => canUserSeeDocument(ctx.user, d));
   const cols = registerColumns(query.direction);
   const buf = buildXlsx({
     sheetName: { incoming: 'ทะเบียนหนังสือรับ', outgoing: 'ทะเบียนหนังสือส่ง', all: 'ผลการค้นหา' }[query.direction],
@@ -1230,6 +1249,8 @@ router.get('/documents/export.xlsx', requirePage((ctx) => {
  * ทะเบียนใช้จริงตามระเบียบ (เลขรับเริ่มที่ 1 ใหม่ทุกปี ทะเบียนจึงเป็นเล่มต่อปี)
  */
 const MAX_REGISTER_PRINT_ROWS = 3000;
+
+
 
 /**
  * ตรวจความครบถ้วนของทะเบียน — เลขขาด เลขซ้ำ และเลขที่หายเพราะเอกสารถูกลบ
@@ -1342,7 +1363,8 @@ router.get('/documents/register', requirePage((ctx) => {
   // ไปแล้วว่าเป็นยอดทั้งหมด ซึ่งบนกระดาษที่เก็บเข้าแฟ้มคือการบอกจำนวนหนังสือผิด
   const totalRows = countDocuments(query);
   const truncated = totalRows > MAX_REGISTER_PRINT_ROWS;
-  const rows = listDocuments(query, truncated ? { limit: MAX_REGISTER_PRINT_ROWS, offset: 0 } : {})
+  const rows = listDocuments({ ...query, orderSql: REGISTER_ORDER_SQL, orderParams: {} },
+    truncated ? { limit: MAX_REGISTER_PRINT_ROWS, offset: 0 } : {})
     .filter((d) => canUserSeeDocument(ctx.user, d));
   const cols = registerColumns(query.direction);
   const filterNote = describeFilters(query);

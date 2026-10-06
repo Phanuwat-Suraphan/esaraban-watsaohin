@@ -784,6 +784,167 @@
   })();
 
   /**
+   * ช่องวันที่แบบไทย วว/ดด/ปปปป พ.ศ. ครอบทับ <input type="date"> ทุกช่องในระบบ
+   *
+   * ปัญหา: รูปแบบที่ <input type="date"> แสดง มาจาก "ภาษาของเบราว์เซอร์" ล้วนๆ หน้าเว็บสั่งไม่ได้เลย
+   * ไม่ว่าจะตั้ง lang="th" หรือ CSS อะไรก็ตาม เครื่องส่วนใหญ่ตั้งเป็นอังกฤษแบบอเมริกัน ช่องจึงขึ้นเป็น
+   * 10/06/2026 = เดือน/วัน/ปี ค.ศ. ซึ่งผิดจากที่ครูไทยอ่าน (06/10/2569) ทั้งลำดับและศักราช
+   * และต่อให้ผู้ใช้ไปตั้งเบราว์เซอร์เป็นภาษาไทย ก็ได้แค่ลำดับถูก (06/10/2026) ศักราชยังเป็น ค.ศ. อยู่ดี
+   * — ไม่มีทางได้ พ.ศ. จากช่องมาตรฐานเลย ต้องทำช่องเองเท่านั้น
+   *
+   * ทำไมไม่ทิ้ง <input type="date"> ไปเลย: บนมือถือมันคือตัวเลือกวันที่ของระบบปฏิบัติการ ซึ่งกดง่ายกว่า
+   * พิมพ์เองมาก และครูส่วนใหญ่ใช้มือถือ จึงเก็บช่องเดิมไว้ทั้งดุ้น (ยังถือ id/name/value/min/max เหมือนเดิม
+   * ทุกประการ) แค่ซ่อนจากสายตา แล้ววางช่องข้อความไทยกับปุ่ม 📅 ไว้ข้างหน้า กด 📅 = เปิดตัวเลือกของเครื่อง
+   *
+   * ผลข้างเคียงที่ต้องไม่เกิด: โค้ดเดิมทั้งระบบอ่านค่าด้วย element.value แล้วคาดหวัง YYYY-MM-DD
+   * (ทั้งฟอร์มที่ POST ตรงๆ ด้วย name= และสคริปต์ที่อ่านด้วย id=) ช่องเดิมจึงยังเป็นเจ้าของค่าจริงเสมอ
+   * ช่องไทยเป็นแค่หน้ากาก เขียนค่ากลับลงช่องเดิมแล้วยิง input/change ให้ทุกครั้ง ตัวฟังเดิมจึงทำงานต่อ
+   * ได้โดยไม่ต้องแก้อะไรสักจุด
+   *
+   * required ย้ายมาอยู่ที่ช่องไทย และถอดออกจากช่องเดิม — ช่อง required ที่ถูกซ่อนอยู่ทำให้เบราว์เซอร์
+   * ปฏิเสธการ submit แบบเงียบๆ ("invalid form control is not focusable") โดยไม่มีอะไรขึ้นบนจอเลย
+   *
+   * ถ้าสร้างช่องไทยไม่สำเร็จด้วยเหตุใดก็ตาม ช่องเดิมถูกปล่อยไว้ตามเดิมและยังกรอกได้ปกติ
+   */
+  (function thaiDateFields() {
+    const pad2 = (n) => ('0' + n).slice(-2);
+
+    /** '2026-10-06' -> '06/10/2569' */
+    function toThai(iso) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+      return m ? m[3] + '/' + m[2] + '/' + (+m[1] + 543) : '';
+    }
+
+    /** '06/10/2569' -> '2026-10-06' (รับ ค.ศ. ด้วย เผื่อคนคุ้นกับช่องเดิม) — ค่าว่าง = อ่านไม่ออก */
+    function toIso(text) {
+      const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(text || '').trim());
+      if (!m) return '';
+      const d = +m[1]; const mo = +m[2];
+      // ปีเกิน 2400 แปลว่าเป็น พ.ศ. แน่ๆ (ค.ศ. 2400 คือ พ.ศ. 2943 ซึ่งไม่มีใครกรอก)
+      const y = +m[3] > 2400 ? +m[3] - 543 : +m[3];
+      if (y < 1900 || y > 2200 || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+      // 31 ก.พ. ผ่านด่านข้างบนได้ แต่ Date จะเลื่อนไปวันอื่นเงียบๆ — ทวนกลับแล้วไม่ตรงก็ถือว่าไม่มีจริง
+      const dt = new Date(Date.UTC(y, mo - 1, d));
+      if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return '';
+      return y + '-' + pad2(mo) + '-' + pad2(d);
+    }
+
+    // พิมพ์ตัวเลขรวดเดียว 06102569 แล้วให้ขีดคั่นขึ้นเอง — ตัดอักขระอื่นทิ้งหมดเพื่อให้ผลเหมือนกันเสมอ
+    // ไม่ว่าผู้ใช้จะพิมพ์ขีดเองหรือไม่ (ถ้าปล่อยให้พิมพ์ขีดเองได้ด้วย จะเกิดเคส 6/10/2569 ที่ยาวไม่เท่ากัน
+    // แล้วตำแหน่งเคอร์เซอร์เพี้ยนทุกครั้งที่แก้กลางสตริง)
+    function mask(v) {
+      const d = String(v).replace(/\D/g, '').slice(0, 8);
+      if (d.length <= 2) return d;
+      if (d.length <= 4) return d.slice(0, 2) + '/' + d.slice(2);
+      return d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4);
+    }
+
+    function upgrade(native) {
+      if (!native || native.type !== 'date' || native.dataset.thaiDate) return;
+      try {
+        native.dataset.thaiDate = 'on';
+        const wrap = document.createElement('span');
+        wrap.className = 'thai-date';
+        native.parentNode.insertBefore(wrap, native);
+
+        const text = document.createElement('input');
+        text.type = 'text';
+        text.className = 'thai-date-text';
+        text.setAttribute('inputmode', 'numeric');
+        text.setAttribute('autocomplete', 'off');
+        text.placeholder = 'วว/ดด/ปปปป';
+        text.value = toThai(native.value);
+        text.setAttribute('aria-label', native.getAttribute('aria-label')
+          || 'วันที่ รูปแบบ วัน/เดือน/ปี พ.ศ.');
+        if (native.disabled) text.disabled = true;
+        if (native.required) { text.required = true; native.required = false; }
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'thai-date-pick';
+        btn.textContent = '📅';
+        btn.title = 'เลือกจากปฏิทิน';
+        btn.setAttribute('aria-label', 'เลือกวันที่จากปฏิทิน');
+        if (native.disabled) btn.disabled = true;
+
+        wrap.appendChild(text);
+        wrap.appendChild(btn);
+        wrap.appendChild(native);
+        native.classList.add('thai-date-native');
+        // ไม่ให้ tab วิ่งเข้าช่องที่มองไม่เห็น — ผู้ใช้คีย์บอร์ดจะได้ไม่หลงไปอยู่ในช่องที่พิมพ์แล้วไม่เห็นอะไร
+        native.tabIndex = -1;
+
+        // ช่องไทย -> ช่องจริง
+        const push = () => {
+          const iso = toIso(text.value);
+          if (text.value && !iso) {
+            text.setCustomValidity('วันที่ไม่ถูกต้อง — กรอกเป็น วัน/เดือน/ปี พ.ศ. เช่น 06/10/2569');
+          } else {
+            text.setCustomValidity('');
+          }
+          if (native.value === iso) return;
+          native.value = iso;
+          // ยิงให้ตัวฟังเดิมทุกตัว (ตัวอย่างเลข, คำทวนภาษาไทย, ตัวกรองที่ submit เอง) ทำงานต่อได้
+          ['input', 'change'].forEach((evt) => native.dispatchEvent(new Event(evt, { bubbles: true })));
+        };
+        text.addEventListener('input', () => {
+          const atEnd = text.selectionStart === text.value.length;
+          const masked = mask(text.value);
+          if (masked !== text.value) {
+            text.value = masked;
+            if (atEnd) text.setSelectionRange(masked.length, masked.length);
+          }
+          push();
+        });
+        text.addEventListener('blur', () => {
+          // 6/10/2569 -> 06/10/2569 ตอนออกจากช่อง ให้ทุกช่องหน้าตาเหมือนกันเวลากวาดสายตาดูทั้งหน้า
+          const iso = toIso(text.value);
+          if (iso) text.value = toThai(iso);
+          push();
+        });
+
+        // ช่องจริง (คนกดเลือกจากปฏิทิน หรือสคริปต์อื่นตั้งค่าให้) -> ช่องไทย
+        const pull = () => {
+          const shown = toThai(native.value);
+          if (text.value !== shown) text.value = shown;
+          text.setCustomValidity('');
+        };
+        ['input', 'change'].forEach((evt) => native.addEventListener(evt, pull));
+
+        btn.addEventListener('click', () => {
+          try {
+            // showPicker ต้องเรียกจากการกดของผู้ใช้เท่านั้น และเบราว์เซอร์เก่าไม่มี — ถอยไปโฟกัสช่องเดิม
+            if (typeof native.showPicker === 'function') { native.showPicker(); return; }
+          } catch (err) { /* ตกไปใช้วิธีสำรอง */ }
+          native.tabIndex = 0;
+          native.classList.remove('thai-date-native');
+          native.focus();
+        });
+      } catch (err) {
+        // สร้างไม่สำเร็จ = ปล่อยช่องเดิมไว้ ยังกรอกได้ตามปกติทุกอย่าง ดีกว่าหน้าพังทั้งหน้า
+      }
+    }
+
+    function sweepFields(root) {
+      (root || document).querySelectorAll('input[type=date]').forEach(upgrade);
+    }
+    sweepFields();
+    // แถวที่ถูกสร้างด้วย JavaScript ทีหลัง (มอบหมายหลายฉบับ) ต้องได้ช่องไทยด้วย ไม่งั้นบางแถวเป็นไทย
+    // บางแถวเป็นอังกฤษปนกันอยู่ในฟอร์มเดียว ซึ่งสับสนกว่าเป็นอังกฤษทั้งหมดเสียอีก
+    if (window.MutationObserver) {
+      new MutationObserver((records) => {
+        for (const rec of records) {
+          for (const node of rec.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            if (node.matches && node.matches('input[type=date]')) upgrade(node);
+            else sweepFields(node);
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    }
+  })();
+
+  /**
    * ทวนวันที่ที่เลือกเป็นภาษาไทย พ.ศ. ใต้ช่องวันที่ทุกช่องในระบบ
    *
    * ปัญหา: <input type="date"> แสดงผลตาม "ภาษาของเครื่อง" ไม่ใช่ภาษาของเว็บ และเราสั่งไม่ได้เลย
@@ -825,12 +986,16 @@
     function sync(input) {
       if (!input || input.type !== 'date') return;
       const text = thaiText(input.value);
-      let echo = input.nextElementSibling;
+      // ช่องวันที่ถูกห่อด้วย .thai-date (ดู thaiDateFields) ซึ่งเป็น inline-flex — ถ้าแปะคำทวนต่อท้าย
+      // ตัวช่องตรงๆ มันจะกลายเป็นลูกของ flex แล้วไปเรียงอยู่ "ข้างขวา" ของช่องแทนที่จะอยู่ใต้ช่อง
+      // จึงต้องยึดกับกล่องห่อทั้งก้อนเสมอ (ช่องที่ยังไม่ถูกห่อก็ยึดกับตัวช่องตามเดิม)
+      const anchor = (input.closest && input.closest('.thai-date')) || input;
+      let echo = anchor.nextElementSibling;
       if (!echo || !echo.classList.contains('thai-date-echo')) {
         if (!text) return; // ยังไม่มีค่า ก็ยังไม่ต้องสร้างอะไรทิ้งไว้
         echo = document.createElement('div');
         echo.className = 'help-text thai-date-echo';
-        input.parentNode.insertBefore(echo, input.nextSibling);
+        anchor.parentNode.insertBefore(echo, anchor.nextSibling);
       }
       echo.textContent = text ? '📅 ' + text : '';
     }

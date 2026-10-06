@@ -6724,6 +6724,32 @@ describe('ทะเบียนหนังสือส่ง: ออกเล�
       assert.equal(doc.action_note, 'ส่งเพื่อโปรดพิจารณาอนุมัติ');
     });
 
+    // เล่มทะเบียนต้องอ่านไล่เลขลงไปได้เหมือนสมุดกระดาษ — ที่พิมพ์ออกมาเป็น 208, 207, 206 ไล่ลง
+    // ใช้แทนเล่มจริงไม่ได้เลย หาเลขไม่เจอและไม่มีทางรู้ว่าเลขไหนขาด (หน้ารายการงานยังเรียงใหม่สุด
+    // ขึ้นก่อนตามเดิม เพราะคนเปิดมาดูว่ามีอะไรเข้ามาใหม่ คนละงานกับการเปิดเล่มทะเบียน)
+    test('เล่มทะเบียนที่พิมพ์/ส่งออก ต้องเรียงเลขจากน้อยไปมาก ไม่ใช่ใหม่สุดขึ้นก่อน', async () => {
+      const mine = [];
+      for (let i = 0; i < 3; i++) {
+        const r = await ask(teacher(), { title: `เรียงเลขในเล่ม ${++n}` });
+        mine.push((await issue(r.json.id)).json.docNumberDisplay);
+      }
+      const nums = mine.map(runningOf);
+      assert.deepEqual(nums, [...nums].sort((a, b) => a - b), 'ตัวเลขที่ออกต้องไล่ขึ้นอยู่แล้ว');
+
+      const page = await dispatchGet(registrar(), '/documents/register', { direction: 'outgoing' });
+      assert.equal(page.status, 200);
+      const at = mine.map((d) => page.body.indexOf(d));
+      assert.ok(at.every((p) => p > 0), 'ทุกเลขที่เพิ่งออกต้องอยู่ในเล่ม');
+      assert.deepEqual(at, [...at].sort((a, b) => a - b),
+        `เล่มทะเบียนต้องเรียงเลขน้อยไปมาก — ได้ลำดับตำแหน่ง ${at.join(', ')} สำหรับเลข ${mine.join(', ')}`);
+
+      // หน้ารายการงานต้องไม่ถูกเปลี่ยนตามไปด้วย ยังเป็นใหม่สุดขึ้นก่อนเหมือนเดิม
+      const list = await dispatchGet(registrar(), '/documents', { direction: 'outgoing' });
+      const listAt = mine.map((d) => list.body.indexOf(d)).filter((p) => p > 0);
+      assert.deepEqual(listAt, [...listAt].sort((a, b) => b - a),
+        'หน้ารายการต้องยังเรียงใหม่สุดขึ้นก่อน');
+    });
+
     test('ทะเบียนหนังสือส่งที่พิมพ์ออกมาต้องมีช่อง "จาก" และ "การปฏิบัติ" ของจริง', async () => {
       const res = await ask(teacher(), { fromName: 'ฝ่ายงบประมาณโรงเรียน', actionNote: 'เพื่อโปรดลงนาม' });
       await issue(res.json.id);
@@ -15863,6 +15889,14 @@ describe('มือถือ: ขนาดที่นิ้วแตะได�
     assert.match(phone, /\.btn-sm \{ min-height: 44px; \}/, 'ปุ่มเล็ก (คัดลอกเข้าไลน์ / พิมพ์ทะเบียน)');
     assert.match(phone, /details > summary \{ min-height: 44px;/, 'หัวข้อพับ/กาง');
     assert.match(phone, /\.topbar-search \{ height: 44px; \}/);
+  });
+
+  // ปุ่ม 📅 คือทางเข้าปฏิทินของเครื่อง ซึ่งเป็นวิธีเลือกวันที่หลักบนมือถือ (พิมพ์เองบนจอเล็กช้ากว่ามาก)
+  // ถ้าปุ่มนี้เล็กจนแตะพลาด ผู้ใช้จะตกไปพิมพ์เองทุกครั้ง ซึ่งเป็นช่องทางที่พิมพ์วันผิดได้ง่ายที่สุด
+  // อยู่นอกบล็อกมือถือเพราะตั้งไว้ 44px ตั้งแต่จอใหญ่แล้ว จึงเช็คจากทั้งไฟล์
+  test('ปุ่มเปิดปฏิทินของช่องวันที่ต้องถึง 44px', () => {
+    assert.match(css(), /\.thai-date-pick \{[^}]*min-height: 44px; min-width: 44px;/s,
+      'ปุ่ม 📅 ของช่องวันที่ต้องแตะได้ด้วยนิ้ว');
   });
 
   test('ตัวหนังสือบนมือถือต้องไม่เล็กกว่า 12px', () => {

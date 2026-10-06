@@ -6924,6 +6924,86 @@ describe('ทะเบียนหนังสือส่ง: ออกเล�
       assert.equal(doc.action_note, null, 'ส่งค่าว่างมาคือการล้างช่องนั้นจริงๆ');
     });
 
+    // เกิดขึ้นจริงที่โรงเรียน: ธุรการแก้เลขจาก 208 เป็น 207 หน้าจอขึ้น 207 ถูกต้อง แต่ข้างในยังเป็น 208
+    // ฉบับถัดไปจึงได้ 209 และระบบขึ้นว่า "ยังมีหนังสือที่ใช้เลขถึง 208 อยู่" ทั้งที่ไม่มีฉบับไหนแสดง 208 เลย
+    // — เลขลำดับในเล่มคือตัวที่ขับตัวนับ การเรียงเล่ม และด่านกันเลขย้อน มันต้องเดินตามเลขที่แสดงเสมอ
+    //
+    // ทุกเทสต์ในชุดนี้อ่านเลขที่ได้จริงมาคำนวณต่อ ไม่ฝังเลขไว้ตายตัว — เทสต์อื่นในไฟล์นี้ก็ออกเลข
+    // หนังสือส่งอยู่เหมือนกัน ตัวนับจึงเดินไปเรื่อยๆ และเลขที่ฝังไว้วันนี้จะผิดเองในวันถัดไป
+    describe('แก้เลขที่แสดงแล้ว เลขลำดับในเล่มต้องตามไปด้วย', () => {
+      const runningOf = (id) => getDocRow(id).running_number;
+      const editNumber = (reqId, docNumber) => dispatchPost(registrar(),
+        `/outgoing-requests/${reqId}/number`, { pin: userPin('reg001'), docNumber });
+      before(() => setSet('outgoing_number_prefix', 'ศธ 04047.109'));
+      after(() => setSet('outgoing_number_prefix', ''));
+
+      test('แก้เลขลงมา แล้วเลขลำดับในเล่มต้องลงตาม', async () => {
+        const req = await ask(teacher(), { title: `ฉบับที่จะถูกแก้เลข ${++n}` });
+        const doc = await issue(req.json.id);
+        const was = runningOf(doc.json.documentId);
+        const want = was - 2;
+
+        const edit = await editNumber(req.json.id, `ศธ 04047.109/${want}`);
+        assert.equal(edit.status, 200, edit.body);
+        assert.equal(runningOf(doc.json.documentId), want,
+          `เลขลำดับในเล่มต้องลงตามเลขที่แสดง ไม่ใช่ค้างอยู่ที่ ${was}`);
+        assert.equal(edit.json.runningNumberFixed, want, 'ต้องตอบกลับว่าซิงก์เลขลำดับให้แล้ว');
+
+        // บันทึกตรวจสอบต้องเก็บไว้ด้วย เพราะเลขลำดับคือตัวที่ขับตัวนับทั้งเล่ม
+        const log = db.prepare(`SELECT detail FROM audit_logs WHERE record_id = ?
+          AND action = 'outgoing_number_edited' ORDER BY created_at DESC LIMIT 1`).get(doc.json.documentId);
+        assert.deepEqual(JSON.parse(log.detail).runningNumber, { before: was, after: want });
+      });
+
+      test('กดบันทึกเลขเดิมซ้ำ ต้องซ่อมแถวที่เลขลำดับเพี้ยนไปแล้วได้', async () => {
+        const req = await ask(teacher(), { title: `ฉบับที่เลขลำดับเพี้ยน ${++n}` });
+        const doc = await issue(req.json.id);
+        const id = doc.json.documentId;
+        const was = runningOf(id);
+        const shown = was - 5;
+        // จำลองแถวที่เพี้ยนมาจากของเก่า: เลขที่แสดงถูกแก้ไปแล้ว แต่เลขลำดับยังค้างค่าเดิม
+        db.prepare('UPDATE documents SET doc_number_display = ? WHERE id = ?').run(`ศธ 04047.109/${shown}`, id);
+        assert.equal(runningOf(id), was, 'ตั้งต้นให้เพี้ยนก่อน');
+
+        // กดบันทึกเลขเดิม (ที่แสดงอยู่) ซ้ำ — ไม่มีช่องไหนเปลี่ยน แต่ต้องซ่อมเลขลำดับให้
+        const fix = await editNumber(req.json.id, `ศธ 04047.109/${shown}`);
+        assert.equal(fix.status, 200, fix.body);
+        assert.equal(runningOf(id), shown, 'กดบันทึกเลขเดิมซ้ำต้องซ่อมเลขลำดับให้ตรงกับเลขที่แสดง');
+      });
+
+      test('เลขที่อ่านเป็นตัวเลขไม่ได้ ต้องไม่ไปแตะเลขลำดับเดิม', async () => {
+        const req = await ask(teacher(), { title: `เลขที่พิมพ์เป็นข้อความ ${++n}` });
+        const doc = await issue(req.json.id);
+        const was = runningOf(doc.json.documentId);
+        const edit = await editNumber(req.json.id, 'ศธ 04047.109/พิเศษ');
+        assert.equal(edit.status, 200, edit.body);
+        assert.equal(runningOf(doc.json.documentId), was,
+          'อ่านเลขลำดับจากเลขที่ไม่ได้ ต้องปล่อยของเดิมไว้ ไม่ใช่ล้างเป็นศูนย์');
+      });
+
+      // รูปแบบทะเบียนภายใน เลขลำดับอยู่ "หน้า" ทับ ส่วนหลังทับคือปี พ.ศ. — อ่านสลับกันคือพังทั้งเล่ม
+      test('รูปแบบ 0931/2569 ต้องอ่านเลขลำดับเป็น 931 ไม่ใช่ 2569', async () => {
+        const req = await ask(teacher(), { title: `รูปแบบทะเบียนภายใน ${++n}` });
+        const doc = await issue(req.json.id);
+        // เลขที่ไม่ชนกับเทสต์อื่นในไฟล์นี้ซึ่งก็ใช้รูปแบบทะเบียนภายในอยู่เหมือนกัน
+        const edit = await editNumber(req.json.id, `0931/${beYear()}`);
+        assert.equal(edit.status, 200, edit.body);
+        assert.equal(runningOf(doc.json.documentId), 931, 'ต้องไม่อ่านปี พ.ศ. มาเป็นเลขลำดับ');
+      });
+
+      // เส้นทางแก้ทะเบียนที่หน้าหนังสือเป็นคนละเส้นกับหน้าออกเลข ต้องซิงก์เหมือนกันทั้งคู่
+      test('แก้เลขที่หน้าหนังสือก็ต้องซิงก์เลขลำดับเหมือนกัน', async () => {
+        const req = await ask(teacher(), { title: `แก้ที่หน้าหนังสือ ${++n}` });
+        const doc = await issue(req.json.id);
+        const id = doc.json.documentId;
+        const want = runningOf(id) - 3;
+        const edit = await dispatchPost(registrar(), `/documents/${id}/register-info`,
+          { docNumberDisplay: `ศธ 04047.109/${want}` });
+        assert.equal(edit.status, 200, edit.body);
+        assert.equal(runningOf(id), want, 'หน้าหนังสือก็ต้องซิงก์เลขลำดับให้เหมือนกัน');
+      });
+    });
+
     test('แก้ช่องเดียวหลังออกเลขไปแล้วได้ ช่องอื่นต้องไม่ถูกแตะ', async () => {
       const res = await ask(teacher(), { fromName: 'ฝ่ายเดิม', actionNote: 'การปฏิบัติเดิม' });
       const issued = await issue(res.json.id);

@@ -11,6 +11,7 @@
 //   3. เลขที่ออกไปแล้วยกเลิกไม่ได้ ต้องไปยกเลิกที่ตัวหนังสือ (ซึ่งบันทึกเหตุผลไว้)
 import { db, uuid, nowIso, audit, getUserRoles, todayInBangkok } from '../db.js';
 import { fmtThaiDateLong } from '../render.js';
+import { runningNumberFromDisplay } from '../numbering.js';
 import { httpError, asText, asTextOrNull, assertMaxLength, normalizeDate } from './validate.js';
 import { notifyUser } from './notify.js';
 import { createDocument } from './workflow.js';
@@ -467,17 +468,25 @@ export function editIssuedOutgoing({ requestId, docNumber, docDate, fromName, co
   assertMaxLength(next.action_note, MAX_NOTE, 'การปฏิบัติ');
 
   const changed = Object.entries(next).filter(([col, value]) => (doc[col] ?? null) !== (value ?? null));
-  if (!changed.length) return { ok: true, changed: false, docNumberDisplay: num };
+
+  // เลขลำดับในเล่มต้องเดินตามเลขที่แสดงเสมอ ไม่งั้นหน้าจอขึ้น 207 แต่ข้างในยังเป็น 208 แล้วฉบับถัดไป
+  // ได้ 209 พร้อมขึ้นว่า "ยังมีหนังสือที่ใช้เลขถึง 208 อยู่" ทั้งที่ไม่มีฉบับไหนแสดงเลข 208 เลย
+  // (ดู runningNumberFromDisplay) — ซิงก์แม้เลขที่แสดงไม่เปลี่ยน เพื่อให้ "กดบันทึกเลขเดิมซ้ำ"
+  // เป็นวิธีซ่อมแถวที่เพี้ยนไปแล้วจากของเก่าได้ด้วย
+  const parsedRunning = runningNumberFromDisplay(next.doc_number_display);
+  const runningChanged = parsedRunning !== null && parsedRunning !== doc.running_number;
+  if (!changed.length && !runningChanged) return { ok: true, changed: false, docNumberDisplay: num };
 
   db.prepare(`UPDATE documents SET doc_number_display = ?, external_doc_date = ?, from_name = ?,
-    correspondent_name = ?, title = ?, action_note = ?, updated_at = ? WHERE id = ?`)
+    correspondent_name = ?, title = ?, action_note = ?, running_number = ?, updated_at = ? WHERE id = ?`)
     .run(next.doc_number_display, next.external_doc_date, next.from_name,
-      next.correspondent_name, next.title, next.action_note, nowIso(), doc.id);
+      next.correspondent_name, next.title, next.action_note,
+      runningChanged ? parsedRunning : doc.running_number, nowIso(), doc.id);
 
   // ผู้ขอได้เลขเดิมไปแล้วและอาจพิมพ์ลงหนังสือจริงไปแล้ว — ต้องรู้ว่าเปลี่ยน ไม่ใช่มาเจอเองทีหลัง
   // เลขที่กับวันที่คือสองค่าที่ถูกพิมพ์ลงกระดาษ จึงบอกค่าใหม่ไปในข้อความให้ใช้ได้ทันทีโดยไม่ต้องเปิดเว็บ
   const numChanged = next.doc_number_display !== doc.doc_number_display;
-  notifyUser({
+  if (changed.length) notifyUser({
     userId: req.requester_id, documentId: doc.id,
     title: numChanged ? `แก้เลขหนังสือส่งเป็น ${num}` : `แก้ข้อมูลหนังสือส่ง ${num}`,
     message: [
@@ -496,10 +505,16 @@ export function editIssuedOutgoing({ requestId, docNumber, docDate, fromName, co
       // before/after ของเลขที่อยู่ที่ระดับบนสุดเหมือนเดิม — มีของที่อ่าน audit log เก่าอยู่
       before: doc.doc_number_display, after: num,
       fields: Object.fromEntries(changed.map(([col, value]) => [col, { before: doc[col] ?? null, after: value ?? null }])),
+      // เลขลำดับในเล่มไม่ใช่ช่องที่คนกรอก แต่ต้องตรวจย้อนได้ เพราะมันคือตัวที่ขับตัวนับและการเรียงเล่ม
+      ...(runningChanged ? { runningNumber: { before: doc.running_number, after: parsedRunning } } : {}),
       duplicateAllowed: Boolean(dup),
     },
   });
-  return { ok: true, changed: true, docNumberDisplay: num, changedFields: changed.map(([col]) => col) };
+  return {
+    ok: true, changed: true, docNumberDisplay: num,
+    changedFields: changed.map(([col]) => col),
+    runningNumberFixed: runningChanged ? parsedRunning : null,
+  };
 }
 
 const EDITABLE_LABEL = {

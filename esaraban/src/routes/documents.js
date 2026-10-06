@@ -14,7 +14,7 @@ import {
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { canIssueOutgoingNumber } from '../services/outgoingRequest.js';
-import { previewNextNumber } from '../numbering.js';
+import { previewNextNumber, runningNumberFromDisplay } from '../numbering.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
 import { activeDriveId, activeDriveToken, driveTokenFor, BOOTSTRAP_DRIVE_ID } from '../services/driveAccounts.js';
 import {
@@ -4147,9 +4147,20 @@ router.post('/documents/:id/register-info', requireApi((ctx) => {
       ? requireDate(ctx.body.receivedDate, 'วันที่รับหนังสือ')
       : null;
   }
+  // เลขลำดับในเล่มต้องเดินตามเลขที่แสดงเสมอ — มันคือตัวที่ขับตัวนับ การเรียงเล่มทะเบียน และด่านกัน
+  // เลขย้อนกลับ ถ้าแก้แต่เลขที่แสดง หน้าจอจะขึ้น 207 แต่ข้างในยังเป็น 208 แล้วฉบับถัดไปได้ 209
+  // พร้อมบอกว่า "ยังมีหนังสือที่ใช้เลขถึง 208 อยู่" ทั้งที่ไม่มีฉบับไหนแสดงเลขนั้นเลย
+  // ซิงก์แม้เลขที่แสดงไม่เปลี่ยน เพื่อให้กดบันทึกเลขเดิมซ้ำเป็นวิธีซ่อมแถวที่เพี้ยนไปแล้วได้
+  const parsedRunning = runningNumberFromDisplay(patch.doc_number_display ?? doc.doc_number_display);
+  if (parsedRunning !== null && parsedRunning !== doc.running_number) patch.running_number = parsedRunning;
+
   if (!Object.keys(patch).length) return json(ctx, 200, { ok: true, changed: false });
 
-  const before = { doc_number_display: doc.doc_number_display, received_date: doc.received_date };
+  const before = {
+    doc_number_display: doc.doc_number_display,
+    received_date: doc.received_date,
+    running_number: doc.running_number,
+  };
   const sets = Object.keys(patch).map((k) => `${k} = ?`).join(', ');
   db.prepare(`UPDATE documents SET ${sets}, updated_at = ? WHERE id = ?`)
     .run(...Object.values(patch), nowIso(), doc.id);

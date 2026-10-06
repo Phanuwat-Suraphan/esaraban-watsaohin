@@ -1,5 +1,16 @@
 import { db, beYear } from './db.js';
-import { outgoingNumberPrefix } from './services/settings.js';
+import { outgoingNumberPrefix, outgoingNumberFloor } from './services/settings.js';
+
+/**
+ * เลขพื้นของเล่มทะเบียน — เลขถัดไปต้องไม่ต่ำกว่านี้
+ *
+ * ใช้กับทะเบียนหนังสือส่งทั่วไปเท่านั้น ไม่ใช่ทะเบียนเวียนและไม่ใช่ทะเบียนรับ: ค่าที่โรงเรียนกรอกคือ
+ * "เลขหนังสือส่งล่าสุดที่ออกไปแล้วก่อนมาใช้ระบบนี้" ซึ่งมาจากเล่มหนังสือส่งเล่มเดียว เอาไปใช้กับเล่มอื่น
+ * จะดันเลขของเล่มที่ไม่เกี่ยวให้กระโดดตามไปด้วย (ดู CIRCULAR_REGISTER — สองเล่มมีเลข 1 ของตัวเองได้)
+ */
+function floorFor(direction, isCircular, year) {
+  return direction === 'outgoing' && !isCircular ? outgoingNumberFloor(year) : 0;
+}
 
 /**
  * ออกเลขทะเบียนหนังสือแบบอะตอมมิก — นับเป็น "ชุดเดียวทั้งโรงเรียนต่อปี" แยกแค่หนังสือเข้ากับหนังสือออก
@@ -20,9 +31,14 @@ export function nextRunningNumber({ direction, year = beYear(), isCircular = fal
     .prepare('SELECT running_number FROM document_number_counters WHERE year_be = ? AND direction = ?')
     .get(year, register);
 
+  const floor = floorFor(direction, isCircular, year);
+
   let next;
   if (existing) {
-    next = existing.running_number + 1;
+    // พื้นต้องกันไว้ที่นี่ด้วย ไม่ใช่แค่ตอนสร้างตัวนับครั้งแรก — ฐานข้อมูลที่ออกเลขไปแล้วก่อนที่โรงเรียน
+    // จะกรอกค่านี้ มีตัวนับอยู่แล้วที่เลขต่ำกว่าพื้น (เช่นนับไปถึง 3 แล้วค่อยกรอกว่าเล่มกระดาษอยู่ที่ 205)
+    // ถ้ากันแค่ตอนสร้าง ค่าที่กรอกจะไม่มีผลอะไรเลยและไม่มีอะไรบอกว่าเพราะอะไร
+    next = Math.max(existing.running_number, floor) + 1;
     db.prepare('UPDATE document_number_counters SET running_number = ? WHERE year_be = ? AND direction = ?')
       .run(next, year, register);
   } else {
@@ -33,7 +49,7 @@ export function nextRunningNumber({ direction, year = beYear(), isCircular = fal
       .prepare(`SELECT COALESCE(MAX(running_number), 0) m FROM documents
         WHERE year_be = ? AND direction = ? AND is_circular = ?`)
       .get(year, direction, isCircular ? 1 : 0).m;
-    next = issued + 1;
+    next = Math.max(issued, floor) + 1;
     db.prepare('INSERT INTO document_number_counters (year_be, direction, running_number) VALUES (?, ?, ?)')
       .run(year, register, next);
   }
@@ -92,7 +108,9 @@ export function previewNextNumber(direction, prefixOverride, isCircular = false)
     .get(year, register);
   const issued = db.prepare(`SELECT COALESCE(MAX(running_number), 0) m FROM documents
     WHERE year_be = ? AND direction = ? AND is_circular = ?`).get(year, direction, isCircular ? 1 : 0).m;
-  const next = (counter ? counter.running_number : issued) + 1;
+  // ต้องคิดพื้นด้วยสูตรเดียวกับ nextRunningNumber เป๊ะ — ตัวอย่างที่โชว์ให้ธุรการเห็นก่อนกดออกเลข
+  // ถ้าไม่ตรงกับเลขที่ออกจริง ธุรการจะกดยืนยันโดยเชื่อเลขที่ผิด แล้วเลขจริงไปโผล่บนหนังสือราชการ
+  const next = Math.max(counter ? counter.running_number : issued, floorFor(direction, isCircular, year)) + 1;
   const circular = direction === 'outgoing' && isCircular;
   if (direction === 'outgoing') {
     const prefix = prefixOverride === undefined ? outgoingNumberPrefix() : String(prefixOverride || '').trim();

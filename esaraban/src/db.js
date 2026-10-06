@@ -296,6 +296,13 @@ export function migrate() {
     priority TEXT NOT NULL DEFAULT 'normal', -- normal | urgent | very_urgent | most_urgent
     secret_level TEXT NOT NULL DEFAULT 'normal', -- normal | internal | secret | top_secret
     correspondent_name TEXT, -- หน่วยงาน/บุคคลภายนอก (ผู้ส่ง สำหรับ incoming, ผู้รับ สำหรับ outgoing)
+    -- สองช่องของ "ทะเบียนหนังสือส่ง" (แบบที่ 14 ตามระเบียบสำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ) ที่
+    -- correspondent_name ช่องเดียวแทนไม่ได้ — เล่มทะเบียนส่งมีทั้งช่อง "จาก" (เจ้าของเรื่องในโรงเรียน)
+    -- และช่อง "ถึง" (ปลายทางข้างนอก) แยกกัน ส่วน "การปฏิบัติ" เป็นข้อความที่เจ้าของเรื่องเขียนว่าให้
+    -- ทำอะไรต่อ ไม่ใช่สถานะของเรื่องในระบบ — เดิมคอลัมน์ "การปฏิบัติ" ของหน้าพิมพ์เอาสถานะมาแสดงแทน
+    -- ซึ่งเป็นคนละความหมายกับเล่มกระดาษที่ธุรการต้องกรอก
+    from_name TEXT,
+    action_note TEXT,
     status TEXT NOT NULL DEFAULT 'draft', -- draft|registered|in_progress|returned|completed|archived|voided|destroyed
     due_date TEXT,
     created_by TEXT NOT NULL REFERENCES users(id),
@@ -649,6 +656,11 @@ export function migrate() {
     requester_id TEXT NOT NULL REFERENCES users(id),
     title TEXT NOT NULL,              -- ชื่อเรื่องของหนังสือที่จะส่ง
     correspondent_name TEXT NOT NULL, -- หน่วยงาน/บุคคลปลายทาง (ช่อง "เรียน")
+    -- สี่ช่องที่ครูต้องกรอกเองคือ จาก / ถึง / เรื่อง / การปฏิบัติ — ที่เหลือระบบออกให้หรือธุรการเติม
+    -- ตอนอนุมัติ (ดู services/outgoingRequest.js) ปล่อยเป็น NULL ได้ เพราะฐานข้อมูลที่ deploy ไปแล้ว
+    -- มีคำขอเก่าที่ยื่นตอนยังไม่มีสองช่องนี้ค้างอยู่
+    from_name TEXT,
+    action_note TEXT,
     department_id TEXT REFERENCES departments(id),
     priority TEXT NOT NULL DEFAULT 'normal',
     secret_level TEXT NOT NULL DEFAULT 'normal',
@@ -967,9 +979,21 @@ export function migrate() {
   if (outReqCols.length && !outReqCols.includes('is_circular')) {
     db.exec('ALTER TABLE outgoing_number_requests ADD COLUMN is_circular INTEGER NOT NULL DEFAULT 0');
   }
+  // ช่อง "จาก" และ "การปฏิบัติ" ของเล่มทะเบียนหนังสือส่ง — เติมเป็น NULL ให้ของเก่า ไม่เดาค่าย้อนหลัง
+  // เพราะทั้งสองช่องเป็นข้อความที่เจ้าของเรื่องเขียนเอง ระบบเดาแทนไม่ได้ และเดาผิดจะกลายเป็นข้อมูล
+  // ปลอมในทะเบียนราชการ (หน้าพิมพ์แสดงช่องว่างไว้ให้เขียนด้วยปากกาได้ตามปกติของเล่มกระดาษ)
+  if (outReqCols.length && !outReqCols.includes('from_name')) {
+    db.exec('ALTER TABLE outgoing_number_requests ADD COLUMN from_name TEXT');
+    db.exec('ALTER TABLE outgoing_number_requests ADD COLUMN action_note TEXT');
+  }
   if (!documentCols.includes('stamp_x')) {
     db.exec('ALTER TABLE documents ADD COLUMN stamp_x REAL');
     db.exec('ALTER TABLE documents ADD COLUMN stamp_y REAL');
+  }
+  // ช่อง "จาก" และ "การปฏิบัติ" ของเล่มทะเบียนหนังสือส่ง (ดูเหตุผลที่ CREATE TABLE documents)
+  if (!documentCols.includes('from_name')) {
+    db.exec('ALTER TABLE documents ADD COLUMN from_name TEXT');
+    db.exec('ALTER TABLE documents ADD COLUMN action_note TEXT');
   }
   // เนื้อหาที่จะประทับลงไฟล์ (ความเห็น ผอ. / ความเห็นธุรการ / เครื่องหมายบนตรา) เดิมเดินทางจาก
   // ฟอร์มไปลง PDF ตรงๆ ไม่เคยถูกเก็บลงฐานข้อมูลเลย ถ้าประทับไม่สำเร็จ ข้อความที่ ผอ. เขียนจึงหาย

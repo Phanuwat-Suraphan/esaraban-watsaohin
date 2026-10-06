@@ -1150,13 +1150,20 @@ function registerColumns(direction) {
     ...(isAll ? [{ head: 'ประเภท', width: 13, get: (d) => (d.direction === 'incoming' ? 'หนังสือเข้า' : 'หนังสือออก') }] : []),
     { head: 'ที่ (หนังสือต้นทาง)', width: 18, get: (d) => d.external_doc_number || '' },
     { head: 'ลงวันที่', width: 13, get: (d) => (d.external_doc_date ? fmtThaiDateShort(d.external_doc_date) : '') },
+    // ทะเบียนหนังสือส่ง (แบบที่ 14) มีช่อง "จาก" (เจ้าของเรื่องในโรงเรียน) แยกจากช่อง "ถึง" (ปลายทาง)
+    // ทะเบียนหนังสือรับไม่มี เพราะช่อง "จาก" ของเล่มรับคือต้นทางข้างนอก ซึ่งคือ correspondent_name เอง
+    ...(isIn || isAll ? [] : [{ head: 'จาก', width: 22, text: true, get: (d) => d.from_name || '' }]),
     // text: true = ช่องข้อความยาว หน้าพิมพ์จะชิดซ้ายและตัดบรรทัดในช่องแทนการดันจนล้นกรอบ
     { head: isAll ? 'จาก/ถึง' : (isIn ? 'จาก' : 'ถึง'), width: 26, text: true, get: (d) => d.correspondent_name || '' },
     { head: 'เรื่อง', width: 42, text: true, get: (d) => d.title },
     { head: 'ฝ่ายที่รับผิดชอบ', width: 20, text: true, get: (d) => d.dept_name },
     { head: 'ความเร็ว', width: 13, get: (d) => LABELS.PRIORITY_LABEL[d.priority] || d.priority },
     { head: 'ชั้นความลับ', width: 13, get: (d) => LABELS.SECRET_LABEL[d.secret_level] || d.secret_level },
-    { head: 'การปฏิบัติ', width: 16, get: (d) => LABELS.STATUS_LABEL[d.status] || d.status },
+    // "การปฏิบัติ" ของทะเบียนหนังสือส่งคือข้อความที่เจ้าของเรื่องเขียนว่าให้ปลายทางทำอะไรต่อ ไม่ใช่
+    // สถานะของเรื่องในระบบ — เดิมช่องนี้เอาสถานะมาแสดงแทนทั้งสองเล่ม ซึ่งผิดความหมายของเล่มกระดาษ
+    // ที่ธุรการต้องกรอก เล่มส่งจึงแยกเป็นสองช่อง ส่วนเล่มรับคงเดิมเพราะสถานะคือ "ทำถึงไหนแล้ว" จริงๆ
+    ...(isIn || isAll ? [] : [{ head: 'การปฏิบัติ', width: 22, text: true, get: (d) => d.action_note || '' }]),
+    { head: isIn || isAll ? 'การปฏิบัติ' : 'สถานะ', width: 16, get: (d) => LABELS.STATUS_LABEL[d.status] || d.status },
     { head: 'ครบกำหนด', width: 13, get: (d) => (d.due_date ? fmtThaiDateShort(d.due_date) : '') },
     ...(isIn ? [] : [{ head: 'วันที่ลงทะเบียน', width: 15, get: (d) => fmtThaiDateShort(d.created_at) }]),
     // การส่งออกจริง — ระเบียบฯ ใช้ช่อง "หมายเหตุ" ของทะเบียนหนังสือส่งบันทึกวิธีส่งอยู่แล้ว

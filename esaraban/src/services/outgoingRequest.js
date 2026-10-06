@@ -9,11 +9,12 @@
 //   1. คำขอ "ไม่ใช่" หนังสือ และต้องยังไม่กินเลขทะเบียน จนกว่าธุรการจะกดออกเลข
 //   2. ออกเลขให้คำขอเดิมซ้ำสองครั้งไม่ได้ ไม่งั้นหนังสือเรื่องเดียวจะมีสองเลข
 //   3. เลขที่ออกไปแล้วยกเลิกไม่ได้ ต้องไปยกเลิกที่ตัวหนังสือ (ซึ่งบันทึกเหตุผลไว้)
-import { db, uuid, nowIso, audit, getUserRoles } from '../db.js';
-import { httpError, asText, asTextOrNull, assertMaxLength } from './validate.js';
+import { db, uuid, nowIso, audit, getUserRoles, todayInBangkok } from '../db.js';
+import { fmtThaiDateLong } from '../render.js';
+import { httpError, asText, asTextOrNull, assertMaxLength, normalizeDate } from './validate.js';
 import { notifyUser } from './notify.js';
 import { createDocument } from './workflow.js';
-import { fileKindOf, ALLOWED_LABEL, saveAttachment } from './attachments.js';
+import { saveAttachment } from './attachments.js';
 
 /**
  * ประเภทเอกสารเริ่มต้นของหนังสือที่ออกจากคำขอ — หนังสือส่งของโรงเรียนคือหนังสือภายนอกเป็นหลัก
@@ -37,38 +38,6 @@ export const canIssueOutgoingNumber = (user) =>
   Boolean(user) && (user.roleCodes.includes('admin') || user.roleCodes.includes('registrar'));
 
 /** ครูยื่นคำขอเลขหนังสือส่ง — ยังไม่กินเลขทะเบียน */
-/**
- * ขนาดสูงสุดของร่างหนังสือที่แนบมากับคำขอ — เล็กกว่าไฟล์แนบของหนังสือจริง (10MB) โดยตั้งใจ
- *
- * ร่างเก็บเป็นก้อนข้อมูลอยู่ในฐานข้อมูลจนกว่าจะออกเลขให้ ซึ่งฐานข้อมูลทั้งไฟล์ถูกสำรองขึ้น Google Drive
- * ทุกรอบ ถ้าปล่อยให้ใหญ่เท่าไฟล์แนบจริง คำขอที่ค้างอยู่ไม่กี่สิบใบก็ทำให้ไฟล์สำรองโตขึ้นเป็นหลายร้อย
- * เมกะไบต์ต่อรอบได้ — ร่างหนังสือของจริงเป็น Word/PDF ไม่กี่หน้า ขนาดหลักร้อยกิโลไบต์เท่านั้น
- */
-const MAX_DRAFT_BYTES = 5 * 1024 * 1024;
-
-/**
- * แนบร่างหนังสือเข้ากับคำขอ — ใช้ตัวตรวจชนิดไฟล์/ลายเซ็นไฟล์ชุดเดียวกับหน้าหนังสือ
- *
- * ทำไมต้องมี: เดิมธุรการเห็นแค่ชื่อเรื่องกับปลายทาง แล้วต้องออกเลขทะเบียนส่งให้โดยไม่เคยเห็นตัวหนังสือเลย
- * ทั้งที่เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้ ในทางปฏิบัติจึงต้องไปตามขอไฟล์กันทางไลน์ก่อนทุกครั้ง
- */
-function saveDraft({ requestId, fileName, fileType, fileDataBase64 }) {
-  if (!fileDataBase64) return null;
-  const kind = fileKindOf(fileType);
-  if (!kind) throw httpError(400, `ชนิดไฟล์นี้แนบไม่ได้ — รับเฉพาะ ${ALLOWED_LABEL}`);
-  const buf = Buffer.from(fileDataBase64, 'base64');
-  if (!buf.length) throw httpError(400, 'ไฟล์ที่แนบมาไม่มีข้อมูล (0 ไบต์) — อาจสแกนไม่สำเร็จหรือไฟล์เสียหาย');
-  if (buf.length > MAX_DRAFT_BYTES) throw httpError(413, 'ร่างหนังสือที่แนบมากับคำขอต้องไม่เกิน 5MB — ถ้าใหญ่กว่านี้ให้ขอเลขก่อน แล้วค่อยแนบไฟล์ที่หน้าหนังสือ');
-  // ตรวจลายเซ็นไฟล์จริง ไม่ใช่เชื่อ MIME ที่แจ้งมา (เกณฑ์เดียวกับไฟล์แนบของหนังสือ)
-  if (!kind.sig(buf)) {
-    throw httpError(400, `ไฟล์นี้ไม่ใช่ ${kind.label} ที่ถูกต้อง (ตรวจลายเซ็นไฟล์ไม่ผ่าน) — ถ้าเปลี่ยนนามสกุลไฟล์เอง ให้บันทึกเป็นชนิดที่ถูกต้องก่อน`);
-  }
-  const id = uuid();
-  db.prepare(`INSERT INTO outgoing_request_files (id, request_id, filename, mime_type, filesize, content, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, requestId, asText(fileName) || `document.${kind.ext}`, fileType, buf.length, buf, nowIso());
-  return { id, filesize: buf.length };
-}
 
 /** ร่างที่แนบมากับคำขอ (ไม่ดึงเนื้อไฟล์ เพราะใช้แค่ทำรายการ) */
 export function listRequestDrafts(requestId) {
@@ -81,12 +50,59 @@ export function getRequestDraft(fileId) {
   return db.prepare('SELECT * FROM outgoing_request_files WHERE id = ?').get(fileId);
 }
 
-export function submitOutgoingRequest({ title, correspondentName, departmentId, priority, secretLevel, note, isCircular, draft, requester }) {
+/**
+ * ชื่อผู้ขอที่เอาไปใส่ช่อง "จาก" ให้เองเมื่อไม่ได้กรอกมา
+ *
+ * ช่อง "จาก" ของเล่มทะเบียนหนังสือส่งคือเจ้าของเรื่องในโรงเรียน ซึ่งเกือบทุกครั้งคือคนที่กดขอเลขเอง
+ * จึงเติมให้เลยแทนที่จะบังคับให้พิมพ์ชื่อตัวเองทุกครั้ง — แก้เป็นชื่อฝ่าย/กลุ่มงานได้ตามต้องการ
+ */
+function defaultFromName(user) {
+  const name = `${user.prefix || ''}${user.first_name || ''} ${user.last_name || ''}`.trim();
+  return user.position ? `${name} (${user.position})` : name;
+}
+
+/**
+ * ใครเป็น "ผู้ขอ" ของคำขอใบนี้
+ *
+ * ครูบางท่านฝากให้ธุรการลงให้ (บอกปากเปล่า/ทางไลน์) คำขอใบนั้นต้องขึ้นชื่อครูเจ้าของเรื่อง ไม่ใช่ชื่อ
+ * ธุรการ เพราะหนังสือที่ออกมาจะมีครูคนนั้นเป็นผู้บันทึกเอกสารและเป็นคนที่ต้องแนบไฟล์/เสนอต่อเอง
+ * ถ้าขึ้นชื่อธุรการ ครูจะเปิดหนังสือของตัวเองไม่ได้และไม่ได้รับแจ้งเตือนอะไรเลย
+ */
+function resolveRequester(actor, onBehalfOfId) {
+  const target = asTextOrNull(onBehalfOfId);
+  if (!target || target === actor.id) return actor;
+  if (!canIssueOutgoingNumber(actor)) {
+    throw httpError(403, 'บันทึกคำขอแทนคนอื่นได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
+  }
+  const row = db.prepare("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active'").get(target);
+  if (!row) throw httpError(400, 'ไม่พบครูที่เลือกเป็นผู้ขอ หรือบัญชีนั้นถูกปิดไปแล้ว');
+  return row;
+}
+
+/**
+ * คำขอเลขหนังสือส่งไม่รับไฟล์แนบแล้ว
+ *
+ * ตอนแรกให้แนบร่างได้เพราะคิดว่าธุรการต้องเห็นตัวหนังสือก่อนตัดสินใจออกเลข แต่ของจริงไม่ได้ทำงานแบบนั้น
+ * — ครูมา "ขอเลข" เพื่อเอาไปพิมพ์ลงหัวหนังสือที่ยังร่างไม่เสร็จด้วยซ้ำ ไม่ได้มาส่งไฟล์ ช่องแนบไฟล์จึง
+ * เป็นขั้นตอนที่ไม่มีใครใช้ แต่กินที่บนหน้าจอและทำให้ฟอร์มที่ควรมีสี่ช่องดูยาวเกินจำเป็น
+ *
+ * ไฟล์ที่แนบมาก่อนหน้านี้ยังเปิดดูได้และยังถูกย้ายเข้าเป็นไฟล์แนบของหนังสือตอนออกเลขเหมือนเดิม
+ * (ดู listRequestDrafts/getRequestDraft และขั้นย้ายไฟล์ใน issueOutgoingNumber) ตัดแค่ขาเข้าเท่านั้น
+ * เพื่อไม่ให้ของที่ยื่นไว้แล้วหายไปเงียบๆ — เมื่อคำขอเก่าหมดแล้ว ตาราง outgoing_request_files
+ * กับเส้นทางเปิดไฟล์จะถูกรื้อทิ้งได้ทั้งก้อน
+ */
+export function submitOutgoingRequest({ title, correspondentName, fromName, actionNote, departmentId, priority, secretLevel, note, isCircular, requester: actor, onBehalfOfId }) {
+  const requester = resolveRequester(actor, onBehalfOfId);
+  const onBehalf = requester.id !== actor.id;
   title = asText(title);
   correspondentName = asText(correspondentName);
   note = asTextOrNull(note);
+  fromName = asText(fromName) || defaultFromName(requester);
+  actionNote = asTextOrNull(actionNote);
   assertMaxLength(title, MAX_TITLE, 'ชื่อเรื่อง');
   assertMaxLength(correspondentName, MAX_TITLE, 'หน่วยงาน/บุคคลปลายทาง');
+  assertMaxLength(fromName, MAX_TITLE, 'จาก (เจ้าของเรื่อง)');
+  assertMaxLength(actionNote, MAX_NOTE, 'การปฏิบัติ');
   assertMaxLength(note, MAX_NOTE, 'ข้อความถึงธุรการ');
   if (!title) throw httpError(400, 'กรุณากรอกชื่อเรื่องของหนังสือที่จะส่ง');
   if (!correspondentName) throw httpError(400, 'กรุณากรอกหน่วยงาน/บุคคลที่จะส่งถึง');
@@ -103,37 +119,39 @@ export function submitOutgoingRequest({ title, correspondentName, departmentId, 
   const dup = db.prepare(`
     SELECT id FROM outgoing_number_requests WHERE requester_id = ? AND title = ? AND status = 'pending'
   `).get(requester.id, title);
-  if (dup) {
-    // กดซ้ำเพราะเพิ่งนึกได้ว่าลืมแนบร่าง — ต้องแนบเข้าใบเดิมได้ ไม่ใช่เงียบไปเฉยๆ แล้วครูไม่รู้ว่าไฟล์หาย
-    if (draft?.fileDataBase64) saveDraft({ requestId: dup.id, ...draft });
-    return { id: dup.id, duplicate: true };
-  }
+  if (dup) return { id: dup.id, duplicate: true, requesterId: requester.id, onBehalf };
 
   const id = uuid();
   db.prepare(`
     INSERT INTO outgoing_number_requests
-      (id, requester_id, title, correspondent_name, department_id, priority, secret_level, note, is_circular, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-  `).run(id, requester.id, title, correspondentName, deptId, priority || 'normal', secretLevel || 'normal', note,
+      (id, requester_id, title, correspondent_name, from_name, action_note, department_id, priority, secret_level, note, is_circular, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+  `).run(id, requester.id, title, correspondentName, fromName, actionNote, deptId, priority || 'normal', secretLevel || 'normal', note,
     isCircular ? 1 : 0, nowIso());
 
-  if (draft?.fileDataBase64) saveDraft({ requestId: id, ...draft });
-
-  const who = `${requester.prefix || ''}${requester.first_name} ${requester.last_name}`.trim();
-  // บอกธุรการทันที ไม่ใช่รอให้บังเอิญเปิดหน้านั้นเจอเอง — ครูที่ขอเลขมักกำลังรอส่งหนังสือให้ทัน
-  for (const staff of db.prepare(`
-    SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
-    WHERE r.name IN ('registrar', 'admin') AND u.deleted_at IS NULL AND u.status = 'active'
-  `).all()) {
-    notifyUser({
-      userId: staff.id, linkUrl: '/outgoing-requests',
-      title: 'มีคำขอเลขหนังสือส่งใหม่',
-      message: `${who} ขอเลขสำหรับเรื่อง "${title}"`,
-      priority: 'info',
-    });
+  const who =`${requester.prefix || ''}${requester.first_name} ${requester.last_name}`.trim();
+  // ธุรการที่พิมพ์ใบนี้เองไม่ต้องได้แจ้งเตือนว่า "มีคำขอใหม่" จากตัวเอง — ใบที่ธุรการลงแทนครูถูกออกเลข
+  // ต่อทันทีในคำสั่งเดียวอยู่แล้ว การแจ้งเตือนรอบนี้จึงเป็นเสียงรบกวนล้วนๆ
+  if (!onBehalf) {
+    // บอกธุรการทันที ไม่ใช่รอให้บังเอิญเปิดหน้านั้นเจอเอง — ครูที่ขอเลขมักกำลังรอส่งหนังสือให้ทัน
+    for (const staff of db.prepare(`
+      SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+      WHERE r.name IN ('registrar', 'admin') AND u.deleted_at IS NULL AND u.status = 'active'
+    `).all()) {
+      notifyUser({
+        userId: staff.id, linkUrl: '/outgoing-requests',
+        title: 'มีคำขอเลขหนังสือส่งใหม่',
+        message: `${who} ขอเลขสำหรับเรื่อง "${title}"`,
+        priority: 'info',
+      });
+    }
   }
-  audit({ userId: requester.id, action: 'outgoing_number_requested', tableName: 'outgoing_number_requests', recordId: id, detail: { title } });
-  return { id, duplicate: false };
+  // userId = คนที่ "กดจริง" ไม่ใช่เจ้าของคำขอ — บันทึกตรวจสอบต้องตอบได้ว่าใครเป็นคนพิมพ์ใบนี้เข้าระบบ
+  audit({
+    userId: actor.id, action: 'outgoing_number_requested', tableName: 'outgoing_number_requests', recordId: id,
+    detail: { title, requesterId: requester.id, onBehalf },
+  });
+  return { id, duplicate: false, requesterId: requester.id, onBehalf };
 }
 
 export function listPendingOutgoingRequests(limit = 100) {
@@ -156,7 +174,11 @@ export function listMyOutgoingRequests(userId, limit = 30) {
   return db.prepare(`
     -- doc_deleted_at: หนังสือถูกลบเป็น soft-delete แถวยังอยู่ ถ้าไม่ดูตรงนี้จะทำลิงก์พาไปหน้า
     -- "ไม่พบเอกสาร" โดยที่ครูไม่รู้ว่าเกิดอะไรขึ้นกับหนังสือของตัวเอง
-    SELECT r.*, doc.doc_number_display, doc.id AS doc_id, doc.deleted_at AS doc_deleted_at
+    SELECT r.*, doc.doc_number_display, doc.id AS doc_id, doc.deleted_at AS doc_deleted_at,
+      -- ค่าที่ "ออกจริง" อยู่ที่ตัวหนังสือ ไม่ใช่ที่แถวคำขอ — ธุรการแก้ได้ทั้งตอนออกเลขและหลังออกเลข
+      -- แถวคำขอเก็บไว้ว่าครูขออะไรมา (ไม่แก้ตามทีหลัง) เพื่อให้ยังเทียบกันได้ว่าถูกแก้เป็นอะไร
+      doc.external_doc_date AS doc_date, doc.title AS doc_title,
+      doc.correspondent_name AS doc_to, doc.from_name AS doc_from, doc.action_note AS doc_action
     FROM outgoing_number_requests r
     LEFT JOIN documents doc ON doc.id = r.document_id
     WHERE r.requester_id = ? ORDER BY r.created_at DESC LIMIT ?
@@ -166,6 +188,8 @@ export function listMyOutgoingRequests(userId, limit = 30) {
 export function recentReviewedOutgoingRequests(limit = 20) {
   return db.prepare(`
     SELECT r.*, doc.doc_number_display, doc.id AS doc_id, doc.status AS doc_status, doc.deleted_at AS doc_deleted_at,
+      doc.external_doc_date AS doc_date, doc.title AS doc_title,
+      doc.correspondent_name AS doc_to, doc.from_name AS doc_from, doc.action_note AS doc_action,
       u.prefix AS requester_prefix, u.first_name AS requester_first, u.last_name AS requester_last,
       rv.first_name AS reviewer_first, rv.last_name AS reviewer_last
     FROM outgoing_number_requests r
@@ -183,7 +207,11 @@ export function recentReviewedOutgoingRequests(limit = 20) {
  * คำขอเดิมค้างอยู่แล้วกดออกเลขซ้ำ จนหนังสือเรื่องเดียวมีสองเลข ซึ่งแก้ทีหลังไม่ได้แล้วเพราะเลขที่ออกไป
  * แล้วนำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ
  */
-export async function issueOutgoingNumber({ requestId, customDocNumber, isCircular, actorUser }) {
+export async function issueOutgoingNumber({
+  requestId, customDocNumber, docDate, isCircular,
+  title, correspondentName, fromName, actionNote, departmentId, priority, secretLevel,
+  actorUser,
+}) {
   if (!canIssueOutgoingNumber(actorUser)) {
     throw httpError(403, 'ออกเลขหนังสือส่งได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
   }
@@ -192,7 +220,25 @@ export async function issueOutgoingNumber({ requestId, customDocNumber, isCircul
 
   const requester = db.prepare('SELECT * FROM users WHERE id = ?').get(req.requester_id);
   if (!requester || requester.deleted_at) throw httpError(409, 'เจ้าของคำขอนี้ถูกปิดบัญชีไปแล้ว');
-  if (!req.department_id) throw httpError(400, 'คำขอนี้ไม่มีฝ่ายที่รับผิดชอบ — กรุณาให้ผู้ขอยื่นใหม่พร้อมระบุฝ่าย');
+
+  // ธุรการเป็นผู้ตรวจและแก้ได้ทุกช่องก่อนกดออกเลข — ค่าที่ไม่ได้ส่งมา (undefined) ใช้ของที่ครูกรอกไว้
+  // แยก undefined กับค่าว่างให้ชัด: ส่งค่าว่างมา = ตั้งใจล้างช่องนั้น ไม่ใช่ "ไม่ได้แก้"
+  const pick = (over, fallback) => (over === undefined ? fallback : asTextOrNull(over));
+  const finalTitle = pick(title, req.title);
+  const finalTo = pick(correspondentName, req.correspondent_name);
+  const finalFrom = pick(fromName, req.from_name);
+  const finalAction = pick(actionNote, req.action_note);
+  const finalDept = pick(departmentId, req.department_id);
+  if (!finalTitle) throw httpError(400, 'ชื่อเรื่องของหนังสือเว้นว่างไม่ได้');
+  if (!finalTo) throw httpError(400, 'ช่อง "ถึง" เว้นว่างไม่ได้ — หนังสือส่งต้องมีปลายทาง');
+  if (!finalDept) throw httpError(400, 'คำขอนี้ไม่มีฝ่ายที่รับผิดชอบ — กรุณาเลือกฝ่ายก่อนออกเลข');
+  assertMaxLength(finalFrom, MAX_TITLE, 'จาก (เจ้าของเรื่อง)');
+  assertMaxLength(finalAction, MAX_NOTE, 'การปฏิบัติ');
+
+  // "ออกวันที่" คือวันที่ลงบนหัวหนังสือที่ส่งออกไปข้างนอกจริง ไม่ใช่เวลาที่กดปุ่มในระบบ ปกติคือวันนี้
+  // (ธุรการออกเลขแล้วครูเอาไปพิมพ์ลงหนังสือทันที) แต่ต้องแก้ย้อนหลังได้ เพราะหนังสือที่พิมพ์ลงวันที่
+  // ไปแล้วเมื่อวานแต่มาขอเลขวันนี้เกิดขึ้นจริง และวันที่บนกระดาษกับในทะเบียนต้องตรงกัน
+  const issuedDate = normalizeDate(docDate, 'วันที่ออกหนังสือ') || todayInBangkok();
 
   let doc;
   db.exec('BEGIN IMMEDIATE');
@@ -201,13 +247,16 @@ export async function issueOutgoingNumber({ requestId, customDocNumber, isCircul
     // เขาต้องแก้ไข แนบไฟล์ และเสนอต่อได้เองเหมือนหนังสือที่ตัวเองลงทะเบียน
     doc = createDocument({
       direction: 'outgoing',
-      title: req.title,
-      correspondentName: req.correspondent_name,
-      departmentId: req.department_id,
+      title: finalTitle,
+      correspondentName: finalTo,
+      fromName: finalFrom,
+      actionNote: finalAction,
+      externalDocDate: issuedDate,
+      departmentId: finalDept,
       docTypeId: defaultDocTypeId(),
-      priority: req.priority,
-      secretLevel: req.secret_level,
-      // ครูระบุมาตั้งแต่ตอนขอว่าเป็นหนังสือเวียนหรือไม่ — ธุรการเปลี่ยนตอนออกเลขได้ (ดู issueOutgoingNumber)
+      priority: pick(priority, req.priority) || 'normal',
+      secretLevel: pick(secretLevel, req.secret_level) || 'normal',
+      // ครูระบุมาตั้งแต่ตอนขอว่าเป็นหนังสือเวียนหรือไม่ — ธุรการเปลี่ยนตอนออกเลขได้
       isCircular: isCircular === undefined ? Boolean(req.is_circular) : Boolean(isCircular),
       customDocNumber: asTextOrNull(customDocNumber),
       createdBy: requester.id,
@@ -248,18 +297,29 @@ export async function issueOutgoingNumber({ requestId, customDocNumber, isCircul
     }
   }
 
+  // ครูที่ขอเลขกำลังรออยู่เพื่อพิมพ์เลขลงหัวหนังสือ ข้อความนี้จึงต้องมีทุกอย่างที่ต้องพิมพ์ลงกระดาษ
+  // ครบในตัวเอง (เลขที่ + ลงวันที่) ไม่ใช่แค่บอกว่า "อนุมัติแล้ว" แล้วให้เปิดเว็บมาดูเองว่าได้เลขอะไร
+  //
+  // notifyUser ต่อเข้าคิวไลน์ให้เองสำหรับคนที่เชื่อมบัญชีไว้ (ดู services/notify.js) — ไม่ต้องยิงไลน์
+  // ซ้ำที่นี่ ถ้ายิงเองจะได้สองข้อความต่อการอนุมัติหนึ่งครั้ง
   notifyUser({
     userId: requester.id, documentId: doc.id,
     title: `ได้เลขหนังสือส่งแล้ว: ${doc.docNumberDisplay}`,
-    message: `${req.title} — ใช้เลขนี้บนหนังสือได้เลย`,
+    message: [
+      `เรื่อง ${finalTitle}`,
+      `ที่ ${doc.docNumberDisplay}`,
+      `ลงวันที่ ${fmtThaiDateLong(issuedDate)}`,
+      finalTo ? `ถึง ${finalTo}` : '',
+      'พิมพ์เลขที่และวันที่นี้ลงบนหนังสือได้เลย',
+    ].filter(Boolean).join('\n'),
     priority: 'success',
   });
   audit({
     userId: actorUser.id, action: 'outgoing_number_issued', tableName: 'outgoing_number_requests', recordId: req.id,
-    detail: { documentId: doc.id, docNumber: doc.docNumberDisplay, requesterId: requester.id },
+    detail: { documentId: doc.id, docNumber: doc.docNumberDisplay, docDate: issuedDate, requesterId: requester.id },
   });
   return {
-    ok: true, documentId: doc.id, docNumberDisplay: doc.docNumberDisplay,
+    ok: true, documentId: doc.id, docNumberDisplay: doc.docNumberDisplay, docDate: issuedDate,
     attachedDrafts: drafts.length - failedDrafts.length,
     draftWarning: failedDrafts.length
       ? `ออกเลขให้เรียบร้อยแล้ว แต่ย้ายร่างที่แนบมาเข้าหนังสือไม่สำเร็จ (${failedDrafts.join(', ')}) — ให้แนบไฟล์เองที่หน้าหนังสือ`
@@ -317,21 +377,30 @@ export function cancelOutgoingRequest({ requestId, actorUser }) {
   return { ok: true };
 }
 
-// ---------------- ผู้ดูแลระบบแก้/ลบเลขหนังสือส่งที่ออกไปแล้ว ----------------
+// ---------------- แก้/ลบหนังสือส่งที่ออกเลขไปแล้ว ----------------
 //
 // ข้อ 3 ข้างบนยังจริงอยู่: เลขที่ "ออกไปแล้ว" นำกลับมาใช้ซ้ำไม่ได้ และหนังสือที่ไม่ได้ใช้จริงต้องยกเลิก
-// ที่ตัวหนังสือเพื่อให้เลขคงอยู่ในลำดับ — สิ่งที่สองฟังก์ชันนี้แก้คือคนละเรื่องกัน คือ "พิมพ์เลขผิด"
+// ที่ตัวหนังสือเพื่อให้เลขคงอยู่ในลำดับ — สิ่งที่สองฟังก์ชันนี้แก้คือคนละเรื่องกัน คือ "กรอกผิด"
 // กับ "แถวคำขอที่ไม่ควรอยู่ในรายการแล้ว" ซึ่งเดิมไม่มีทางแก้เลยทั้งคู่ ต้องเข้าไปแก้ฐานข้อมูลเองเท่านั้น
 //
-// จำกัดไว้ที่ผู้ดูแลระบบ ไม่ใช่ธุรการทุกคน เพราะเป็นการแก้ทะเบียนราชการย้อนหลังหลังจากที่เลขถูกแจ้ง
-// ออกไปให้เจ้าตัวแล้ว (และอาจถูกพิมพ์ลงบนหนังสือจริงไปแล้วด้วย)
+// เปิดให้ธุรการแก้ได้ ไม่ใช่เฉพาะผู้ดูแลระบบ: ทะเบียนหนังสือส่งเป็นสมุดของเจ้าหน้าที่ธุรการตามระเบียบ
+// งานสารบรรณ คนที่ออกเลขและเป็นคนเดียวที่รู้ว่าเล่มกระดาษลงอะไรไว้ก็คือธุรการ การบังคับให้รอผู้ดูแล
+// ระบบมาแก้คำผิดให้ทำให้งานค้างโดยไม่ได้เพิ่มความปลอดภัยอะไร — ด่านจริงคือ PIN (ตรวจที่ชั้น route)
+// ซึ่งยืนยันตัวคนที่กดจริง และทุกการแก้ถูกบันทึกใน audit log พร้อมค่าก่อน/หลังทุกช่อง
+//
+// "ลบแถวคำขอ" ยังเป็นของผู้ดูแลระบบเท่านั้น เพราะนั่นคือการทำให้บันทึกหายไปจากรายการ ไม่ใช่การแก้ค่า
 
 const MAX_DOC_NUMBER = 100;
 
-/** แก้เลขหนังสือส่งที่ออกให้ไปแล้ว — แก้ที่ตัวหนังสือจริง ทะเบียน/ตราประทับ/หน้าพิมพ์จึงตรงกันหมด */
-export function editIssuedOutgoingNumber({ requestId, docNumber, allowDuplicate, actorUser }) {
-  if (!actorUser?.roleCodes.includes('admin')) {
-    throw httpError(403, 'แก้เลขหนังสือส่งที่ออกไปแล้วได้เฉพาะผู้ดูแลระบบเท่านั้น');
+/**
+ * แก้หนังสือส่งที่ออกเลขให้ไปแล้ว — แก้ที่ตัวหนังสือจริง ทะเบียน/ตราประทับ/หน้าพิมพ์จึงตรงกันหมด
+ *
+ * รับได้ทุกช่องที่ธุรการเห็นในหน้าออกเลข (เลขที่ ออกวันที่ จาก ถึง เรื่อง การปฏิบัติ) — ช่องที่ไม่ส่งมา
+ * (undefined) ไม่ถูกแตะ จึงยิงมาแก้ช่องเดียวก็ได้ และฟอร์มเดิมที่ส่งมาแต่ docNumber ยังทำงานเหมือนเดิม
+ */
+export function editIssuedOutgoing({ requestId, docNumber, docDate, fromName, correspondentName, title, actionNote, allowDuplicate, actorUser }) {
+  if (!canIssueOutgoingNumber(actorUser)) {
+    throw httpError(403, 'แก้หนังสือส่งที่ออกเลขไปแล้วได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
   }
   const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(requestId);
   if (!req) throw httpError(404, 'ไม่พบคำขอนี้');
@@ -339,34 +408,82 @@ export function editIssuedOutgoingNumber({ requestId, docNumber, allowDuplicate,
   const doc = db.prepare('SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL').get(req.document_id);
   if (!doc) throw httpError(409, 'หนังสือของคำขอนี้ถูกลบออกจากระบบไปแล้ว');
 
-  const num = asText(docNumber);
-  if (!num) throw httpError(400, 'เลขหนังสือส่งเว้นว่างไม่ได้ — หนังสือทุกฉบับต้องมีเลขทะเบียน');
-  assertMaxLength(num, MAX_DOC_NUMBER, 'เลขหนังสือส่ง');
-  if (num === doc.doc_number_display) return { ok: true, changed: false, docNumberDisplay: num };
+  // เลขที่: ส่งมาเป็นค่าว่างถือว่าผิด ไม่ใช่ "ล้างช่อง" — หนังสือทุกฉบับต้องมีเลขทะเบียน
+  // ต่างจากช่องอื่นที่ค่าว่างคือการล้างช่องได้จริง (เช่นลบการปฏิบัติที่พิมพ์ผิดทิ้ง)
+  let num = doc.doc_number_display;
+  if (docNumber !== undefined) {
+    num = asText(docNumber);
+    if (!num) throw httpError(400, 'เลขหนังสือส่งเว้นว่างไม่ได้ — หนังสือทุกฉบับต้องมีเลขทะเบียน');
+    assertMaxLength(num, MAX_DOC_NUMBER, 'เลขหนังสือส่ง');
+  }
 
   // เลขซ้ำเกิดขึ้นได้จริงตอนแก้ให้ตรงกับเล่มกระดาษ จึงถามยืนยันแทนที่จะห้าม — แต่ห้ามผ่านเงียบๆ
   // เพราะเลขทะเบียนคือสิ่งที่ใช้อ้างอิงหนังสือฉบับนั้นไปตลอด (เกณฑ์เดียวกับการแก้ทะเบียนที่หน้าหนังสือ)
-  const dup = db.prepare('SELECT id FROM documents WHERE doc_number_display = ? AND id != ? AND deleted_at IS NULL').get(num, doc.id);
-  if (dup && allowDuplicate !== true) {
-    throw httpError(409, `เลข "${num}" ซ้ำกับหนังสืออีกฉบับที่มีอยู่แล้ว`, {
-      confirmRetry: { field: 'allowDuplicate', message: `เลข "${num}" ซ้ำกับหนังสืออีกฉบับในระบบ — ยืนยันใช้เลขซ้ำหรือไม่?` },
-    });
+  let dup = null;
+  if (num !== doc.doc_number_display) {
+    dup = db.prepare('SELECT id FROM documents WHERE doc_number_display = ? AND id != ? AND deleted_at IS NULL').get(num, doc.id);
+    if (dup && allowDuplicate !== true) {
+      throw httpError(409, `เลข "${num}" ซ้ำกับหนังสืออีกฉบับที่มีอยู่แล้ว`, {
+        confirmRetry: { field: 'allowDuplicate', message: `เลข "${num}" ซ้ำกับหนังสืออีกฉบับในระบบ — ยืนยันใช้เลขซ้ำหรือไม่?` },
+      });
+    }
   }
 
-  db.prepare('UPDATE documents SET doc_number_display = ?, updated_at = ? WHERE id = ?').run(num, nowIso(), doc.id);
-  // ผู้ขอได้เลขเดิมไปแล้วและอาจพิมพ์ลงหนังสือจริงไปแล้ว — ต้องรู้ว่าเลขเปลี่ยน ไม่ใช่มาเจอเองทีหลัง
+  const next = {
+    doc_number_display: num,
+    external_doc_date: docDate === undefined ? doc.external_doc_date : normalizeDate(docDate, 'วันที่ออกหนังสือ'),
+    from_name: fromName === undefined ? doc.from_name : asTextOrNull(fromName),
+    correspondent_name: correspondentName === undefined ? doc.correspondent_name : asText(correspondentName),
+    title: title === undefined ? doc.title : asText(title),
+    action_note: actionNote === undefined ? doc.action_note : asTextOrNull(actionNote),
+  };
+  if (!next.title) throw httpError(400, 'ชื่อเรื่องของหนังสือเว้นว่างไม่ได้');
+  if (!next.correspondent_name) throw httpError(400, 'ช่อง "ถึง" เว้นว่างไม่ได้ — หนังสือส่งต้องมีปลายทาง');
+  assertMaxLength(next.title, MAX_TITLE, 'ชื่อเรื่อง');
+  assertMaxLength(next.correspondent_name, MAX_TITLE, 'ถึง (หน่วยงาน/บุคคลปลายทาง)');
+  assertMaxLength(next.from_name, MAX_TITLE, 'จาก (เจ้าของเรื่อง)');
+  assertMaxLength(next.action_note, MAX_NOTE, 'การปฏิบัติ');
+
+  const changed = Object.entries(next).filter(([col, value]) => (doc[col] ?? null) !== (value ?? null));
+  if (!changed.length) return { ok: true, changed: false, docNumberDisplay: num };
+
+  db.prepare(`UPDATE documents SET doc_number_display = ?, external_doc_date = ?, from_name = ?,
+    correspondent_name = ?, title = ?, action_note = ?, updated_at = ? WHERE id = ?`)
+    .run(next.doc_number_display, next.external_doc_date, next.from_name,
+      next.correspondent_name, next.title, next.action_note, nowIso(), doc.id);
+
+  // ผู้ขอได้เลขเดิมไปแล้วและอาจพิมพ์ลงหนังสือจริงไปแล้ว — ต้องรู้ว่าเปลี่ยน ไม่ใช่มาเจอเองทีหลัง
+  // เลขที่กับวันที่คือสองค่าที่ถูกพิมพ์ลงกระดาษ จึงบอกค่าใหม่ไปในข้อความให้ใช้ได้ทันทีโดยไม่ต้องเปิดเว็บ
+  const numChanged = next.doc_number_display !== doc.doc_number_display;
   notifyUser({
     userId: req.requester_id, documentId: doc.id,
-    title: `แก้เลขหนังสือส่งเป็น ${num}`,
-    message: `${req.title} — เลขเดิม ${doc.doc_number_display} ถูกแก้เป็น ${num} โดยผู้ดูแลระบบ กรุณาใช้เลขใหม่บนหนังสือ`,
+    title: numChanged ? `แก้เลขหนังสือส่งเป็น ${num}` : `แก้ข้อมูลหนังสือส่ง ${num}`,
+    message: [
+      numChanged
+        ? `${next.title} — เลขเดิม ${doc.doc_number_display} ถูกแก้เป็น ${num} กรุณาใช้เลขใหม่บนหนังสือ`
+        : `${next.title} — เจ้าหน้าที่ธุรการแก้ข้อมูลหนังสือฉบับนี้`,
+      next.external_doc_date ? `ลงวันที่ ${fmtThaiDateLong(next.external_doc_date)}` : '',
+      `ช่องที่แก้: ${changed.map(([col]) => EDITABLE_LABEL[col] || col).join(', ')}`,
+    ].filter(Boolean).join('\n'),
     priority: 'warning',
   });
   audit({
     userId: actorUser.id, action: 'outgoing_number_edited', tableName: 'documents', recordId: doc.id,
-    detail: { requestId: req.id, before: doc.doc_number_display, after: num, duplicateAllowed: Boolean(dup) },
+    detail: {
+      requestId: req.id,
+      // before/after ของเลขที่อยู่ที่ระดับบนสุดเหมือนเดิม — มีของที่อ่าน audit log เก่าอยู่
+      before: doc.doc_number_display, after: num,
+      fields: Object.fromEntries(changed.map(([col, value]) => [col, { before: doc[col] ?? null, after: value ?? null }])),
+      duplicateAllowed: Boolean(dup),
+    },
   });
-  return { ok: true, changed: true, docNumberDisplay: num };
+  return { ok: true, changed: true, docNumberDisplay: num, changedFields: changed.map(([col]) => col) };
 }
+
+const EDITABLE_LABEL = {
+  doc_number_display: 'เลขที่', external_doc_date: 'ออกวันที่', from_name: 'จาก',
+  correspondent_name: 'ถึง', title: 'เรื่อง', action_note: 'การปฏิบัติ',
+};
 
 /**
  * ลบคำขอเลขหนังสือส่งออกจากรายการ

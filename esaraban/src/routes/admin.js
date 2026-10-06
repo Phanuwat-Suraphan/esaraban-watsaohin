@@ -87,6 +87,34 @@ function configuredOauthOrigin() {
 // ---------------- ตั้งค่าโรงเรียน ----------------
 // ชื่อโรงเรียนถูกพิมพ์ลงบน "ตัวเอกสารราชการจริง" — หัวหนังสือ ตราประทับใน PDF และแบบฟอร์มใบลา
 // จึงต้องให้โรงเรียนแก้เองได้ ไม่ใช่ต้องรอผู้พัฒนามาแก้โค้ดแล้ว deploy ใหม่เพียงเพราะพิมพ์ผิดหนึ่งตัว
+
+/**
+ * เตือนให้ตั้ง env var คู่กับค่าที่กรอกในหน้าเว็บ สำหรับรหัสหนังสือและเลขตั้งต้นของทะเบียนส่ง
+ *
+ * ทำไมค่าสองตัวนี้โดยเฉพาะ: บนโฮสต์ฟรี (Render free tier) ดิสก์ไม่ถาวร ฐานข้อมูลถูกล้างทุกครั้งที่
+ * deploy ค่าที่ตั้งในหน้าเว็บจึงหายไปด้วย ค่าอื่นที่หายแล้วเห็นได้ทันที (ชื่อโรงเรียนกลับเป็นค่าตั้งต้น
+ * ก็เห็นบนหัวจอ) แต่สองตัวนี้หายแล้ว "ระบบยังทำงานปกติ" — มันแค่เงียบๆ ย้อนไปออกเลข 0001/2569
+ * ให้หนังสือฉบับถัดไป ซึ่งทับเลขที่ส่งออกไปข้างนอกจริงแล้ว และตามกลับมาแก้ไม่ได้
+ *
+ * env var อยู่รอดการล้างดิสก์ จึงเป็นที่เดียวที่ค่าเหล่านี้ปลอดภัยจริงบนโฮสต์แบบนี้
+ */
+function envNumberStartWarning() {
+  const missing = [
+    ['OUTGOING_NUMBER_PREFIX', 'outgoing_number_prefix'],
+    ['OUTGOING_NUMBER_START', 'outgoing_number_start'],
+    ['OUTGOING_NUMBER_START_YEAR', 'outgoing_number_start_year'],
+  ].filter(([envName, key]) => getSetting(key) && !asText(process.env[envName]));
+  if (!missing.length) return '';
+  return `
+    <div class="alert alert-warning" style="margin-top:.6rem">
+      ⚠️ <strong>ตั้งค่านี้ไว้ในหน้าเว็บอย่างเดียวยังไม่ปลอดภัย</strong>
+      — ถ้าเซิร์ฟเวอร์นี้เป็นแบบที่ดิสก์ถูกล้างตอน deploy (เช่น Render แบบฟรี) ค่าที่กรอกไว้จะหายไป
+      แล้วหนังสือฉบับถัดไปจะได้เลขย้อนกลับไปเริ่มใหม่ <strong>โดยไม่มีอะไรเตือน</strong>
+      <div style="margin-top:.4rem">ให้ไปตั้ง Environment Variable เหล่านี้บนเซิร์ฟเวอร์ด้วย แล้วค่าจะอยู่รอดทุก deploy:</div>
+      <pre style="margin:.4rem 0 0;white-space:pre-wrap;word-break:break-all">${
+  missing.map(([envName, key]) => `${envName}=${esc(getSetting(key))}`).join('\n')}</pre>
+    </div>`;
+}
 router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
   const content = `
     <h2>🏫 ตั้งค่าโรงเรียน</h2>
@@ -136,6 +164,28 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           <div class="callout-tip" style="margin-top:.5rem">
             เลขหนังสือส่งฉบับถัดไปจะเป็น: <strong id="numPreview">${esc(previewNextNumber('outgoing'))}</strong>
           </div>
+        </div>
+        <!-- โรงเรียนที่ย้ายมาจากสมุดกระดาษออกเลขไปแล้วเป็นร้อยฉบับโดยที่ระบบไม่เคยเห็น ถ้าไม่มีช่องนี้
+             ฉบับแรกในระบบจะได้เลข 1 ซึ่งทับเลขที่ส่งออกไปข้างนอกจริงไปแล้ว และแก้ย้อนหลังไม่ได้ -->
+        <div class="field">
+          <label for="outgoing_number_start">เลขหนังสือส่งล่าสุดที่ออกไปแล้ว <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <div class="flex gap-2 flex-wrap items-center">
+            <input type="text" inputmode="numeric" id="outgoing_number_start" maxlength="${MAX_SETTING_LENGTH.outgoing_number_start}"
+              value="${esc(getSetting('outgoing_number_start'))}" placeholder="เช่น 205" style="max-width:8rem" autocomplete="off" />
+            <span class="text-muted">ของทะเบียนปี พ.ศ.</span>
+            <input type="text" inputmode="numeric" id="outgoing_number_start_year" maxlength="${MAX_SETTING_LENGTH.outgoing_number_start_year}"
+              value="${esc(getSetting('outgoing_number_start_year') || String(beYear()))}" style="max-width:6rem" autocomplete="off" />
+          </div>
+          <div class="help-text">
+            กรอก<strong>เลขสุดท้ายที่ออกไปแล้วในเล่มกระดาษ</strong> ระบบจะออกเลขถัดไปต่อจากนี้ —
+            กรอก <code>205</code> แล้วฉบับถัดไปได้เลข <code>206</code>
+            <div style="margin-top:.35rem">
+              ผูกกับปีไว้ด้วยเพราะทะเบียนหนังสือส่ง<strong>เริ่มนับ 1 ใหม่ทุกวันที่ 1 มกราคม</strong> —
+              พอขึ้นปี พ.ศ. ใหม่ ค่านี้จะหมดอายุเองและเล่มใหม่เริ่มที่ 1 ตามระเบียบ ไม่ต้องกลับมาล้างค่า
+              · ถ้าระบบออกเลขไปไกลกว่าค่านี้แล้ว ค่านี้จะไม่ดึงเลขถอยหลัง (เลขที่ออกไปแล้วใช้ซ้ำไม่ได้)
+            </div>
+          </div>
+          ${envNumberStartWarning()}
         </div>
         <!-- การเตือนงานค้างประจำวันเป็นทางเดียวที่ระบบบอกครูเองว่ามีงานค้าง โดยไม่ต้องมีใครกดตาม
              จึงเปิดไว้ตั้งแต่ต้น และให้ปรับเวลาได้ตามเวลาเข้าแถวของแต่ละโรงเรียน -->
@@ -203,6 +253,8 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           school_short_name: document.getElementById('school_short_name').value,
           school_initials: document.getElementById('school_initials').value,
           outgoing_number_prefix: document.getElementById('outgoing_number_prefix').value,
+          outgoing_number_start: document.getElementById('outgoing_number_start').value,
+          outgoing_number_start_year: document.getElementById('outgoing_number_start_year').value,
           daily_reminder_enabled: document.getElementById('daily_reminder_enabled').checked ? 'on' : 'off',
           daily_reminder_time: document.getElementById('daily_reminder_time').value,
         };
@@ -225,12 +277,20 @@ router.post('/admin/settings', requireApi(async (ctx) => {
   if (ctx.body.daily_reminder_time !== undefined && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(ctx.body.daily_reminder_time))) {
     return json(ctx, 400, { error: 'เวลาเตือนต้องอยู่ในรูปแบบ HH:MM เช่น 07:30' });
   }
+  // เลขตั้งต้นที่กรอกมาต้องมีปีกำกับเสมอ ไม่งั้นเลขพื้นจะไม่ตรงกับเล่มไหนเลยแล้วเงียบหายไป
+  // (outgoingNumberFloor คืน 0 เมื่อปีไม่ตรง) ซึ่งอ่านจากหน้าเว็บไม่ออกว่าทำไมเลขไม่ขยับตาม
+  const start = asText(ctx.body.outgoing_number_start);
+  const startYear = asText(ctx.body.outgoing_number_start_year);
+  if (start && !startYear) {
+    return json(ctx, 400, { error: 'กรอกเลขหนังสือส่งล่าสุดแล้ว ต้องระบุปี พ.ศ. ของทะเบียนเล่มนั้นด้วย' });
+  }
   for (const key of ['school_name', 'school_short_name', 'school_initials', 'outgoing_number_prefix',
+    'outgoing_number_start', 'outgoing_number_start_year',
     'daily_reminder_enabled', 'daily_reminder_time']) {
     if (ctx.body[key] === undefined) continue;
     setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
   }
-  json(ctx, 200, { ok: true });
+  json(ctx, 200, { ok: true, nextOutgoingNumber: previewNextNumber('outgoing') });
 }));
 
 router.post('/admin/settings/test-reminder', requireApi((ctx) => {

@@ -338,9 +338,11 @@ function renderAppShell({ user, currentPath, content, flash, avatar }) {
     <div class="nav-section-label">ทะเบียนหนังสือ</div>
     ${navItem('/documents?direction=incoming', '📥', 'หนังสือเข้า', currentPath)}
     ${navItem('/documents?direction=outgoing', '📤', 'หนังสือออก', currentPath)}
-    <!-- ธุรการ/ผู้ดูแลเห็น "คำขอเลขที่รออยู่" พร้อมจำนวนค้าง ส่วนครูเห็นรายการคำขอของตัวเอง -->
+    <!-- ธุรการ/ผู้ดูแลได้ป้ายบอกจำนวนคำขอที่รออนุมัติเพิ่มมา ส่วนครูไปหน้าคำขอของตัวเอง — ชื่อเมนู
+         เดียวกันทั้งสองบทบาทโดยตั้งใจ: เป็นงานเรื่องเดียวกันคนละด้าน ชื่อที่ต่างกันทำให้เวลาคุยกัน
+         ("กดเมนูขอเลขหนังสือส่ง") ครูกับธุรการหาเมนูคนละอันแล้วอธิบายกันไม่ตรง -->
     ${user.roleCodes.some((r) => ['admin', 'registrar'].includes(r))
-      ? navItem('/outgoing-requests', '🔢', 'คำขอเลขหนังสือส่ง', currentPath, pendingOutgoingRequests())
+      ? navItem('/outgoing-requests', '🔢', 'ขอเลขหนังสือส่ง', currentPath, pendingOutgoingRequests())
       : navItem('/outgoing-requests/mine', '🔢', 'ขอเลขหนังสือส่ง', currentPath)}
     <!-- คำสั่ง/ประกาศเป็นเล่มทะเบียนของตัวเอง ไม่ใช่หนังสือเข้า/ออก (ดู services/schoolOrder.js) -->
     ${navItem('/orders', '📜', 'คำสั่ง/ประกาศโรงเรียน', currentPath, unreadOrders(user.id))}

@@ -6109,7 +6109,7 @@ describe('หนังสือเวียน (ว) ทะเบียนแย
     const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(asked.json.id);
     assert.equal(req.is_circular, 1, 'คำขอต้องจำไว้ว่าขอเป็นหนังสือเวียน');
 
-    const issued = await dispatchPost(registrar(), `/outgoing-requests/${asked.json.id}/issue`, {});
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${asked.json.id}/issue`, { pin: userPin('reg001') });
     assert.equal(issued.status, 200, issued.body);
     assert.match(issued.json.docNumberDisplay, /\/ว \d+$/, `ได้ ${issued.json.docNumberDisplay}`);
     assert.equal(getDocRow(issued.json.documentId).is_circular, 1);
@@ -6121,13 +6121,13 @@ describe('หนังสือเวียน (ว) ทะเบียนแย
     const askedPlain = await dispatchPost(teacher(), '/outgoing-requests', {
       title: `ครูไม่ได้ติ๊กแต่ควรเวียน ${++n}`, correspondentName: 'คณะครู', departmentId: deptId,
     });
-    const up = await dispatchPost(registrar(), `/outgoing-requests/${askedPlain.json.id}/issue`, { isCircular: true });
+    const up = await dispatchPost(registrar(), `/outgoing-requests/${askedPlain.json.id}/issue`, { pin: userPin('reg001'), isCircular: true });
     assert.match(up.json.docNumberDisplay, /\/ว \d+$/, 'ธุรการเปิดหนังสือเวียนได้');
 
     const askedCirc = await dispatchPost(teacher(), '/outgoing-requests', {
       title: `ครูติ๊กเวียนแต่ไม่ใช่ ${++n}`, correspondentName: 'สพป.', departmentId: deptId, isCircular: true,
     });
-    const down = await dispatchPost(registrar(), `/outgoing-requests/${askedCirc.json.id}/issue`, { isCircular: false });
+    const down = await dispatchPost(registrar(), `/outgoing-requests/${askedCirc.json.id}/issue`, { pin: userPin('reg001'), isCircular: false });
     assert.ok(!/\/ว /.test(down.json.docNumberDisplay), `ธุรการปิดหนังสือเวียนได้ — ได้ ${down.json.docNumberDisplay}`);
   });
 
@@ -6194,7 +6194,7 @@ describe('ขอเลขหนังสือส่ง', () => {
 
   test('ธุรการกดออกเลข แล้วได้หนังสือส่งจริงที่มีครูผู้ขอเป็นผู้บันทึก', async () => {
     const res = await ask(teacher());
-    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
     assert.equal(issued.status, 200, issued.body);
     assert.ok(issued.json.docNumberDisplay, 'ต้องได้เลขกลับมา');
 
@@ -6210,7 +6210,7 @@ describe('ขอเลขหนังสือส่ง', () => {
 
   test('ครูผู้ขอได้รับแจ้งเตือนพร้อมเลขที่ได้', async () => {
     const res = await ask(teacher());
-    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
     const note = db.prepare(`SELECT title, message FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`)
       .get(seed.userIds.teacher001);
     assert.match(note.title, /ได้เลขหนังสือส่งแล้ว/, 'ต้องแจ้งว่าได้เลขแล้ว');
@@ -6220,7 +6220,7 @@ describe('ขอเลขหนังสือส่ง', () => {
   test('ธุรการพิมพ์เลขตามรูปแบบของโรงเรียนเองได้', async () => {
     const res = await ask(teacher());
     const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`,
-      { customDocNumber: 'ศธ 04056.12/45' });
+      { pin: userPin('reg001'), customDocNumber: 'ศธ 04056.12/45' });
     assert.equal(issued.status, 200, issued.body);
     assert.equal(issued.json.docNumberDisplay, 'ศธ 04056.12/45');
     assert.equal(db.prepare('SELECT doc_number_display FROM documents WHERE id = ?').get(issued.json.documentId).doc_number_display,
@@ -6231,19 +6231,19 @@ describe('ขอเลขหนังสือส่ง', () => {
   // นำกลับมาใช้ซ้ำไม่ได้ตามระเบียบ
   test('ออกเลขให้คำขอเดิมซ้ำสองครั้งไม่ได้', async () => {
     const res = await ask(teacher());
-    assert.equal((await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {})).status, 200);
-    const again = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    assert.equal((await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') })).status, 200);
+    const again = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
     assert.equal(again.status, 404, `ต้องปฏิเสธ (ได้ ${again.status}: ${again.body})`);
     assert.equal(db.prepare("SELECT COUNT(*) c FROM documents WHERE id = ?").get(rowById(res.json.id).document_id).c, 1);
   });
 
   test('ครูออกเลขให้ตัวเองไม่ได้ ต้องเป็นธุรการหรือผู้ดูแลเท่านั้น', async () => {
     const res = await ask(teacher());
-    const bad = await dispatchPost(teacher(), `/outgoing-requests/${res.json.id}/issue`, {});
+    const bad = await dispatchPost(teacher(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('teacher001') });
     assert.equal(bad.status, 403, `ต้องปฏิเสธ (ได้ ${bad.status})`);
     assert.equal(rowById(res.json.id).status, 'pending', 'คำขอต้องยังรออยู่');
     // ผู้ดูแลระบบทำได้ด้วย เพราะบางโรงเรียนผู้ดูแลทำหน้าที่ธุรการเอง
-    assert.equal((await dispatchPost(admin(), `/outgoing-requests/${res.json.id}/issue`, {})).status, 200);
+    assert.equal((await dispatchPost(admin(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('admin') })).status, 200);
   });
 
   test('ปฏิเสธคำขอต้องบอกเหตุผล และผู้ขอต้องได้รับแจ้ง', async () => {
@@ -6281,7 +6281,7 @@ describe('ขอเลขหนังสือส่ง', () => {
   // ซึ่งบันทึกเหตุผลไว้ ไม่ใช่ลบคำขอทิ้งเงียบๆ จนเลขหายไปจากทะเบียนโดยไม่มีร่องรอย
   test('คำขอที่ออกเลขไปแล้วถอนไม่ได้ และต้องบอกว่าให้ไปยกเลิกที่ตัวหนังสือแทน', async () => {
     const res = await ask(teacher());
-    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
     const cancel = await dispatchPost(teacher(), `/outgoing-requests/${res.json.id}/cancel`, {});
     assert.equal(cancel.status, 409, `ต้องปฏิเสธ (ได้ ${cancel.status})`);
     assert.match(cancel.json.error || '', /ยกเลิกที่ตัวหนังสือ/, 'ต้องบอกทางที่ถูกต้อง');
@@ -6305,8 +6305,8 @@ describe('ขอเลขหนังสือส่ง', () => {
     await ask(teacher());
     const reg = await dispatchGet(registrar(), '/outgoing-requests', {});
     assert.equal(reg.status, 200);
-    assert.match(reg.body, /รอออกเลข/, 'ต้องมีรายการรอออกเลข');
-    assert.match(reg.body, /ออกเลขให้/, 'ต้องมีปุ่มออกเลข');
+    assert.match(reg.body, /รออนุมัติ/, 'ต้องมีรายการรออนุมัติ');
+    assert.match(reg.body, /อนุมัติและออกเลข/, 'ต้องมีปุ่มอนุมัติและออกเลข');
 
     const t = await dispatchGet(teacher(), '/outgoing-requests', {});
     assert.equal(t.status, 302, 'ครูต้องถูกพาไปหน้าของตัวเอง ไม่ใช่เจอ 403 เปล่าๆ');
@@ -6332,7 +6332,7 @@ describe('ขอเลขหนังสือส่ง', () => {
 
   test('ประวัติการใช้งานต้องเก็บว่าใครออกเลขอะไรให้ใคร', async () => {
     const res = await ask(teacher());
-    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
     const row = db.prepare(`SELECT user_id, detail FROM audit_logs WHERE record_id = ? AND action = 'outgoing_number_issued' ORDER BY created_at DESC LIMIT 1`).get(res.json.id);
     assert.ok(row, 'ต้องมีบันทึก');
     assert.equal(row.user_id, seed.userIds.reg001, 'ต้องรู้ว่าใครเป็นคนออกเลข');
@@ -6345,8 +6345,8 @@ describe('ขอเลขหนังสือส่ง', () => {
   // คนละเรื่องกับ "เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้" ซึ่งยังคงเป็นอย่างนั้นอยู่
   test('ผู้ดูแลระบบแก้เลขหนังสือส่งที่ออกไปแล้วได้ และแก้ที่ตัวหนังสือจริง', async () => {
     const res = await ask(teacher());
-    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
-    const edit = await dispatchPost(admin(), `/outgoing-requests/${res.json.id}/number`, { docNumber: 'ศธ 04056.12/๙๙๙' });
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
+    const edit = await dispatchPost(admin(), `/outgoing-requests/${res.json.id}/number`, { pin: userPin('admin'), docNumber: 'ศธ 04056.12/๙๙๙' });
     assert.equal(edit.status, 200, edit.body);
 
     const doc = db.prepare('SELECT doc_number_display FROM documents WHERE id = ?').get(issued.json.documentId);
@@ -6363,43 +6363,51 @@ describe('ขอเลขหนังสือส่ง', () => {
     assert.equal(JSON.parse(log.detail).before, issued.json.docNumberDisplay);
   });
 
-  test('แก้เลขได้เฉพาะผู้ดูแลระบบ และค่าที่ใช้ไม่ได้ต้องถูกปฏิเสธ', async () => {
+  // เดิมเทสต์นี้ยืนยันว่า "ธุรการแก้ไม่ได้ ต้องเป็นผู้ดูแลระบบ" — กลับข้างแล้วโดยตั้งใจ
+  // ทะเบียนหนังสือส่งเป็นสมุดของเจ้าหน้าที่ธุรการตามระเบียบงานสารบรรณ คนที่ออกเลขและเป็นคนเดียวที่รู้ว่า
+  // เล่มกระดาษลงอะไรไว้ก็คือธุรการ การบังคับให้รอผู้ดูแลระบบมาแก้คำผิดให้ทำให้งานค้างโดยไม่ได้เพิ่ม
+  // ความปลอดภัยอะไรเลย — ด่านจริงคือ PIN ซึ่งยืนยันตัวคนที่กด และทุกการแก้ถูกบันทึกค่าก่อน/หลังไว้
+  test('ธุรการแก้หนังสือส่งที่ออกเลขไปแล้วได้ ครูแก้ไม่ได้ และต้องมี PIN เสมอ', async () => {
     const res = await ask(teacher());
-    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
     for (const [label, user, body, expect] of [
-      ['ครูแก้เอง', teacher, { docNumber: 'ก/1' }, 403],
-      // ธุรการเป็นคนออกเลข แต่การแก้ย้อนหลังหลังแจ้งออกไปแล้วเป็นอำนาจผู้ดูแลระบบ
-      ['ธุรการแก้', registrar, { docNumber: 'ก/2' }, 403],
-      ['เลขว่าง', admin, { docNumber: '   ' }, 400],
-      ['เลขยาวเกิน', admin, { docNumber: 'ก'.repeat(200) }, 400],
+      ['ครูแก้เอง', teacher, { pin: userPin('teacher001'), docNumber: 'ก/1' }, 403],
+      // ไม่มีสิทธิ์ต้องได้ 403 ไม่ใช่ 401 แม้จะไม่ได้ใส่ PIN มาด้วย — ครูต้องรู้ว่าต้องไปให้ธุรการทำให้
+      // ไม่ใช่นั่งลองกรอก PIN ตัวเองซ้ำๆ แล้วคิดว่าตัวเองจำ PIN ผิด
+      ['ครูแก้เองโดยไม่ใส่ PIN', teacher, { docNumber: 'ก/1' }, 403],
+      ['ธุรการแก้โดยไม่ใส่ PIN', registrar, { docNumber: 'ก/2' }, 401],
+      ['ธุรการใส่ PIN ผิด', registrar, { pin: '000000', docNumber: 'ก/2' }, 401],
+      ['เลขว่าง', registrar, { pin: userPin('reg001'), docNumber: '   ' }, 400],
+      ['เลขยาวเกิน', registrar, { pin: userPin('reg001'), docNumber: 'ก'.repeat(200) }, 400],
+      ['ธุรการใส่ PIN ถูก', registrar, { pin: userPin('reg001'), docNumber: 'ก/2' }, 200],
     ]) {
       const r = await dispatchPost(user(), `/outgoing-requests/${res.json.id}/number`, body);
       assert.equal(r.status, expect, `${label} ควรได้ ${expect} — ได้ ${r.status} ${r.body}`);
     }
     // คำขอที่ยังไม่ได้ออกเลข ไม่มีเลขให้แก้
     const pendingReq = await ask(teacher());
-    const r2 = await dispatchPost(admin(), `/outgoing-requests/${pendingReq.json.id}/number`, { docNumber: 'ก/3' });
+    const r2 = await dispatchPost(admin(), `/outgoing-requests/${pendingReq.json.id}/number`, { pin: userPin('admin'), docNumber: 'ก/3' });
     assert.equal(r2.status, 409, 'คำขอที่ยังไม่ออกเลขต้องแก้เลขไม่ได้');
   });
 
   test('เลขซ้ำต้องถามยืนยันก่อน ไม่ใช่ห้าม และไม่ใช่ปล่อยผ่านเงียบๆ', async () => {
     const a = await ask(teacher());
-    const issuedA = await dispatchPost(registrar(), `/outgoing-requests/${a.json.id}/issue`, {});
+    const issuedA = await dispatchPost(registrar(), `/outgoing-requests/${a.json.id}/issue`, { pin: userPin('reg001') });
     const b = await ask(teacher());
-    await dispatchPost(registrar(), `/outgoing-requests/${b.json.id}/issue`, {});
+    await dispatchPost(registrar(), `/outgoing-requests/${b.json.id}/issue`, { pin: userPin('reg001') });
 
-    const clash = await dispatchPost(admin(), `/outgoing-requests/${b.json.id}/number`, { docNumber: issuedA.json.docNumberDisplay });
+    const clash = await dispatchPost(admin(), `/outgoing-requests/${b.json.id}/number`, { pin: userPin('admin'), docNumber: issuedA.json.docNumberDisplay });
     assert.equal(clash.status, 409, 'เลขซ้ำต้องเตือนก่อน');
     assert.ok(clash.json.confirmRetry, 'ต้องบอกหน้าเว็บว่าให้ถามยืนยันแล้วส่งมาใหม่ได้');
 
     const forced = await dispatchPost(admin(), `/outgoing-requests/${b.json.id}/number`,
-      { docNumber: issuedA.json.docNumberDisplay, allowDuplicate: true });
+      { pin: userPin('admin'), docNumber: issuedA.json.docNumberDisplay, allowDuplicate: true });
     assert.equal(forced.status, 200, 'ยืนยันแล้วต้องแก้ได้ (เช่นแก้ให้ตรงกับเล่มกระดาษที่เคยลงซ้ำไว้)');
   });
 
   test('ผู้ดูแลระบบลบแถวคำขอได้ แต่หนังสือที่ออกเลขไปแล้วยังอยู่ในทะเบียน', async () => {
     const res = await ask(teacher());
-    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
 
     assert.equal((await dispatchPost(teacher(), `/outgoing-requests/${res.json.id}/delete`, {})).status, 403, 'ครูลบไม่ได้');
     assert.equal((await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/delete`, {})).status, 403, 'ธุรการลบไม่ได้');
@@ -6430,89 +6438,412 @@ describe('ขอเลขหนังสือส่ง', () => {
     assert.equal(del.json.documentKept, false, 'ไม่มีหนังสือให้เก็บ');
   });
 
-  // ธุรการต้องออกเลขทะเบียนส่งให้โดยไม่เคยเห็นตัวหนังสือเลย ทั้งที่เลขที่ออกไปแล้วใช้ซ้ำไม่ได้ —
-  // ในทางปฏิบัติจึงต้องไปตามขอไฟล์กันทางไลน์ก่อนทุกครั้ง
-  describe('แนบร่างหนังสือมากับคำขอ', () => {
-    const pdf = () => Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n', 'latin1').toString('base64');
+  // เดิมครูแนบ "ร่างหนังสือ" มากับคำขอได้ เพราะคิดว่าธุรการต้องเห็นตัวหนังสือก่อนตัดสินใจออกเลข
+  // ของจริงไม่ได้ทำงานแบบนั้น — ครูมาขอเลขเพื่อเอาไปพิมพ์ลงหัวหนังสือที่ยังร่างไม่เสร็จด้วยซ้ำ ไม่ได้มา
+  // ส่งไฟล์ ช่องแนบไฟล์จึงถูกตัดออก ชุดนี้เฝ้าว่า "ตัดแล้วของเก่าต้องไม่หาย": คำขอที่แนบร่างไว้ก่อน
+  // หน้านี้ยังเปิดดูได้ และยังถูกย้ายเข้าเป็นไฟล์แนบของหนังสือตอนออกเลขเหมือนเดิม
+  describe('ร่างหนังสือ: ตัดช่องแนบออกแล้ว แต่ของที่แนบไว้ก่อนต้องไม่หาย', () => {
+    const pdfBuf = () => Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n', 'latin1');
     const draftsOf = (reqId) => db.prepare('SELECT * FROM outgoing_request_files WHERE request_id = ?').all(reqId);
+    // คำขอที่ยื่นไว้ "ก่อน" ช่องแนบไฟล์ถูกตัด — เขียนลงตารางตรงๆ เพราะเส้นทางปกติแนบไม่ได้แล้ว
+    const attachLegacyDraft = (reqId, filename) => {
+      const id = `legacy-draft-${reqId}`;
+      const buf = pdfBuf();
+      db.prepare(`INSERT INTO outgoing_request_files (id, request_id, filename, mime_type, filesize, content, created_at)
+        VALUES (?, ?, ?, 'application/pdf', ?, ?, ?)`).run(id, reqId, filename, buf.length, buf, nowIso());
+      return id;
+    };
 
-    test('ครูแนบร่างมาได้ ธุรการเปิดดูได้ และครูเจ้าของก็เปิดได้', async () => {
-      const res = await ask(teacher(), { draft: { fileName: 'ร่างหนังสือขออนุญาต.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+    test('ฟอร์มขอเลขต้องไม่มีช่องแนบไฟล์แล้ว — มาขอเลข ไม่ได้มาส่งไฟล์', async () => {
+      const page = await dispatchGet(teacher(), '/outgoing-requests/mine', {});
+      assert.equal(page.status, 200);
+      assert.ok(!/type="file"/.test(page.body), 'ต้องไม่มีช่องเลือกไฟล์เหลืออยู่');
+      // เทียบกับ id ของช่องโดยตรง ไม่ใช่ข้อความไทยอย่าง "แนบร่างหนังสือ" — ข้อความแบบนั้นโผล่ใน
+      // "เหตุผลที่ยังออกให้ไม่ได้" ที่ธุรการพิมพ์เองได้ (เทสต์อื่นใช้เหตุผลว่า "ยังไม่แนบร่างหนังสือมา")
+      // แล้วเทสต์จะแดงเพราะข้อมูลของคนอื่น ไม่ใช่เพราะฟอร์มผิด
+      assert.ok(!/id="orFile"/.test(page.body), 'ต้องไม่มีช่องแนบร่างเหลืออยู่ในฟอร์ม');
+      assert.ok(!/attachFilePreview/.test(page.body), 'ต้องไม่มีสคริปต์ช่วยแนบไฟล์เหลืออยู่');
+    });
+
+    test('ยิง draft แนบมาทาง API ก็ต้องไม่ถูกเก็บ — ตัดขาเข้าจริง ไม่ใช่แค่ซ่อนช่อง', async () => {
+      const res = await ask(teacher(), {
+        draft: { fileName: 'แอบแนบ.pdf', fileType: 'application/pdf', fileDataBase64: pdfBuf().toString('base64') },
+      });
       assert.equal(res.status, 200, res.body);
-      const [file] = draftsOf(res.json.id);
-      assert.ok(file, 'ต้องเก็บร่างไว้กับคำขอ');
-      assert.equal(file.filename, 'ร่างหนังสือขออนุญาต.pdf');
+      assert.equal(draftsOf(res.json.id).length, 0, 'คำขอใหม่ต้องไม่มีไฟล์แนบเลย');
+    });
+
+    test('ร่างที่แนบไว้ก่อนหน้านี้ยังเปิดดูได้ และคนนอกยังเปิดไม่ได้', async () => {
+      const res = await ask(teacher());
+      const fileId = attachLegacyDraft(res.json.id, 'ร่างเก่าที่ยังค้างอยู่.pdf');
 
       const page = await dispatchGet(registrar(), '/outgoing-requests', {});
-      assert.ok(page.body.includes('ร่างหนังสือขออนุญาต.pdf'), 'ธุรการต้องเห็นชื่อไฟล์ร่างในใบคำขอ');
-      assert.ok(page.body.includes(`/outgoing-requests/files/${file.id}`), 'ต้องมีลิงก์เปิดดูร่าง');
+      assert.ok(page.body.includes('ร่างเก่าที่ยังค้างอยู่.pdf'), 'ธุรการต้องยังเห็นชื่อไฟล์ร่างที่ค้างอยู่');
+      assert.ok(page.body.includes(`/outgoing-requests/files/${fileId}`), 'ต้องยังมีลิงก์เปิดดู');
 
-      const opened = await dispatchGet(registrar(), `/outgoing-requests/files/${file.id}`, {});
+      const opened = await dispatchGet(registrar(), `/outgoing-requests/files/${fileId}`, {});
       assert.equal(opened.status, 200, 'ธุรการต้องเปิดร่างได้');
-      assert.match(opened.headers['Content-Type'], /application\/pdf/);
       assert.match(opened.headers['Content-Disposition'], /inline/, 'PDF ต้องเปิดดูในแท็บได้เลย');
-      assert.equal((await dispatchGet(teacher(), `/outgoing-requests/files/${file.id}`, {})).status, 200, 'เจ้าของคำขอต้องเปิดดูได้');
-    });
-
-    test('คนอื่นที่ไม่เกี่ยวข้องเปิดร่างไม่ได้ — ยังไม่ใช่หนังสือที่ออกเลขด้วยซ้ำ', async () => {
-      const res = await ask(teacher(), { draft: { fileName: 'ร่างลับ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
-      const [file] = draftsOf(res.json.id);
-      const outsider = loadUserForTest(seed.userIds.director01);
+      assert.equal((await dispatchGet(teacher(), `/outgoing-requests/files/${fileId}`, {})).status, 200, 'เจ้าของคำขอต้องเปิดดูได้');
       // ผอ. ไม่ใช่ผู้ขอและไม่ใช่ผู้ออกเลข จึงไม่ควรเปิดร่างของคนอื่นได้
-      assert.equal((await dispatchGet(outsider, `/outgoing-requests/files/${file.id}`, {})).status, 403);
+      const outsider = loadUserForTest(seed.userIds.director01);
+      assert.equal((await dispatchGet(outsider, `/outgoing-requests/files/${fileId}`, {})).status, 403);
     });
 
-    test('ไฟล์ที่อ้างว่าเป็น PDF แต่ไม่ใช่ ต้องถูกปฏิเสธตั้งแต่ตอนขอ', async () => {
-      const fake = Buffer.from('MZ\x90\x00 ไม่ใช่ PDF เลย', 'latin1').toString('base64');
-      const res = await ask(teacher(), { draft: { fileName: 'ปลอม.pdf', fileType: 'application/pdf', fileDataBase64: fake } });
-      assert.equal(res.status, 400, 'ต้องตรวจลายเซ็นไฟล์เหมือนไฟล์แนบของหนังสือ');
-      assert.match(res.json.error, /ลายเซ็นไฟล์/);
-    });
-
-    test('ออกเลขแล้ว ร่างต้องกลายเป็นไฟล์แนบของหนังสือเอง ไม่ต้องแนบซ้ำ', async () => {
-      const res = await ask(teacher(), { draft: { fileName: 'ร่างที่จะย้ายเข้าหนังสือ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
-      const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+    test('ออกเลขแล้ว ร่างเก่าต้องกลายเป็นไฟล์แนบของหนังสือเอง ไม่ค้างอยู่สองที่', async () => {
+      const res = await ask(teacher());
+      attachLegacyDraft(res.json.id, 'ร่างเก่าที่จะย้ายเข้าหนังสือ.pdf');
+      const issued = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
       assert.equal(issued.status, 200, issued.body);
       assert.equal(issued.json.attachedDrafts, 1, 'ต้องบอกว่าย้ายไฟล์เข้าหนังสือให้กี่ไฟล์');
 
       const atts = db.prepare('SELECT * FROM attachments WHERE document_id = ?').all(issued.json.documentId);
       assert.equal(atts.length, 1, 'หนังสือที่ออกเลขให้ต้องมีไฟล์แนบมาแล้ว');
-      assert.equal(atts[0].filename, 'ร่างที่จะย้ายเข้าหนังสือ.pdf');
+      assert.equal(atts[0].filename, 'ร่างเก่าที่จะย้ายเข้าหนังสือ.pdf');
       assert.equal(atts[0].uploaded_by, seed.userIds.teacher001, 'ผู้อัปโหลดต้องเป็นครูผู้ขอ ไม่ใช่ธุรการที่กดออกเลข');
       // ไม่เหลือก้อนข้อมูลค้างอยู่ในฐานข้อมูล (ซึ่งถูกสำรองขึ้น Drive ทุกรอบ)
       assert.equal(draftsOf(res.json.id).length, 0, 'ร่างต้องถูกย้ายออกไปแล้ว ไม่ค้างอยู่สองที่');
     });
 
     test('ปฏิเสธ/ถอนคำขอ ต้องไม่ทิ้งก้อนไฟล์ค้างไว้ในฐานข้อมูล', async () => {
-      const a = await ask(teacher(), { draft: { fileName: 'ร่างที่จะถูกปฏิเสธ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      const a = await ask(teacher());
+      attachLegacyDraft(a.json.id, 'ร่างที่จะถูกปฏิเสธ.pdf');
       await dispatchPost(registrar(), `/outgoing-requests/${a.json.id}/reject`, { reason: 'ร่างยังไม่ถูกต้อง' });
       assert.equal(draftsOf(a.json.id).length, 0, 'ปฏิเสธแล้วต้องลบร่างทิ้ง');
 
-      const b = await ask(teacher(), { draft: { fileName: 'ร่างที่จะถูกถอน.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
+      const b = await ask(teacher());
+      attachLegacyDraft(b.json.id, 'ร่างที่จะถูกถอน.pdf');
       await dispatchPost(teacher(), `/outgoing-requests/${b.json.id}/cancel`, {});
       assert.equal(draftsOf(b.json.id).length, 0, 'ถอนคำขอแล้วต้องลบร่างทิ้ง');
     });
+  });
 
-    test('กดขอซ้ำเรื่องเดิมเพราะลืมแนบร่าง ต้องแนบเข้าใบเดิมได้', async () => {
-      const title = 'ขออนุมัติจัดกิจกรรมวันวิทยาศาสตร์';
-      const first = await ask(teacher(), { title });
-      assert.equal(draftsOf(first.json.id).length, 0);
-      const again = await ask(teacher(), { title, draft: { fileName: 'ร่างที่ลืมแนบ.pdf', fileType: 'application/pdf', fileDataBase64: pdf() } });
-      assert.equal(again.json.id, first.json.id, 'ต้องเป็นใบเดิม ไม่ใช่ใบใหม่');
-      assert.equal(again.json.duplicate, true);
-      assert.equal(draftsOf(first.json.id).length, 1, 'ร่างต้องเข้าไปอยู่กับใบเดิม ไม่ใช่หายไปเงียบๆ');
+  // ปุ่ม "แก้" เปิดให้ธุรการแล้ว (ทะเบียนหนังสือส่งเป็นสมุดของธุรการ) ส่วนปุ่ม "ลบ" ยังเป็นของผู้ดูแล
+  // ระบบเท่านั้น เพราะลบคือการทำให้บันทึกหายไปจากรายการ ไม่ใช่การแก้ค่าที่ยังตรวจย้อนหลังได้
+  test('ธุรการเห็นปุ่มแก้ แต่ปุ่มลบยังเป็นของผู้ดูแลระบบเท่านั้น', async () => {
+    const res = await ask(teacher());
+    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
+    const asAdmin = await dispatchGet(admin(), '/outgoing-requests', {});
+    assert.match(asAdmin.body, /✏️ แก้/, 'ผู้ดูแลต้องเห็นปุ่มแก้');
+    assert.match(asAdmin.body, /onclick="deleteOutReq\(/, 'ผู้ดูแลต้องเห็นปุ่มลบ');
+    const asReg = await dispatchGet(registrar(), '/outgoing-requests', {});
+    assert.match(asReg.body, /✏️ แก้/, 'ธุรการต้องเห็นปุ่มแก้ด้วย');
+    assert.ok(!/onclick="deleteOutReq\(/.test(asReg.body), 'ธุรการต้องไม่เห็นปุ่มลบ');
+  });
+});
+
+// ทะเบียนหนังสือส่งแบบที่โรงเรียนใช้จริง: ครูกรอกสี่ช่อง ระบบออกเลขกับวันที่ให้ ธุรการเป็นผู้อนุมัติ
+//
+// สี่ช่องนั้นคือ จาก / ถึง / เรื่อง / การปฏิบัติ ซึ่งเป็นคอลัมน์ของเล่มทะเบียนหนังสือส่งตามระเบียบ
+// สำนักนายกรัฐมนตรีว่าด้วยงานสารบรรณ (แบบที่ 14) — ช่องที่เหลือในเล่มคือ "ที่" กับ "ลงวันที่"
+// ซึ่งเป็นของที่ธุรการออกให้ ไม่ใช่ของที่ครูรู้ ระบบจึงออกให้เองทั้งคู่
+describe('ทะเบียนหนังสือส่ง: ออกเลขและวันที่อัตโนมัติ', () => {
+  const teacher = () => loadUserForTest(seed.userIds.teacher001);
+  const registrar = () => loadUserForTest(seed.userIds.reg001);
+  const admin = () => loadUserForTest(seed.userIds.admin);
+  let settings; let numbering;
+  before(async () => {
+    settings = await import('../src/services/settings.js');
+    numbering = await import('../src/numbering.js');
+  });
+  const setSet = (key, value) => settings.setSetting({ key, value, actorUser: adminUser });
+  const setFloor = (start, year) => {
+    setSet('outgoing_number_start', start === null ? '' : String(start));
+    setSet('outgoing_number_start_year', year === null ? '' : String(year));
+  };
+  after(() => { setFloor(null, null); setSet('outgoing_number_prefix', ''); });
+
+  let n = 0;
+  const ask = (user, over = {}) => dispatchPost(user, '/outgoing-requests', {
+    title: `หนังสือส่งอัตโนมัติ ${++n}`, correspondentName: 'สพป. เขต 1', departmentId: deptId, ...over,
+  });
+  const issue = (reqId, body = {}) => dispatchPost(registrar(), `/outgoing-requests/${reqId}/issue`,
+    { pin: userPin('reg001'), ...body });
+  const docOf = (id) => db.prepare('SELECT * FROM documents WHERE id = ?').get(id);
+  const runningOf = (display) => Number(String(display).split('/').pop().replace(/\D/g, ''));
+
+  // ───────── เลขตั้งต้นจากเล่มกระดาษ ─────────
+  // โรงเรียนย้ายมาจากสมุดกระดาษที่ออกเลขไปแล้วถึง 205 ถ้าระบบเริ่มที่ 1 เลขจะทับของที่ส่งออกไปจริง
+  // แล้วแก้ย้อนหลังไม่ได้ ตามหลักงานสารบรรณ (เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้)
+  describe('เลขตั้งต้นจากเล่มกระดาษ', () => {
+    test('ตั้งว่าเล่มกระดาษออกถึง 205 แล้ว ฉบับถัดไปต้องได้ 206', () => {
+      setSet('outgoing_number_prefix', 'ศธ04047.109');
+      setFloor(205, beYear());
+      assert.equal(numbering.previewNextNumber('outgoing'), 'ศธ04047.109/206',
+        'ตัวอย่างที่โชว์ให้ธุรการเห็นก่อนกดต้องเป็นเลขเดียวกับที่จะออกจริง');
+      const doc = getDocRow(makeDoc({ direction: 'outgoing', title: `ต่อจากเล่มกระดาษ ${++n}` }).id);
+      assert.equal(doc.doc_number_display, 'ศธ04047.109/206');
+      assert.equal(doc.running_number, 206);
+      // ฉบับถัดไปเดินต่อตามปกติ ไม่ใช่ติดอยู่ที่ 206 ตลอด
+      assert.equal(getDocRow(makeDoc({ direction: 'outgoing', title: `ต่อจากเล่มกระดาษ ${++n}` }).id).running_number, 207);
+      setSet('outgoing_number_prefix', '');
+    });
+
+    // ทะเบียนหนังสือส่งเริ่มนับ 1 ใหม่ทุกวันที่ 1 มกราคม ถ้าค่านี้ไม่ผูกกับปี พอขึ้นปีใหม่มันจะกลายเป็น
+    // พื้นค้างที่ดันเล่มใหม่ให้เริ่มที่ 206 ตลอดไป โดยไม่มีใครรู้จนกว่าจะออกเลขผิดไปแล้ว
+    test('ค่านี้หมดอายุเองเมื่อขึ้นปี พ.ศ. ใหม่ — เล่มใหม่ต้องเริ่มนับเอง', () => {
+      setFloor(900, beYear() - 1);
+      assert.equal(settings.outgoingNumberFloor(beYear()), 0, 'ปีไม่ตรงต้องไม่มีพื้น');
+      assert.equal(settings.outgoingNumberFloor(beYear() - 1), 900, 'ปีที่ตั้งไว้ยังมีพื้นตามเดิม');
+      const before = getDocRow(makeDoc({ direction: 'outgoing', title: `ปีใหม่ไม่ติดพื้น ${++n}` }).id).running_number;
+      assert.ok(before < 900, `เล่มปีนี้ต้องไม่ถูกดันไปถึง 900 — ได้ ${before}`);
+    });
+
+    test('ค่านี้ดึงเลขถอยหลังไม่ได้ — เลขที่ออกไปแล้วนำกลับมาใช้ซ้ำไม่ได้', () => {
+      setFloor(null, null);
+      const high = getDocRow(makeDoc({ direction: 'outgoing', title: `เลขสูงอยู่แล้ว ${++n}` }).id).running_number;
+      setFloor(Math.max(1, high - 5), beYear());
+      const next = getDocRow(makeDoc({ direction: 'outgoing', title: `ต้องไม่ถอย ${++n}` }).id).running_number;
+      assert.equal(next, high + 1, `ต้องเดินต่อจากเลขสูงสุดที่ออกไปแล้ว ไม่ใช่ถอยไปตามพื้น — ได้ ${next}`);
+      setFloor(null, null);
+    });
+
+    test('พื้นใช้กับทะเบียนหนังสือส่งทั่วไปเล่มเดียว ไม่ลามไปเล่มเวียนและเล่มรับ', () => {
+      setFloor(5000, beYear());
+      const circ = getDocRow(makeDoc({ direction: 'outgoing', title: `เวียนไม่ติดพื้น ${++n}`, isCircular: true }).id);
+      const incoming = getDocRow(makeDoc({ direction: 'incoming', title: `หนังสือรับไม่ติดพื้น ${++n}` }).id);
+      assert.ok(circ.running_number < 5000, `ทะเบียนเวียนเป็นคนละเล่ม ต้องไม่ถูกดัน — ได้ ${circ.running_number}`);
+      assert.ok(incoming.running_number < 5000, `ทะเบียนรับเป็นคนละเล่ม ต้องไม่ถูกดัน — ได้ ${incoming.running_number}`);
+      assert.ok(getDocRow(makeDoc({ direction: 'outgoing', title: `ส่งทั่วไปติดพื้น ${++n}` }).id).running_number > 5000);
+      setFloor(null, null);
+    });
+
+    test('ค่าที่ไม่ใช่ตัวเลขต้องถูกปฏิเสธตอนกรอก ไม่ใช่ไปเงียบหายตอนออกเลข', async () => {
+      for (const bad of ['205ก', '20 5', '1.5', '-5', '0']) {
+        assert.throws(() => setSet('outgoing_number_start', bad), /ตัวเลข|มากกว่า 0/, `"${bad}" ต้องไม่ผ่าน`);
+      }
+      // กรอกเลขแล้วไม่กรอกปี = พื้นที่ไม่ตรงกับเล่มไหนเลย ซึ่งอ่านจากหน้าเว็บไม่ออกว่าทำไมเลขไม่ขยับ
+      const res = await dispatchPost(admin(), '/admin/settings', {
+        school_name: 'โรงเรียนวัดเสาหิน', outgoing_number_start: '205', outgoing_number_start_year: '',
+      });
+      assert.equal(res.status, 400, res.body);
+      assert.match(res.json.error, /ปี พ\.ศ\./);
+      setFloor(null, null);
+    });
+
+    test('หน้าตั้งค่ามีช่องกรอก และเตือนให้ตั้ง env var ไว้ด้วยเพราะดิสก์ถูกล้างตอน deploy', async () => {
+      setFloor(205, beYear());
+      const page = await dispatchGet(admin(), '/admin/settings', {});
+      assert.equal(page.status, 200);
+      assert.match(page.body, /id="outgoing_number_start"/, 'ต้องมีช่องกรอกเลขตั้งต้น');
+      assert.match(page.body, /id="outgoing_number_start_year"/, 'ต้องมีช่องกรอกปีของเล่มนั้น');
+      // ค่าที่ตั้งแต่ในหน้าเว็บอย่างเดียวหายตอน deploy แล้วเลขย้อนไปเริ่มใหม่เงียบๆ ซึ่งแย่กว่าพังดังๆ
+      assert.match(page.body, /OUTGOING_NUMBER_START=205/, 'ต้องบอกบรรทัด env var ที่ต้องไปตั้งให้ครบ');
+      setFloor(null, null);
     });
   });
 
-  test('หน้าคำขอแสดงปุ่มแก้/ลบเฉพาะผู้ดูแลระบบ', async () => {
-    const res = await ask(teacher());
-    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
-    const asAdmin = await dispatchGet(admin(), '/outgoing-requests', {});
-    assert.match(asAdmin.body, /✏️ แก้เลข/, 'ผู้ดูแลต้องเห็นปุ่มแก้เลข');
-    assert.match(asAdmin.body, /onclick="deleteOutReq\(/, 'ผู้ดูแลต้องเห็นปุ่มลบ');
-    const asReg = await dispatchGet(registrar(), '/outgoing-requests', {});
-    assert.ok(!/✏️ แก้เลข/.test(asReg.body), 'ธุรการต้องไม่เห็นปุ่มแก้เลข');
-    assert.ok(!/onclick="deleteOutReq\(/.test(asReg.body), 'ธุรการต้องไม่เห็นปุ่มลบ');
+  // ───────── สี่ช่องของครู ─────────
+  describe('ครูกรอกสี่ช่อง จาก/ถึง/เรื่อง/การปฏิบัติ', () => {
+    test('ฟอร์มมีสี่ช่องนี้ และของที่เหลือถูกพับไว้ใต้ตัวเลือกเพิ่มเติม', async () => {
+      const page = await dispatchGet(teacher(), '/outgoing-requests/mine', {});
+      assert.equal(page.status, 200);
+      for (const id of ['orFrom', 'orTo', 'orTitle', 'orAction']) {
+        assert.ok(page.body.includes(`id="${id}"`), `ต้องมีช่อง ${id}`);
+      }
+      // ช่องที่ค่าเริ่มต้นถูกเกือบทุกครั้งต้องไม่มาเบียดสี่ช่องหลัก
+      const more = page.body.indexOf('<details class="field-more">');
+      assert.ok(more > 0, 'ต้องมีกล่อง "ตัวเลือกเพิ่มเติม" และต้องหุบไว้ (ไม่มี open ติดมา)');
+      for (const id of ['orDept', 'orPriority', 'orSecret', 'orCircular', 'orNote']) {
+        assert.ok(page.body.indexOf(`id="${id}"`) > more, `${id} ต้องอยู่ใต้ตัวเลือกเพิ่มเติม ไม่ใช่โผล่มาตั้งแต่แรก`);
+      }
+    });
+
+    test('ไม่กรอก "จาก" ระบบเติมชื่อผู้ขอให้เอง ไม่ใช่ปล่อยช่องว่างในทะเบียน', async () => {
+      const res = await ask(teacher(), { fromName: '' });
+      const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(res.json.id);
+      assert.ok(req.from_name, 'ต้องมีค่าในช่องจาก');
+      assert.ok(req.from_name.includes('ครูใหญ่'), `ต้องเป็นชื่อผู้ขอ — ได้ ${req.from_name}`);
+    });
+
+    test('จาก/การปฏิบัติ ต้องเดินทางจากคำขอไปถึงตัวหนังสือจริง', async () => {
+      const res = await ask(teacher(), { fromName: 'กลุ่มบริหารงานวิชาการ', actionNote: 'ส่งเพื่อโปรดพิจารณาอนุมัติ' });
+      const issued = await issue(res.json.id);
+      assert.equal(issued.status, 200, issued.body);
+      const doc = docOf(issued.json.documentId);
+      assert.equal(doc.from_name, 'กลุ่มบริหารงานวิชาการ');
+      assert.equal(doc.action_note, 'ส่งเพื่อโปรดพิจารณาอนุมัติ');
+    });
+
+    test('ทะเบียนหนังสือส่งที่พิมพ์ออกมาต้องมีช่อง "จาก" และ "การปฏิบัติ" ของจริง', async () => {
+      const res = await ask(teacher(), { fromName: 'ฝ่ายงบประมาณโรงเรียน', actionNote: 'เพื่อโปรดลงนาม' });
+      await issue(res.json.id);
+      const page = await dispatchGet(registrar(), '/documents/register', { direction: 'outgoing' });
+      assert.equal(page.status, 200);
+      assert.ok(page.body.includes('ฝ่ายงบประมาณโรงเรียน'), 'ช่อง "จาก" ต้องมีค่าที่กรอกไว้จริง');
+      assert.ok(page.body.includes('เพื่อโปรดลงนาม'),
+        'ช่อง "การปฏิบัติ" ต้องเป็นข้อความที่เจ้าของเรื่องเขียน ไม่ใช่สถานะของเรื่องในระบบ');
+      // สถานะในระบบยังต้องดูได้ แต่ต้องเป็นคนละช่องกัน ไม่ใช่ไปแย่งความหมายช่องการปฏิบัติของเล่มกระดาษ
+      assert.match(page.body, /สถานะ/, 'เล่มส่งต้องมีช่องสถานะแยกต่างหากจากการปฏิบัติ');
+      // เล่มรับไม่ถูกเปลี่ยนตามไปด้วย — ช่อง "จาก" ของเล่มรับคือต้นทางข้างนอก ไม่ใช่เจ้าของเรื่องในโรงเรียน
+      const inPage = await dispatchGet(registrar(), '/documents/register', { direction: 'incoming' });
+      assert.match(inPage.body, /การปฏิบัติ/, 'เล่มรับยังมีช่องการปฏิบัติของตัวเองตามเดิม');
+      assert.ok(!/<th[^>]*>สถานะ</.test(inPage.body), 'เล่มรับต้องไม่มีช่องสถานะเพิ่มมา — ของเดิมไม่ได้ถูกแตะ');
+    });
+  });
+
+  // ───────── วันที่ที่ออกให้เอง ─────────
+  describe('ออกวันที่ให้เองตอนอนุมัติ', () => {
+    test('ไม่ระบุวันที่ = ลงวันที่วันนี้ และเลขที่เว้นว่าง = ระบบออกเลขให้', async () => {
+      const res = await ask(teacher());
+      const issued = await issue(res.json.id);
+      assert.equal(issued.status, 200, issued.body);
+      const doc = docOf(issued.json.documentId);
+      assert.equal(doc.external_doc_date, todayInBangkok(), 'หนังสือส่งต้องมีวันที่ลงบนหัวหนังสือเสมอ');
+      assert.equal(issued.json.docDate, todayInBangkok(), 'ต้องตอบวันที่กลับไปให้หน้าเว็บด้วย');
+      assert.ok(issued.json.docNumberDisplay, 'ต้องได้เลขที่ระบบออกให้');
+    });
+
+    test('ธุรการลงวันที่ย้อนหลังได้ เพราะกระดาษกับทะเบียนต้องตรงกัน', async () => {
+      const res = await ask(teacher());
+      const issued = await issue(res.json.id, { docDate: '2026-09-15' });
+      assert.equal(issued.status, 200, issued.body);
+      assert.equal(docOf(issued.json.documentId).external_doc_date, '2026-09-15');
+    });
+
+    test('วันที่ที่ใช้ไม่ได้ต้องถูกปฏิเสธก่อนกินเลขทะเบียน', async () => {
+      const before = db.prepare("SELECT COALESCE(MAX(running_number),0) m FROM documents WHERE direction = 'outgoing'").get().m;
+      const res = await ask(teacher());
+      const bad = await issue(res.json.id, { docDate: '2569-09-15' });
+      assert.equal(bad.status, 400, bad.body);
+      assert.match(bad.json.error, /พ\.ศ\./, 'ต้องบอกว่ากรอกเป็น พ.ศ. มา ไม่ใช่ข้อความเครื่องดิบๆ');
+      assert.equal(db.prepare("SELECT COALESCE(MAX(running_number),0) m FROM documents WHERE direction = 'outgoing'").get().m,
+        before, 'ปฏิเสธแล้วต้องไม่กินเลขทะเบียนไปด้วย');
+      // ใบเดิมต้องยังรออยู่ ไม่ใช่ค้างครึ่งๆ กลางๆ
+      assert.equal(db.prepare('SELECT status FROM outgoing_number_requests WHERE id = ?').get(res.json.id).status, 'pending');
+    });
+  });
+
+  // ───────── ธุรการแก้ได้ทุกช่อง + PIN ─────────
+  describe('ธุรการแก้ได้ทุกช่องก่อนอนุมัติ และต้องใส่ PIN', () => {
+    test('ไม่ใส่ PIN ออกเลขไม่ได้ และต้องไม่กินเลขทะเบียน', async () => {
+      const before = db.prepare("SELECT COALESCE(MAX(running_number),0) m FROM documents WHERE direction = 'outgoing'").get().m;
+      const res = await ask(teacher());
+      const noPin = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, {});
+      assert.equal(noPin.status, 401, noPin.body);
+      const wrongPin = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: '000000' });
+      assert.equal(wrongPin.status, 401, wrongPin.body);
+      assert.equal(db.prepare("SELECT COALESCE(MAX(running_number),0) m FROM documents WHERE direction = 'outgoing'").get().m,
+        before, 'PIN ผิดแล้วต้องไม่กินเลขทะเบียน — เลขที่ออกไปแล้วเรียกคืนไม่ได้');
+    });
+
+    test('ครูที่ไม่มีสิทธิ์ต้องได้ 403 ไม่ใช่ 401 แม้ไม่ได้ส่ง PIN มา', async () => {
+      const res = await ask(teacher());
+      const r = await dispatchPost(teacher(), `/outgoing-requests/${res.json.id}/issue`, {});
+      assert.equal(r.status, 403, `ต้องบอกว่าไม่มีสิทธิ์ ไม่ใช่ให้นั่งลองกรอก PIN — ได้ ${r.status} ${r.body}`);
+    });
+
+    test('แก้ทุกช่องตอนอนุมัติได้ แล้วค่าที่แก้ต้องไปอยู่บนหนังสือจริง', async () => {
+      const res = await ask(teacher(), { fromName: 'ครูพิมพ์มาผิด', actionNote: 'ผิด', title: `ชื่อเรื่องที่ครูพิมพ์ผิด ${++n}` });
+      const issued = await issue(res.json.id, {
+        title: 'ขออนุญาตใช้สถานที่ราชการ', correspondentName: 'นายอำเภอเมือง',
+        fromName: 'กลุ่มบริหารทั่วไป', actionNote: 'เพื่อโปรดอนุญาต',
+        customDocNumber: 'ศธ04047.109/777', docDate: '2026-10-01',
+      });
+      assert.equal(issued.status, 200, issued.body);
+      const doc = docOf(issued.json.documentId);
+      assert.equal(doc.title, 'ขออนุญาตใช้สถานที่ราชการ');
+      assert.equal(doc.correspondent_name, 'นายอำเภอเมือง');
+      assert.equal(doc.from_name, 'กลุ่มบริหารทั่วไป');
+      assert.equal(doc.action_note, 'เพื่อโปรดอนุญาต');
+      assert.equal(doc.doc_number_display, 'ศธ04047.109/777');
+      assert.equal(doc.external_doc_date, '2026-10-01');
+      // ใบคำขอเก็บไว้ว่าครูขออะไรมา เพื่อให้ยังเทียบย้อนได้ว่าถูกแก้เป็นอะไร
+      assert.equal(db.prepare('SELECT from_name FROM outgoing_number_requests WHERE id = ?').get(res.json.id).from_name,
+        'ครูพิมพ์มาผิด', 'ใบคำขอต้องยังเก็บของเดิมที่ครูกรอกไว้');
+    });
+
+    test('ช่องที่ไม่ได้ส่งมาต้องใช้ของที่ครูกรอก ส่วนส่งค่าว่างมา = ตั้งใจล้างช่องนั้น', async () => {
+      const res = await ask(teacher(), { fromName: 'ฝ่ายวิชาการ', actionNote: 'เพื่อโปรดทราบ' });
+      const issued = await issue(res.json.id, { actionNote: '' });
+      const doc = docOf(issued.json.documentId);
+      assert.equal(doc.from_name, 'ฝ่ายวิชาการ', 'ช่องที่ไม่ได้ส่งมาต้องไม่ถูกแตะ');
+      assert.equal(doc.action_note, null, 'ส่งค่าว่างมาคือการล้างช่องนั้นจริงๆ');
+    });
+
+    test('แก้ช่องเดียวหลังออกเลขไปแล้วได้ ช่องอื่นต้องไม่ถูกแตะ', async () => {
+      const res = await ask(teacher(), { fromName: 'ฝ่ายเดิม', actionNote: 'การปฏิบัติเดิม' });
+      const issued = await issue(res.json.id);
+      const edit = await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/number`,
+        { pin: userPin('reg001'), docDate: '2026-08-08' });
+      assert.equal(edit.status, 200, edit.body);
+      const doc = docOf(issued.json.documentId);
+      assert.equal(doc.external_doc_date, '2026-08-08');
+      assert.equal(doc.from_name, 'ฝ่ายเดิม', 'ช่องที่ไม่ได้ส่งมาต้องคงเดิม');
+      assert.equal(doc.action_note, 'การปฏิบัติเดิม');
+      assert.equal(doc.doc_number_display, issued.json.docNumberDisplay, 'เลขที่ต้องไม่เปลี่ยนเพราะไม่ได้ส่งมา');
+
+      // บันทึกตรวจสอบต้องตอบได้ว่าใครแก้ช่องไหนจากอะไรเป็นอะไร
+      const log = db.prepare(`SELECT user_id, detail FROM audit_logs WHERE record_id = ?
+        AND action = 'outgoing_number_edited' ORDER BY created_at DESC LIMIT 1`).get(issued.json.documentId);
+      assert.ok(log, 'การแก้ทะเบียนย้อนหลังต้องมีบันทึกไว้เสมอ');
+      assert.equal(log.user_id, seed.userIds.reg001);
+      const fields = JSON.parse(log.detail).fields;
+      assert.ok(fields.external_doc_date, 'ต้องบันทึกว่าช่องวันที่ถูกแก้');
+      assert.equal(fields.external_doc_date.after, '2026-08-08');
+      assert.ok(!fields.from_name, 'ช่องที่ไม่ได้แก้ต้องไม่ถูกบันทึกว่าแก้');
+    });
+  });
+
+  // ───────── ธุรการบันทึกแทนครู ─────────
+  // ครูบางท่านฝากให้ธุรการลงให้ (บอกปากเปล่า/ทางไลน์/เอากระดาษมาให้) หนังสือที่ออกมาต้องเป็นของครู
+  // คนนั้น ไม่ใช่ของธุรการ ไม่งั้นครูจะเปิดหนังสือของตัวเองไม่ได้และไม่ได้รับแจ้งเตือนอะไรเลย
+  describe('ธุรการบันทึกแทนครู', () => {
+    const onBehalf = (body) => dispatchPost(registrar(), '/outgoing-requests/on-behalf', {
+      pin: userPin('reg001'), onBehalfOfId: seed.userIds.teacher001,
+      title: `ธุรการลงให้ ${++n}`, correspondentName: 'สพป. เขต 1', departmentId: deptId, ...body,
+    });
+
+    test('ลงแทนแล้วได้เลขทันที และหนังสือขึ้นชื่อครูเจ้าของเรื่องเป็นผู้บันทึก', async () => {
+      const res = await onBehalf({ fromName: 'ครูประจำชั้น ป.6', actionNote: 'เพื่อโปรดทราบ' });
+      assert.equal(res.status, 200, res.body);
+      assert.ok(res.json.docNumberDisplay, 'ต้องได้เลขกลับมาเลย ไม่ต้องกลับมากดอนุมัติอีกรอบ');
+      const doc = docOf(res.json.documentId);
+      assert.equal(doc.created_by, seed.userIds.teacher001, 'ผู้บันทึกเอกสารต้องเป็นครู ไม่ใช่ธุรการที่พิมพ์');
+      assert.equal(doc.from_name, 'ครูประจำชั้น ป.6');
+      assert.equal(doc.action_note, 'เพื่อโปรดทราบ');
+      assert.equal(doc.external_doc_date, todayInBangkok());
+
+      const req = db.prepare('SELECT * FROM outgoing_number_requests WHERE id = ?').get(res.json.requestId);
+      assert.equal(req.requester_id, seed.userIds.teacher001, 'ใบคำขอต้องขึ้นชื่อครู');
+      assert.equal(req.status, 'issued');
+      assert.equal(req.reviewed_by, seed.userIds.reg001, 'คนอนุมัติคือธุรการที่กดจริง');
+
+      // บันทึกตรวจสอบต้องตอบได้ว่าใครเป็นคนพิมพ์ใบนี้เข้าระบบ ไม่ใช่แค่ว่าใบนี้เป็นของใคร
+      const log = db.prepare(`SELECT user_id, detail FROM audit_logs WHERE record_id = ?
+        AND action = 'outgoing_number_requested' ORDER BY created_at DESC LIMIT 1`).get(res.json.requestId);
+      assert.equal(log.user_id, seed.userIds.reg001, 'ต้องบันทึกว่าธุรการเป็นคนพิมพ์');
+      assert.equal(JSON.parse(log.detail).onBehalf, true);
+      assert.equal(JSON.parse(log.detail).requesterId, seed.userIds.teacher001);
+    });
+
+    test('ครูบันทึกแทนคนอื่นไม่ได้ และต้องใส่ PIN', async () => {
+      const bad = await dispatchPost(teacher(), '/outgoing-requests/on-behalf', {
+        pin: userPin('teacher001'), onBehalfOfId: seed.userIds.reg001,
+        title: `ครูแอบลงแทน ${++n}`, correspondentName: 'สพป.', departmentId: deptId,
+      });
+      assert.equal(bad.status, 403, bad.body);
+
+      const noPin = await dispatchPost(registrar(), '/outgoing-requests/on-behalf', {
+        onBehalfOfId: seed.userIds.teacher001,
+        title: `ลงแทนไม่ใส่ PIN ${++n}`, correspondentName: 'สพป.', departmentId: deptId,
+      });
+      assert.equal(noPin.status, 401, noPin.body);
+    });
+
+    test('เลือกคนที่ไม่มีอยู่จริง/ถูกปิดบัญชี ต้องถูกปฏิเสธอย่างสุภาพ', async () => {
+      const res = await onBehalf({ onBehalfOfId: 'ไม่มีคนนี้ในระบบ' });
+      assert.equal(res.status, 400, res.body);
+      assert.match(res.json.error, /ไม่พบครู/);
+    });
+
+    test('หน้าธุรการมีฟอร์มบันทึกแทนครู พร้อมรายชื่อให้เลือก', async () => {
+      const page = await dispatchGet(registrar(), '/outgoing-requests', {});
+      assert.equal(page.status, 200);
+      assert.match(page.body, /บันทึกแทนครู/, 'ต้องมีกล่องบันทึกแทนครู');
+      assert.match(page.body, /id="obWho"/, 'ต้องมีช่องเลือกครูเจ้าของเรื่อง');
+      assert.ok(page.body.includes(`value="${seed.userIds.teacher001}"`), 'รายชื่อต้องมีครูที่ยังใช้งานอยู่');
+    });
   });
 });
 
@@ -11070,6 +11401,63 @@ describe('แจ้งเตือนเข้าไลน์', () => {
     test('ครูธรรมดาเปิดหน้าตั้งค่าไลน์ของผู้ดูแลไม่ได้', async () => {
       const res = await dispatchGet(loadUserForTest(seed.userIds.teacher001), '/admin/line', {});
       assert.equal(res.status, 403);
+    });
+  });
+
+  // ครูที่ขอเลขกำลังรอเพื่อพิมพ์เลขลงหัวหนังสือ — จุดสำคัญคือข้อความที่เด้งเข้าไลน์ต้องมี "ทุกอย่าง
+  // ที่ต้องพิมพ์ลงกระดาษ" ครบในตัวเอง (เลขที่ + ลงวันที่) ไม่ใช่แค่บอกว่าอนุมัติแล้วให้ไปเปิดเว็บดูเอง
+  // ซึ่งบนมือถือกลางคาบสอนคือการต้องล็อกอินใหม่เพื่ออ่านข้อมูลสองบรรทัด
+  describe('อนุมัติเลขหนังสือส่งแล้วต้องเด้งเข้าไลน์ของครูที่ขอ', () => {
+    // ผู้ใช้เฉพาะกิจของชุดนี้ ไม่ใช้ teacher001 ที่ describe อื่นแย่งกันเขียนอยู่
+    const REQUESTER = 'outline-requester-01';
+    before(() => {
+      db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(REQUESTER);
+      db.prepare('DELETE FROM users WHERE id = ?').run(REQUESTER);
+      db.prepare(`INSERT INTO users (id, employee_code, prefix, first_name, last_name, position, department_id,
+        password_hash, status, created_at, updated_at)
+        VALUES (?, ?, 'นาง', 'ขอเลข', 'รอไลน์', 'ครูชำนาญการ', ?, ?, 'active', ?, ?)`)
+        .run(REQUESTER, 'outline01', deptId, hashSecret('Welcome@2569'), nowIso(), nowIso());
+      db.prepare('INSERT INTO user_roles (user_id, role_id) VALUES (?, (SELECT id FROM roles WHERE name = ?))')
+        .run(REQUESTER, 'teacher');
+    });
+
+    test('ข้อความที่เข้าไลน์ต้องมีทั้งเลขที่และวันที่ พิมพ์ลงหนังสือได้ทันที', async () => {
+      reset();
+      linkDirect(REQUESTER, 'U-outreq-line-01');
+      const asked = await dispatchPost(loadUserForTest(REQUESTER), '/outgoing-requests', {
+        title: 'ขอความอนุเคราะห์วิทยากร', correspondentName: 'ผู้อำนวยการโรงเรียนบ้านปลายนา',
+        actionNote: 'ส่งเพื่อโปรดพิจารณา', departmentId: deptId,
+      });
+      assert.equal(asked.status, 200, asked.body);
+
+      const issued = await dispatchPost(loadUserForTest(seed.userIds.reg001),
+        `/outgoing-requests/${asked.json.id}/issue`, { pin: userPin('reg001'), docDate: '2026-10-02' });
+      assert.equal(issued.status, 200, issued.body);
+
+      const queued = outboxOf(REQUESTER);
+      assert.equal(queued.length, 1, 'ต้องมีข้อความเข้าคิวไลน์ถึงครูผู้ขอพอดีหนึ่งข้อความ ไม่ใช่ศูนย์หรือสอง');
+      const body = queued[0].body;
+      assert.ok(body.includes(issued.json.docNumberDisplay), `ต้องมีเลขที่อยู่ในข้อความ — ได้ ${body}`);
+      assert.ok(body.includes('2 ตุลาคม 2569'), `ต้องมีวันที่แบบไทยเต็มตามระเบียบ — ได้ ${body}`);
+      assert.ok(body.includes('ขอความอนุเคราะห์วิทยากร'), 'ต้องบอกด้วยว่าเป็นเรื่องไหน');
+      assert.ok(body.includes('ผู้อำนวยการโรงเรียนบ้านปลายนา'), 'ต้องบอกด้วยว่าส่งถึงใคร');
+    });
+
+    test('ธุรการบันทึกแทนครู ครูเจ้าของเรื่องก็ต้องได้ไลน์เหมือนกัน', async () => {
+      reset();
+      linkDirect(REQUESTER, 'U-outreq-line-01');
+      const res = await dispatchPost(loadUserForTest(seed.userIds.reg001), '/outgoing-requests/on-behalf', {
+        pin: userPin('reg001'), onBehalfOfId: REQUESTER,
+        title: 'รายงานผลการอบรมที่ธุรการลงให้', correspondentName: 'สพป. เขต 1',
+        actionNote: 'เพื่อโปรดทราบ', departmentId: deptId,
+      });
+      assert.equal(res.status, 200, res.body);
+
+      const queued = outboxOf(REQUESTER);
+      assert.equal(queued.length, 1, 'ครูที่ฝากให้ธุรการลงให้ต้องได้ไลน์แจ้งเลขเหมือนกดขอเอง');
+      assert.ok(queued[0].body.includes(res.json.docNumberDisplay), 'ต้องมีเลขที่อยู่ในข้อความ');
+      // ธุรการที่พิมพ์ใบนี้เองไม่ต้องได้ไลน์ว่า "มีคำขอใหม่" จากตัวเอง
+      assert.equal(outboxOf(seed.userIds.reg001).length, 0, 'ธุรการต้องไม่ได้แจ้งเตือนจากคำขอที่ตัวเองพิมพ์');
     });
   });
 });

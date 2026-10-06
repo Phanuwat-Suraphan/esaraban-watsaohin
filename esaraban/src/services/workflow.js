@@ -118,7 +118,7 @@ export function createDocument(input) {
  * ไม่ใช่ออกเลขรับให้ 6 ฉบับแรกไปแล้วค่อยพบว่าฉบับที่ 7 กรอกวันที่ผิด — เลขรับที่ออกไปแล้วนำกลับมาใช้ซ้ำ
  * ไม่ได้ตามหลักงานสารบรรณ ทะเบียนจะมีเลขขาดหายเป็นรูโหว่ที่อธิบายไม่ได้ตอนตรวจ
  */
-function normalizeDocumentInput({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, receivedDate, dueDate, retentionClass, customDocNumber, isCircular, createdBy }) {
+function normalizeDocumentInput({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, fromName, actionNote, externalDocNumber, externalDocDate, receivedDate, dueDate, retentionClass, customDocNumber, isCircular, createdBy }) {
   title = typeof title === 'string' ? title.trim() : title;
   correspondentName = typeof correspondentName === 'string' ? correspondentName.trim() : correspondentName;
   if (!title) throw httpError(400, 'กรุณากรอกชื่อเรื่อง');
@@ -133,12 +133,16 @@ function normalizeDocumentInput({ direction, title, subject, docTypeId, departme
   if (priority && !VALID_PRIORITY.has(priority)) throw httpError(400, `ชั้นความเร็ว "${priority}" ไม่ถูกต้อง`);
   if (secretLevel && !VALID_SECRET.has(secretLevel)) throw httpError(400, `ชั้นความลับ "${secretLevel}" ไม่ถูกต้อง`);
   if (retentionClass && !(retentionClass in RETENTION_YEARS)) throw httpError(400, `อายุการเก็บ "${retentionClass}" ไม่ถูกต้อง`);
+  fromName = typeof fromName === 'string' ? fromName.trim() : fromName;
+  actionNote = typeof actionNote === 'string' ? actionNote.trim() : actionNote;
   for (const [field, label] of [['title', 'ชื่อเรื่อง'], ['subject', 'สาระสำคัญ'], ['correspondentName', 'ชื่อหน่วยงาน'],
-    ['externalDocNumber', 'เลขที่หนังสือต้นทาง'], ['customDocNumber', 'เลขที่กำหนดเอง']]) {
-    assertLength({ title, subject, correspondentName, externalDocNumber, customDocNumber }[field], field, label);
+    ['externalDocNumber', 'เลขที่หนังสือต้นทาง'], ['customDocNumber', 'เลขที่กำหนดเอง'],
+    ['fromName', 'จาก (เจ้าของเรื่อง)'], ['actionNote', 'การปฏิบัติ']]) {
+    assertLength({ title, subject, correspondentName, externalDocNumber, customDocNumber, fromName, actionNote }[field], field, label);
   }
   return {
     direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName,
+    fromName: fromName || null, actionNote: actionNote || null,
     externalDocNumber, customDocNumber, createdBy,
     // เป็นหนังสือเวียนได้เฉพาะหนังสือส่ง — หนังสือรับไม่มีทะเบียนเวียน (เราไม่ได้เป็นผู้ออกเลข)
     isCircular: direction === 'outgoing' && Boolean(isCircular),
@@ -153,7 +157,7 @@ function normalizeDocumentInput({ direction, title, subject, docTypeId, departme
 }
 
 // ต้องเรียกอยู่ภายใน transaction ของผู้เรียกเสมอ — การอ่าน+บวกตัวนับเลขรับกับการ INSERT ต้องอยู่ก้อนเดียวกัน
-function insertDocumentRow({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, externalDocNumber, externalDocDate, receivedDate, dueDate, retentionClass, customDocNumber, isCircular, createdBy }) {
+function insertDocumentRow({ direction, title, subject, docTypeId, departmentId, priority, secretLevel, correspondentName, fromName, actionNote, externalDocNumber, externalDocDate, receivedDate, dueDate, retentionClass, customDocNumber, isCircular, createdBy }) {
   // หนังสือเวียนมีเล่มทะเบียนของตัวเองตามระเบียบงานสารบรรณ และมีได้เฉพาะหนังสือส่ง
   const circular = direction === 'outgoing' && Boolean(isCircular);
   const { runningNumber, yearBe, display: autoDisplay } = nextRunningNumber({ direction, isCircular: circular });
@@ -169,10 +173,11 @@ function insertDocumentRow({ direction, title, subject, docTypeId, departmentId,
   const retentionUntil = computeRetentionUntil(yearBe, retClass);
   db.prepare(`
     INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, is_circular, external_doc_number, external_doc_date, received_date, title, subject,
-      doc_type_id, department_id, priority, secret_level, correspondent_name, status, due_date, retention_class, retention_until, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?)
+      doc_type_id, department_id, priority, secret_level, correspondent_name, from_name, action_note, status, due_date, retention_class, retention_until, created_by, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?, ?, ?, ?, ?)
   `).run(id, direction, runningNumber, yearBe, display, circular ? 1 : 0, externalDocNumber || null, externalDocDate || null, receivedDate || null, title, subject || null,
-    docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, dueDate || null, retClass, retentionUntil, createdBy, now, now);
+    docTypeId, departmentId, priority || 'normal', secretLevel || 'normal', correspondentName || null, fromName || null, actionNote || null,
+    dueDate || null, retClass, retentionUntil, createdBy, now, now);
   return { id, docNumberDisplay: display, duplicateDocNumberWarning };
 }
 

@@ -12,6 +12,8 @@ const ENV_FALLBACK = {
   school_short_name: 'SCHOOL_SHORT_NAME',
   school_initials: 'SCHOOL_INITIALS',
   outgoing_number_prefix: 'OUTGOING_NUMBER_PREFIX',
+  outgoing_number_start: 'OUTGOING_NUMBER_START',
+  outgoing_number_start_year: 'OUTGOING_NUMBER_START_YEAR',
 };
 
 // ค่าเริ่มต้นของระบบ — ใช้เมื่อยังไม่มีใครตั้งค่าและไม่ได้ตั้ง env var ไว้
@@ -41,15 +43,44 @@ const DEFAULTS = {
   // และการเดาผิดแย่กว่าการไม่ใส่ เพราะเลขที่ผิดจะไปอยู่บนหนังสือราชการที่ส่งออกไปข้างนอกจริง
   // ตราบใดที่ยังว่าง ระบบออกเลขแบบเดิม (0045/2569) ซึ่งใช้งานได้และไม่ผิดอะไรในทะเบียนภายใน
   outgoing_number_prefix: '',
+  // เลขทะเบียนหนังสือส่งล่าสุดที่ "ออกไปแล้วก่อนมาใช้ระบบนี้" และปี พ.ศ. ของเล่มที่เลขนั้นอยู่
+  //
+  // ทำไมต้องมี: ระบบนับเลขต่อจากเลขสูงสุดที่มีอยู่ในฐานข้อมูล แต่โรงเรียนที่ย้ายมาจากสมุดกระดาษ
+  // ออกเลขไปแล้วเป็นร้อยฉบับโดยที่ระบบไม่เคยเห็น ฉบับถัดไปจึงต้องเดินต่อจากเล่มกระดาษ ไม่ใช่เริ่มที่ 1
+  // ซึ่งจะออกเลขทับของที่ส่งออกไปข้างนอกจริงแล้ว — และเลขที่ออกไปแล้วแก้ย้อนหลังไม่ได้
+  //
+  // ผูกกับปีด้วยเสมอ เพราะทะเบียนหนังสือส่งเริ่มนับ 1 ใหม่ทุกวันที่ 1 มกราคม ถ้าเก็บแค่ตัวเลข
+  // พอขึ้นปีใหม่ค่านี้จะกลายเป็นพื้นค้างที่ดันเลขของเล่มใหม่ให้เริ่มที่ 206 แทนที่จะเป็น 1 ตลอดไป
+  //
+  // ค่าตั้งต้นว่างโดยตั้งใจ เหมือน outgoing_number_prefix — เลขของแต่ละโรงเรียนเดาแทนไม่ได้
+  // ⚠️ บนโฮสต์ที่ดิสก์ถูกล้างทุกครั้งที่ deploy (Render free tier) ต้องตั้ง env var
+  // OUTGOING_NUMBER_START / OUTGOING_NUMBER_START_YEAR ด้วย ไม่ใช่ตั้งแค่ในหน้าเว็บ ไม่งั้น deploy
+  // รอบถัดไปทะเบียนจะย้อนไปเริ่มที่ 1 เงียบๆ แล้วหนังสือที่ส่งออกไปจริงจะมีเลขซ้ำกับของเก่า
+  outgoing_number_start: '',
+  outgoing_number_start_year: '',
 };
 
 export const MAX_SETTING_LENGTH = {
   school_name: 200, school_short_name: 100, school_initials: 8, outgoing_number_prefix: 40,
   daily_reminder_time: 5, daily_reminder_enabled: 3,
+  outgoing_number_start: 7, outgoing_number_start_year: 4,
 };
 
 /** รหัสหนังสือที่นำหน้าเลขทะเบียนส่ง — ค่าว่างแปลว่ายังไม่ได้ตั้ง ให้ออกเลขแบบเดิม */
 export function outgoingNumberPrefix() { return getSetting('outgoing_number_prefix'); }
+
+/**
+ * เลขพื้นของทะเบียนหนังสือส่งสำหรับปี พ.ศ. ที่ถาม — 0 แปลว่าไม่มีพื้น ให้นับตามปกติ
+ *
+ * คืนค่าเฉพาะเมื่อปีตรงกับปีที่ตั้งไว้ ปีถัดไปค่านี้หมดอายุเอง ทะเบียนเล่มใหม่จึงเริ่มที่ 1 ตามระเบียบ
+ * โดยไม่ต้องมีใครกลับมาล้างค่าทิ้ง (ซึ่งถ้าลืมก็จะไม่มีใครรู้จนกว่าจะออกเลขผิดไปแล้ว)
+ */
+export function outgoingNumberFloor(yearBe) {
+  const year = Number.parseInt(getSetting('outgoing_number_start_year'), 10);
+  const start = Number.parseInt(getSetting('outgoing_number_start'), 10);
+  if (!Number.isSafeInteger(year) || !Number.isSafeInteger(start) || start <= 0) return 0;
+  return year === Number(yearBe) ? start : 0;
+}
 
 // อ่านค่าทุกครั้งที่ render หน้าเว็บ = อ่านฐานข้อมูลหลายสิบครั้งต่อการเปิดหน้าเดียว (ชื่อโรงเรียนถูกใช้
 // ในหัวเอกสาร ตราประทับ แถบข้าง และหน้าพิมพ์) จึงแคชไว้ในหน่วยความจำแล้วล้างทิ้งตอนมีการแก้ค่า
@@ -75,6 +106,13 @@ export function setSetting({ key, value, actorUser }) {
   const clean = asText(value);
   const max = MAX_SETTING_LENGTH[key];
   if (max && clean.length > max) throw httpError(400, `ค่านี้ยาวเกิน ${max} ตัวอักษร`);
+  // สองค่านี้ไปเป็น "เลขพื้น" ของทะเบียนหนังสือส่งโดยตรง ถ้าปล่อยข้อความที่ไม่ใช่ตัวเลขผ่านเข้าไป
+  // Number.parseInt จะอ่านได้บางส่วน ("205ก" → 205) หรือได้ NaN แล้วพื้นหายไปเงียบๆ ทั้งสองทาง
+  // ลงเอยที่เลขบนหนังสือราชการผิดโดยไม่มีใครรู้ จึงปฏิเสธตรงนี้ให้เห็นทันทีตอนกรอก
+  if ((key === 'outgoing_number_start' || key === 'outgoing_number_start_year') && clean) {
+    if (!/^\d+$/.test(clean)) throw httpError(400, 'ค่านี้ต้องเป็นตัวเลขเท่านั้น');
+    if (Number(clean) <= 0) throw httpError(400, 'ค่านี้ต้องมากกว่า 0');
+  }
   db.prepare(`
     INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at

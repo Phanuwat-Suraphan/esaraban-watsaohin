@@ -6301,6 +6301,24 @@ describe('ขอเลขหนังสือส่ง', () => {
     assert.match(forReg.body, /\+ สร้างหนังสือส่ง/, 'ธุรการยังสร้างหนังสือส่งเองได้ตามเดิม');
   });
 
+  // ตารางประวัติเคยใช้ .table-plain ซึ่งเป็นตารางคู่ "ป้ายกำกับ/ค่า" — ช่องแรกของมันถูกบังคับ
+  // width:1% + white-space:nowrap ไว้สำหรับป้ายสั้นๆ พอเอาชื่อเรื่องยาวๆ ไปใส่ มันกินความกว้างทั้งแถว
+  // โดยไม่ยอมตัดบรรทัด แล้วช่องเลขที่ข้างๆ ถูกบีบจนเหลือกว้างหนึ่งตัวอักษร (เพราะ .table-plain .badge
+  // ตั้ง overflow-wrap:anywhere ไว้) เลขทะเบียนเลยพิมพ์ลงมาแนวตั้งทีละตัวและแถวสูงห้าร้อยพิกเซล
+  test('ตารางประวัติต้องเป็นตารางข้อมูลจริง ไม่ใช่ตารางป้ายกำกับ/ค่า', async () => {
+    const res = await ask(teacher());
+    await dispatchPost(registrar(), `/outgoing-requests/${res.json.id}/issue`, { pin: userPin('reg001') });
+    const page = await dispatchGet(registrar(), '/outgoing-requests', {});
+    assert.equal(page.status, 200);
+    const history = page.body.slice(page.body.indexOf('ออกเลข/ตรวจไปแล้วล่าสุด'));
+    assert.ok(!/table-plain/.test(history), 'ตารางประวัติต้องไม่ใช้ .table-plain');
+    assert.match(history, /table-wrap table-cards/, 'ต้องใช้ตารางข้อมูลที่คลี่เป็นการ์ดบนมือถือได้');
+    assert.match(history, /<thead>/, 'ตารางข้อมูลต้องมีหัวคอลัมน์ (โปรแกรมอ่านหน้าจอใช้ และการ์ดมือถือเอาไปทำป้ายกำกับ)');
+    // เลขทะเบียนต้องไม่ถูกตัดกลางเลขไม่ว่าช่องจะแคบแค่ไหน — "ศธ 04047.10 / 9/208" อ่านเป็นคนละเลข
+    assert.match(history, /id="outnum-[^"]+" style="white-space:nowrap"/,
+      'ป้ายเลขทะเบียนต้องห้ามตัดบรรทัด');
+  });
+
   test('หน้าคำขอของธุรการเปิดได้ และครูที่กดเข้ามาต้องถูกพาไปหน้าของตัวเอง', async () => {
     await ask(teacher());
     const reg = await dispatchGet(registrar(), '/outgoing-requests', {});

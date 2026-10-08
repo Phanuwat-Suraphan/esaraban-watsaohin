@@ -417,17 +417,30 @@ router.get('/outgoing-requests', requirePage((ctx) => {
 
     ${reviewed.length ? `
       <h3 style="margin-top:1.5rem">ออกเลข/ตรวจไปแล้วล่าสุด</h3>
-      <div class="card"><table class="table-plain">
-        ${reviewed.map((r) => `<tr id="outreq-row-${esc(r.id)}">
-          <td>${r.doc_id && !r.doc_deleted_at ? rowLink(`/documents/${r.doc_id}`, esc(r.doc_title || r.title)) : esc(r.doc_title || r.title)}
+      ${/* ตารางข้อมูลจริงที่มีหัวคอลัมน์ ห้ามใช้ .table-plain ตรงนี้: .table-plain เป็นตารางคู่
+           "ป้ายกำกับ/ค่า" ช่องแรกของมันถูกบังคับ width:1% + white-space:nowrap ไว้สำหรับป้ายสั้นๆ
+           พอเอาชื่อเรื่องยาวๆ ไปใส่ช่องแรก มันกินความกว้างทั้งแถวโดยไม่ยอมตัดบรรทัด แล้วช่องเลขที่
+           ข้างๆ ถูกบีบจนเหลือกว้างหนึ่งตัวอักษร (เพราะ .table-plain .badge ตั้ง overflow-wrap:anywhere)
+           เลขทะเบียนเลยพิมพ์ลงมาแนวตั้งทีละตัวและแถวสูงห้าร้อยพิกเซล — เจอจากภาพหน้าจอของจริง */ ''}
+      <div class="table-wrap table-cards"><table>
+        <thead><tr><th>เรื่อง</th><th>เลขที่ / ลงวันที่</th><th>ตรวจเมื่อ</th><th></th></tr></thead>
+        <tbody>${reviewed.map((r) => `<tr id="outreq-row-${esc(r.id)}">
+          <!-- เนื้อในแต่ละช่องต้องห่อเป็นก้อนเดียว เพราะบนมือถือ .table-cards ทำให้ td เป็น flex
+               ข้อความกับ <div> ที่อยู่ข้างกันจะกลายเป็นสองชิ้นของ flex แล้วไปเรียง "ข้างกัน" แทนที่จะ
+               ซ้อนลงมา (ชื่อเรื่องไปอยู่ซ้าย ชื่อผู้ขอไปอยู่ขวา) และดันการ์ดจนล้นออกนอกจอ -->
+          <td class="wrap cell-head"><div>
+            ${r.doc_id && !r.doc_deleted_at ? rowLink(`/documents/${r.doc_id}`, esc(r.doc_title || r.title)) : esc(r.doc_title || r.title)}
             ${r.doc_deleted_at ? '<span class="badge badge-muted">หนังสือถูกลบแล้ว</span>' : ''}
-            <div class="text-muted" style="font-size:.78rem">${esc(fullName(r))}${r.doc_to ? ` → ${esc(r.doc_to)}` : ''}</div></td>
-          <td>${r.status === 'issued'
-    ? `<span class="badge badge-success" id="outnum-${esc(r.id)}">ออกเลข ${esc(r.doc_number_display || '')}</span>
+            <div class="text-muted" style="font-size:.78rem">${esc(fullName(r))}${r.doc_to ? ` → ${esc(r.doc_to)}` : ''}</div>
+          </div></td>
+          <td data-label="เลขที่"><div>${r.status === 'issued'
+    // เลขทะเบียนต้องไม่ถูกตัดกลางเลขไม่ว่าช่องจะแคบแค่ไหน — "ศธ 04047.10 / 9/208" อ่านเป็นคนละเลข
+    // ส่วน "ลงวันที่" ปล่อยให้ตัดบรรทัดได้ตามปกติ ไม่งั้นการ์ดบนมือถือล้นออกนอกจอ
+    ? `<span class="badge badge-success" id="outnum-${esc(r.id)}" style="white-space:nowrap">ออกเลข ${esc(r.doc_number_display || '')}</span>
                  ${r.doc_date ? `<div class="text-muted" style="font-size:.78rem">ลงวันที่ ${esc(fmtThaiDateShort(r.doc_date))}</div>` : ''}`
-    : `<span class="badge badge-muted">ไม่ออกให้</span>${r.reject_reason ? ` <span class="text-muted" style="font-size:.82rem">${esc(r.reject_reason)}</span>` : ''}`}</td>
-          <td class="text-muted" style="font-size:.82rem;white-space:nowrap">${esc(fmtDate(r.reviewed_at))}${r.reviewer_first ? ` โดย ${esc(r.reviewer_first)} ${esc(r.reviewer_last)}` : ''}</td>
-          <td style="white-space:nowrap">
+    : `<span class="badge badge-muted">ไม่ออกให้</span>${r.reject_reason ? ` <span class="text-muted" style="font-size:.82rem">${esc(r.reject_reason)}</span>` : ''}`}</div></td>
+          <td data-label="ตรวจเมื่อ" class="text-muted" style="font-size:.82rem"><div>${esc(fmtDate(r.reviewed_at))}${r.reviewer_first ? `<div>โดย ${esc(r.reviewer_first)} ${esc(r.reviewer_last)}</div>` : ''}</div></td>
+          <td class="cell-sub" style="white-space:nowrap">
             <!-- ค่าเดิมส่งผ่าน data- ไม่ใช่แปะเป็นสตริงกลาง onclick — เลขทะเบียนและชื่อเรื่องมีทั้ง
                  เครื่องหมายคำพูดและอักขระอื่นได้ ซึ่งทำให้ทั้ง attribute แตกแล้วสคริปต์ของหน้าตายทั้งก้อน -->
             ${r.status === 'issued' && r.doc_id && !r.doc_deleted_at
@@ -439,7 +452,7 @@ router.get('/outgoing-requests', requirePage((ctx) => {
             <button class="btn btn-outline btn-sm" type="button"
               onclick="deleteOutReq('${esc(r.id)}', ${r.status === 'issued' ? 'true' : 'false'}, this)">🗑️ ลบ</button>
           </td>
-        </tr>`).join('')}
+        </tr>`).join('')}</tbody>
       </table></div>
       <p class="text-muted" style="font-size:.8rem;margin-top:.4rem">
         ✏️ "แก้" แก้ที่ตัวหนังสือจริง ทะเบียน/ตราประทับ/หน้าพิมพ์จะเปลี่ยนตามทั้งหมด แจ้งผู้ขอให้อัตโนมัติ

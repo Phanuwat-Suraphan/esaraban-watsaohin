@@ -19,6 +19,7 @@ import {
   getSetting, setSetting, MAX_SETTING_LENGTH, missingOutgoingNumberEnv,
 } from '../services/settings.js';
 import { httpError, asText } from '../services/validate.js';
+import { auditRegister } from '../services/registerAudit.js';
 // ร่างหนังสือแนบใหม่ไม่ได้แล้ว (ดู submitOutgoingRequest) แต่เส้นทางเปิด/ดาวน์โหลดยังอยู่ เพราะคำขอ
 // ที่ยื่นไว้ก่อนหน้านี้อาจมีร่างค้างอยู่ — ถ้าตัดทิ้งพร้อมกัน ไฟล์พวกนั้นจะเข้าถึงไม่ได้โดยไม่มีใครรู้
 import { VIEWABLE_MIME, fallbackFilename } from '../services/attachments.js';
@@ -205,6 +206,41 @@ router.get('/outgoing-requests/mine', requirePage((ctx) => {
 }));
 
 // ---------------- หน้าธุรการ ----------------
+
+/**
+ * เตือนว่าเล่มทะเบียนหนังสือส่งปีนี้มีจุดที่ต้องอธิบาย
+ *
+ * เครื่องมือตรวจเล่มมีอยู่แล้ว แต่ซ่อนอยู่หลังปุ่มเล็กๆ ในหน้ารายการหนังสือ ซึ่งแปลว่าไม่มีใครกด
+ * จนกว่าจะมีคนมาถามแล้วตอบไม่ได้ — ของจริงที่โรงเรียนคือมีเลขซ้ำอยู่ในเล่มหลายวันโดยไม่มีใครรู้
+ * กว่าจะเจอก็ตอนหนังสือออกไปแล้ว และต้องไล่หาต้นตอกันหลายรอบ
+ *
+ * เตือนที่หน้านี้เพราะเป็นหน้าที่ธุรการเปิดทุกครั้งที่ออกเลข (ไม่ใช่หน้ารายการหนังสือที่ทุกคนเปิด
+ * ทั้งวัน) จึงเห็นแน่ๆ โดยไม่ต้องไปสแกนทั้งเล่มทุกครั้งที่ใครสักคนเปิดหน้ารายการ
+ */
+function registerHealthAlert(user) {
+  let result;
+  try {
+    result = auditRegister({ user, direction: 'outgoing', year: beYear() });
+  } catch {
+    return ''; // ตรวจไม่ได้ก็ไม่ควรทำให้หน้าออกเลขทั้งหน้าเปิดไม่ขึ้น
+  }
+  if (result.complete || !result.total) return '';
+  const parts = [
+    result.mismatched.length ? `เลขข้างในไม่ตรงกับเลขที่แสดง ${result.mismatched.length} ฉบับ` : '',
+    result.duplicates.length ? `เลขซ้ำ ${result.duplicates.length} เลข` : '',
+    result.missing.length ? `เลขขาด ${result.missing.length} เลข` : '',
+  ].filter(Boolean);
+  return `
+    <div class="alert alert-warning">
+      ⚠️ <strong>เล่มทะเบียนหนังสือส่งปี ${beYear()} มีจุดที่ต้องอธิบาย</strong> — ${esc(parts.join(' · '))}
+      ${result.mismatched.length ? '<div style="margin-top:.3rem">เลขข้างในที่ไม่ตรงกันทำให้เลขถัดไปที่ระบบออกให้กระโดด และเล่มที่พิมพ์ออกมาเรียงผิดที่ — กดตรวจแล้วมีปุ่มให้ซ่อมอัตโนมัติ</div>' : ''}
+      <div class="chip-row" style="margin-top:.5rem">
+        <a class="btn btn-outline btn-sm" href="/documents/register-check?direction=outgoing&year=${beYear()}">🔎 ตรวจเล่มและแก้</a>
+      </div>
+    </div>`;
+}
+
+
 
 /**
  * ตั้งรูปแบบเลขทะเบียนหนังสือส่ง จากหน้าของธุรการเอง
@@ -404,6 +440,7 @@ router.get('/outgoing-requests', requirePage((ctx) => {
       และคุณแก้ได้ทุกช่องก่อนกด เมื่ออนุมัติ ระบบจะสร้างหนังสือส่งโดยมีครูผู้ขอเป็นผู้บันทึกเอกสาร
       และแจ้งเลขกลับไปให้เจ้าตัวทันทีทั้งในระบบและทางไลน์
     </p>
+    ${registerHealthAlert(ctx.user)}
     <!-- เล่มทะเบียนอยู่คนละหน้ากับที่ธุรการออกเลข และทางเข้าเดิมคือปุ่มเล็กๆ ที่ซ่อนอยู่ในตัวกรองของ
          หน้ารายการหนังสือ ซึ่งแทบไม่มีใครเจอ — คนที่เพิ่งออกเลขเสร็จคือคนที่อยากเปิดเล่มมากที่สุด -->
     <div class="chip-row" style="margin-bottom:1rem">

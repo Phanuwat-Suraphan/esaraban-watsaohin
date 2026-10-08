@@ -8778,6 +8778,83 @@ describe('ตรวจความครบถ้วนของทะเบี�
     assert.match(page.body, /ครบถ้วน/);
   });
 
+  // เลขที่แสดงกับเลขลำดับข้างในไม่ตรงกัน เป็นความผิดปกติคนละชนิดกับเลขขาด/เลขซ้ำ และต้องแยกออกมา
+  // ไม่งั้นมันไปโผล่เป็น "เลขขาดโดยไม่พบร่องรอย" ที่ตำแหน่งของเลขที่แสดง ซึ่งน่าตกใจและไม่ตรงความจริง
+  // — เลขนั้นมีหนังสืออยู่จริง แค่ระบบบันทึกเลขลำดับไว้ผิดช่อง
+  // เล่มของตัวเองแยกต่างหาก ไม่ปนกับเลข 1-5 ของเทสต์อื่นในชุดนี้ซึ่งเช็ค missing แบบเป๊ะๆ อยู่
+  const MIS_YEAR = beYear() + 52;
+  const putMis = (n) => {
+    const doc = makeDoc({ title: `หนังสือเลขข้างในไม่ตรง ลำดับ ${n}` });
+    db.prepare('UPDATE documents SET year_be = ?, running_number = ?, doc_number_display = ? WHERE id = ?')
+      .run(MIS_YEAR, n, `${String(n).padStart(4, '0')}/${MIS_YEAR}`, doc.id);
+    return doc;
+  };
+
+  test('เลขข้างในไม่ตรงกับเลขที่แสดง ต้องรายงานแยก ไม่ปนกับเลขขาด', async () => {
+    for (const n of [8, 9, 10]) putMis(n);
+    const doc = putMis(11);
+    // เลขที่แสดงถูกแก้เป็น 7 แต่เลขลำดับยังค้างที่ 11 (อาการของบั๊กรุ่นก่อน)
+    db.prepare('UPDATE documents SET doc_number_display = ? WHERE id = ?').run(`0007/${MIS_YEAR}`, doc.id);
+
+    const res = audit_({ user: reg(), direction: 'incoming', year: MIS_YEAR });
+    assert.equal(res.mismatched.length, 1, 'ต้องจับได้ว่ามีฉบับที่สองค่าไม่ตรงกัน');
+    assert.equal(res.mismatched[0].shown, 7);
+    assert.equal(res.mismatched[0].stored, 11);
+    assert.ok(!res.missing.some((m) => m.number === 7),
+      'เลข 7 มีหนังสือถืออยู่จริง ต้องไม่ถูกรายงานว่าขาด');
+    assert.equal(res.complete, false, 'เล่มที่มีจุดแบบนี้ต้องไม่ขึ้นว่าครบถ้วน');
+
+    const page = await dispatchGet(reg(), '/documents/register-check', { direction: 'incoming', year: String(MIS_YEAR) });
+    assert.match(page.body, /เลขข้างในไม่ตรงกับเลขที่แสดง/, 'หน้าตรวจต้องขึ้นการ์ดอธิบายให้เห็น');
+    assert.match(page.body, /ซ่อมให้ตรงกันทั้งเล่ม/, 'ต้องมีปุ่มซ่อมให้กดได้เลย');
+
+    // กดซ่อมแล้วต้องตรงกัน โดยเลขที่พิมพ์อยู่บนหนังสือไม่เปลี่ยน
+    const fix = await dispatchPost(reg(), '/documents/register-check/repair',
+      { direction: 'incoming', year: MIS_YEAR });
+    assert.equal(fix.status, 200, fix.body);
+    assert.ok(fix.json.repaired >= 1, 'ต้องบอกว่าซ่อมไปกี่ฉบับ');
+    const after = getDocRow(doc.id);
+    assert.equal(after.running_number, 7, 'เลขลำดับต้องตรงกับเลขที่แสดงแล้ว');
+    assert.equal(after.doc_number_display, `0007/${MIS_YEAR}`, 'เลขที่พิมพ์บนหนังสือต้องไม่เปลี่ยน');
+    assert.equal(audit_({ user: reg(), direction: 'incoming', year: MIS_YEAR }).mismatched.length, 0);
+  });
+
+  test('ครูกดซ่อมเล่มไม่ได้', async () => {
+    const res = await dispatchPost(loadUserForTest(seed.userIds.teacher001),
+      '/documents/register-check/repair', { direction: 'incoming', year: MIS_YEAR });
+    assert.equal(res.status, 403, res.body);
+  });
+
+  // โรงเรียนที่ย้ายมาจากสมุดกระดาษกลางปีตั้ง "เลขล่าสุดที่ออกไปแล้ว" ไว้ เลขก่อนหน้านั้นอยู่ในเล่ม
+  // กระดาษ ไม่เคยผ่านระบบนี้ — ถ้านับเป็นเลขขาด ธุรการกดตรวจครั้งแรกจะเจอ "ขาด 205 เลข ไม่พบร่องรอย"
+  // ซึ่งน่าตกใจ ไม่จริง และทำให้เลิกใช้เครื่องมือนี้ไปเลย (วัดแล้วว่าเกิดขึ้นจริงกับเล่มของโรงเรียน)
+  test('เลขก่อนจุดที่ตั้งให้เริ่มนับ ต้องไม่ถูกนับเป็นเลขขาด', async () => {
+    const settings = await import('../src/services/settings.js');
+    const OUT_YEAR = beYear();
+    const set = (k, v) => settings.setSetting({ key: k, value: v, actorUser: adminUser });
+    const before = audit_({ user: reg(), direction: 'outgoing', year: OUT_YEAR });
+    assert.equal(before.startsAt, 1, 'ยังไม่ตั้งค่า เล่มก็เริ่มนับที่ 1 ตามเดิม');
+
+    set('outgoing_number_start', '205');
+    set('outgoing_number_start_year', String(OUT_YEAR));
+    try {
+      const res = audit_({ user: reg(), direction: 'outgoing', year: OUT_YEAR });
+      assert.equal(res.startsAt, 206, 'เล่มต้องเริ่มนับที่เลขถัดจากที่ตั้งไว้');
+      assert.ok(!res.missing.some((m) => m.number <= 205),
+        `เลข 1-205 อยู่ในเล่มกระดาษ ต้องไม่ถูกรายงานว่าขาด — ได้ ${res.missing.slice(0, 3).map((m) => m.number).join(', ')}`);
+
+      // หน้าเว็บต้องบอกด้วยว่าทำไมถึงไม่ไล่ตั้งแต่เลข 1 ไม่งั้นธุรการจะสงสัยว่าระบบตรวจไม่ครบ
+      const page = await dispatchGet(reg(), '/documents/register-check',
+        { direction: 'outgoing', year: String(OUT_YEAR) });
+      assert.equal(page.status, 200);
+      assert.match(page.body, /เล่มนี้ตั้งให้เริ่มนับที่ 206/,
+        'หัวหน้าตรวจต้องบอกว่าเล่มนี้เริ่มนับที่เลขไหน และเลขก่อนหน้านั้นอยู่ที่ไหน');
+    } finally {
+      set('outgoing_number_start', '');
+      set('outgoing_number_start_year', '');
+    }
+  });
+
   // ความต่างที่สำคัญที่สุดของหน้านี้: เลขที่ "ยกเลิก" ยังอยู่ในเล่มตามระเบียบ ไม่ใช่เลขขาด
   test('เลขที่ยกเลิกแล้วไม่นับเป็นเลขขาด เพราะเลขยังคงอยู่ในลำดับตามระเบียบ', () => {
     const doc = put(4);

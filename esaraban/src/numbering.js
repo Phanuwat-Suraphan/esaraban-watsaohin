@@ -133,12 +133,14 @@ export function runningNumberFromDisplay(display) {
  *
  * เรียกตอนธุรการกดบันทึกรูปแบบเลข เพราะนั่นคือจังหวะที่เขากำลังจัดการเรื่องเลขของเล่มอยู่พอดี
  * และเป็นจังหวะเดียวกับที่ด่านดึงเลขกลับจะอ่านค่าสูงสุด — ซ่อมก่อนอ่านจึงได้ค่าที่ตรงความจริง
+ * และเรียกจากหน้าตรวจความครบถ้วนได้ทั้งสองเล่ม เพราะเล่มรับก็เจอปัญหาเดียวกันได้ (เส้นทางแก้เลข
+ * ทะเบียนที่หน้าหนังสือใช้ร่วมกันทั้งหนังสือรับและหนังสือส่ง)
  *
  * แถวที่อ่านเลขจากเลขที่แสดงไม่ได้ (เช่น "ศธ 04047.109/พิเศษ") ถูกข้ามไป ไม่ไปแตะของเดิม
  */
-export function repairOutgoingRunningNumbers(year = beYear()) {
+export function repairRunningNumbers({ direction = 'outgoing', year = beYear() } = {}) {
   const rows = db.prepare(`SELECT id, doc_number_display, running_number FROM documents
-    WHERE year_be = ? AND direction = 'outgoing' AND deleted_at IS NULL`).all(year);
+    WHERE year_be = ? AND direction = ? AND deleted_at IS NULL`).all(year, direction);
   const fixed = [];
   for (const r of rows) {
     const n = runningNumberFromDisplay(r.doc_number_display);
@@ -148,6 +150,9 @@ export function repairOutgoingRunningNumbers(year = beYear()) {
   }
   return fixed;
 }
+
+/** ทางลัดของเล่มหนังสือส่ง — ที่เรียกใช้ตอนธุรการกดบันทึกรูปแบบเลข */
+export const repairOutgoingRunningNumbers = (year = beYear()) => repairRunningNumbers({ direction: 'outgoing', year });
 
 /**
  * ตำแหน่งปัจจุบันของทะเบียนหนังสือส่งทั่วไป โดย "ยังไม่คิดเลขพื้น" — ฉบับถัดไปคือค่านี้ + 1

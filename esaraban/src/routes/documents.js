@@ -14,7 +14,7 @@ import {
 } from '../services/workflow.js';
 import { renderPdfFirstPageImage } from '../services/pdfPreview.js';
 import { canIssueOutgoingNumber } from '../services/outgoingRequest.js';
-import { previewNextNumber, runningNumberFromDisplay } from '../numbering.js';
+import { previewNextNumber, runningNumberFromDisplay, repairRunningNumbers } from '../numbering.js';
 import { isGoogleDriveEnabled, ensureCategoryFolder, uploadFile, downloadFileStream, deleteFile } from '../services/googleDrive.js';
 import { activeDriveId, activeDriveToken, driveTokenFor, BOOTSTRAP_DRIVE_ID } from '../services/driveAccounts.js';
 import {
@@ -1277,7 +1277,10 @@ router.get('/documents/register-check', requirePage((ctx) => {
       <div>
         <h2 class="mt-0">🔎 ตรวจความครบถ้วนของทะเบียน</h2>
         <p class="text-muted" style="margin:-.3rem 0 0;font-size:.85rem">
-          ใช้ตอนตรวจสอบภายใน ปิดเล่มสิ้นปี หรือส่งมอบงานสารบรรณ — ระบบไล่เลขให้ว่าครบ 1 ถึง ${fmtCount(result.highest)} หรือไม่
+          ใช้ตอนตรวจสอบภายใน ปิดเล่มสิ้นปี หรือส่งมอบงานสารบรรณ —
+          ระบบไล่เลขให้ว่าครบ ${fmtCount(result.startsAt)} ถึง ${fmtCount(result.highest)} หรือไม่${
+  // เล่มที่ย้ายมาจากสมุดกระดาษกลางปีไม่ได้เริ่มที่ 1 — ต้องบอกให้เห็นว่าทำไมถึงไม่ไล่ตั้งแต่เลข 1
+  result.startsAt > 1 ? ` (เล่มนี้ตั้งให้เริ่มนับที่ ${fmtCount(result.startsAt)} เลขก่อนหน้านั้นอยู่ในเล่มกระดาษ)` : ''}
         </p>
       </div>
       <a class="btn btn-outline btn-sm" href="/documents?direction=${esc(direction)}&year=${result.year}">← กลับทะเบียน</a>
@@ -1302,13 +1305,16 @@ router.get('/documents/register-check', requirePage((ctx) => {
 
     <div class="card">
       ${result.complete ? `<div class="alert alert-success" style="margin:0">
-        ✅ <strong>${esc(kindLabel)} ปี ${result.year} ครบถ้วน</strong> — เลข 1 ถึง ${fmtCount(result.highest)}
-        รวม ${fmtCount(result.total)} ฉบับ ไม่มีเลขขาดและไม่มีเลขซ้ำ
+        ✅ <strong>${esc(kindLabel)} ปี ${result.year} ครบถ้วน</strong> —
+        เลข ${fmtCount(result.startsAt)} ถึง ${fmtCount(result.highest)}
+        รวม ${fmtCount(result.total)} ฉบับ ไม่มีเลขขาด ไม่มีเลขซ้ำ และเลขข้างในตรงกับเลขที่แสดงทุกฉบับ
       </div>` : `<div class="alert alert-warning" style="margin:0">
         ⚠️ <strong>${esc(kindLabel)} ปี ${result.year} มีจุดที่ต้องอธิบาย</strong> —
-        ${result.missing.length ? `เลขขาด ${fmtCount(result.missing.length)} เลข` : ''}
-        ${result.missing.length && result.duplicates.length ? ' · ' : ''}
-        ${result.duplicates.length ? `เลขซ้ำ ${fmtCount(result.duplicates.length)} เลข` : ''}
+        ${[
+    result.missing.length ? `เลขขาด ${fmtCount(result.missing.length)} เลข` : '',
+    result.duplicates.length ? `เลขซ้ำ ${fmtCount(result.duplicates.length)} เลข` : '',
+    result.mismatched.length ? `เลขข้างในไม่ตรงกับเลขที่แสดง ${fmtCount(result.mismatched.length)} ฉบับ` : '',
+  ].filter(Boolean).join(' · ')}
       </div>`}
       <div class="kpi-grid" style="margin-top:1rem">
         <div class="kpi-card"><div class="kpi-icon kpi-icon-primary">📚</div>
@@ -1317,10 +1323,45 @@ router.get('/documents/register-check', requirePage((ctx) => {
           <div><div class="kpi-value">${fmtCount(result.missing.length)}</div><div class="kpi-label">เลขขาด</div></div></div>
         <div class="kpi-card"><div class="kpi-icon kpi-icon-${result.duplicates.length ? 'warning' : 'success'}">👯</div>
           <div><div class="kpi-value">${fmtCount(result.duplicates.length)}</div><div class="kpi-label">เลขซ้ำ</div></div></div>
+        <div class="kpi-card"><div class="kpi-icon kpi-icon-${result.mismatched.length ? 'danger' : 'success'}">🔗</div>
+          <div><div class="kpi-value">${fmtCount(result.mismatched.length)}</div><div class="kpi-label">เลขข้างในไม่ตรงกับที่แสดง</div></div></div>
         <div class="kpi-card"><div class="kpi-icon kpi-icon-secret">🚫</div>
           <div><div class="kpi-value">${fmtCount(result.voided.length)}</div><div class="kpi-label">ยกเลิก (เลขยังอยู่ในเล่ม)</div></div></div>
       </div>
     </div>
+
+    ${result.mismatched.length ? `<div class="card">
+      <h3 class="mt-0">🔗 เลขข้างในไม่ตรงกับเลขที่แสดง (${fmtCount(result.mismatched.length)})</h3>
+      <p class="text-muted" style="margin-top:-.4rem;font-size:.85rem">
+        หนังสือแต่ละฉบับมีเลขสองตัวที่ต้องตรงกัน คือ<strong>เลขที่แสดง</strong>ซึ่งพิมพ์ลงบนหนังสือจริง
+        กับ<strong>เลขลำดับในเล่ม</strong>ซึ่งเป็นตัวที่ระบบใช้ออกเลขถัดไปและเรียงเล่มทะเบียน
+        — ฉบับข้างล่างนี้สองค่าไม่ตรงกัน (มาจากการแก้เลขในระบบรุ่นก่อนที่ยังไม่ซิงก์ให้)
+        <strong>ผลคือเลขถัดไปที่ระบบออกให้จะกระโดด และเล่มที่พิมพ์ออกมาเรียงผิดที่</strong>
+        กดปุ่มข้างล่างให้ระบบแก้เลขลำดับให้ตรงกับเลขที่แสดง — เลขบนหนังสือไม่เปลี่ยนสักฉบับ
+      </p>
+      ${result.mismatched.map((m) => `<div style="padding:.5rem 0;border-bottom:1px solid var(--border)">
+        ${rowLink(`/documents/${m.id}`, `<strong>${esc(m.docNumberDisplay)}</strong> ${esc(m.title)}`)}
+        <div class="text-muted" style="font-size:.82rem">เลขที่แสดง ${m.shown} · เลขลำดับข้างใน ${m.stored}</div>
+      </div>`).join('')}
+      <button class="btn btn-primary" type="button" style="margin-top:.7rem"
+        onclick="repairRegister(this)">🔧 ซ่อมให้ตรงกันทั้งเล่ม</button>
+      <script>
+        function repairRegister(btn) {
+          if (!confirm('ให้ระบบแก้เลขลำดับข้างในให้ตรงกับเลขที่แสดงทุกฉบับในเล่มนี้?\\n\\nเลขที่พิมพ์อยู่บนหนังสือจะไม่เปลี่ยนสักฉบับ')) return;
+          window.setBtnLoading(btn, 'กำลังซ่อม...');
+          fetch('/documents/register-check/repair', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ direction: ${JSON.stringify(direction)}, year: ${result.year} }),
+          }).then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+            .then(function(res){
+              if (!res.ok) throw new Error(res.d.error || 'ซ่อมไม่สำเร็จ');
+              toast('ซ่อมแล้ว ' + res.d.repaired + ' ฉบับ', 'success');
+              setTimeout(function(){ location.reload(); }, 1200);
+            })
+            .catch(function(e){ window.restoreBtn(btn); toast(e.message, 'danger'); });
+        }
+      </script>
+    </div>` : ''}
 
     ${result.missing.length ? `<div class="card">
       <h3 class="mt-0">🕳️ เลขที่ขาดไป (${fmtCount(result.missing.length)})</h3>
@@ -1355,6 +1396,30 @@ router.get('/documents/register-check', requirePage((ctx) => {
       </div>`).join('')}
     </div>` : ''}`;
   html(ctx, 200, layout({ user: ctx.user, title: 'ตรวจความครบถ้วนของทะเบียน', path: '/documents', content }));
+}));
+
+/**
+ * ซ่อมเลขลำดับในเล่มให้ตรงกับเลขที่แสดง
+ *
+ * ไม่ต้องใส่ PIN ต่างจากการออกเลข/แก้เลข เพราะไม่ได้เปลี่ยนเลขที่พิมพ์อยู่บนหนังสือสักฉบับ — มันแก้
+ * เฉพาะค่าภายในให้ตรงกับที่แสดงอยู่แล้ว ซึ่งเป็นการทำให้ข้อมูลสอดคล้องกันเอง ไม่ใช่การตัดสินใจใหม่
+ * สิทธิ์เท่ากับหน้าตรวจเล่ม (ธุรการ/ผู้ดูแล) และบันทึก audit ไว้ว่าแก้ฉบับไหนจากอะไรเป็นอะไร
+ */
+router.post('/documents/register-check/repair', requireApi((ctx) => {
+  if (!canRecordDispatch(ctx.user)) {
+    throw httpError(403, 'ซ่อมเล่มทะเบียนได้เฉพาะเจ้าหน้าที่ธุรการหรือผู้ดูแลระบบเท่านั้น');
+  }
+  const direction = ctx.body?.direction === 'outgoing' ? 'outgoing' : 'incoming';
+  const year = /^\d{4}$/.test(String(ctx.body?.year || '')) ? Number(ctx.body.year) : beYear();
+  const fixed = repairRunningNumbers({ direction, year });
+  if (fixed.length) {
+    audit({
+      userId: ctx.user.id, action: 'register_running_numbers_repaired', tableName: 'documents',
+      recordId: `${year}:${direction}`, detail: { count: fixed.length, fixed },
+      ip: ctx.ip,
+    });
+  }
+  json(ctx, 200, { ok: true, repaired: fixed.length });
 }));
 
 router.get('/documents/register', requirePage((ctx) => {

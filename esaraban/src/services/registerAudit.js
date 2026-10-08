@@ -12,6 +12,8 @@
 //   - เลขที่หายเพราะเอกสารถูกลบถาวร = ต้องอธิบายได้ว่าใครลบ เมื่อไร เพราะอะไร (ระบบเก็บ audit ไว้)
 import { db } from '../db.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
+import { runningNumberFromDisplay } from '../numbering.js';
+import { outgoingNumberFloor } from './settings.js';
 
 /**
  * ตรวจเล่มหนึ่งเล่ม (ทะเบียนรับหรือส่ง ของปี พ.ศ. หนึ่งปี)
@@ -46,13 +48,41 @@ export function auditRegister({ user, direction, year }) {
     ORDER BY d.running_number
   `).all({ direction, year });
 
+  /*
+   * เลขที่แสดงกับเลขลำดับข้างในไม่ตรงกัน — ความผิดปกติคนละชนิดกับ "เลขขาด" และ "เลขซ้ำ"
+   *
+   * เกิดจากการแก้เลขที่แสดงโดยไม่ได้แก้เลขลำดับตามไปด้วย (บั๊กที่แก้ไปแล้ว แต่แถวเก่ายังค้างอยู่)
+   * ถ้าไม่แยกออกมา มันจะไปโผล่เป็น "เลขขาดโดยไม่พบร่องรอย" ที่ตำแหน่งของเลขที่แสดง ซึ่งน่าตกใจ
+   * และไม่ตรงความจริง — เลขนั้นมีหนังสืออยู่จริง แค่ระบบบันทึกเลขลำดับไว้ผิดช่อง
+   */
+  const mismatched = live
+    .map((d) => ({ doc: d, shown: runningNumberFromDisplay(d.doc_number_display) }))
+    .filter(({ doc, shown }) => shown !== null && shown !== doc.running_number)
+    .map(({ doc, shown }) => ({
+      id: doc.id, title: doc.title, docNumberDisplay: doc.doc_number_display,
+      shown, stored: doc.running_number,
+    }));
+
+  // เลขที่ "มีหนังสือถืออยู่จริง" — นับทั้งเลขลำดับและเลขที่แสดง เพราะแถวที่สองค่าไม่ตรงกันถือไว้ทั้งคู่
   const used = new Set(live.map((d) => d.running_number).filter((n) => n > 0));
+  const claimed = new Set(used);
+  for (const m of mismatched) claimed.add(m.shown);
   const deletedByNumber = new Map(deleted.filter((d) => d.running_number > 0).map((d) => [d.running_number, d]));
-  const highest = Math.max(0, ...used, ...deletedByNumber.keys());
+  const highest = Math.max(0, ...claimed, ...deletedByNumber.keys());
+
+  /*
+   * เล่มไม่ได้เริ่มที่ 1 เสมอไป
+   *
+   * โรงเรียนที่ย้ายมาจากสมุดกระดาษกลางปีตั้ง "เลขล่าสุดที่ออกไปแล้ว" ไว้ (ดู outgoingNumberFloor)
+   * เลขก่อนหน้านั้นอยู่ในเล่มกระดาษ ไม่เคยผ่านระบบนี้ — ถ้านับเป็นเลขขาด ธุรการจะกดตรวจครั้งแรก
+   * แล้วเจอ "เลขขาด 205 เลข ไม่พบร่องรอย" ซึ่งน่าตกใจ ไม่เป็นความจริง และทำให้เลิกใช้เครื่องมือนี้ไปเลย
+   */
+  const floor = direction === 'outgoing' ? outgoingNumberFloor(year) : 0;
+  const startsAt = floor + 1;
 
   const missing = [];
-  for (let n = 1; n <= highest; n++) {
-    if (used.has(n)) continue;
+  for (let n = startsAt; n <= highest; n++) {
+    if (claimed.has(n)) continue;
     const gone = deletedByNumber.get(n);
     missing.push({
       number: n,
@@ -83,9 +113,11 @@ export function auditRegister({ user, direction, year }) {
     year,
     total: live.length,
     highest,
+    startsAt,
     missing,
     duplicates,
+    mismatched,
     voided,
-    complete: missing.length === 0 && duplicates.length === 0,
+    complete: missing.length === 0 && duplicates.length === 0 && mismatched.length === 0,
   };
 }

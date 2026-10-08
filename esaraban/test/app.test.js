@@ -6143,6 +6143,37 @@ describe('หนังสือเวียน (ว) ทะเบียนแย
     assert.match(page.body, /NEXT_CIRCULAR/, 'ต้องมีตัวอย่างเลขของเล่มเวียนให้สลับดูได้');
   });
 
+  // "จาก/ถึง" กับ "ลงวันที่" เป็นคอลัมน์หลักของเล่มทะเบียนตามระเบียบ และหน้าพิมพ์มีมาตลอด
+  // แต่หน้าจอที่ธุรการเปิดดูทุกวันไม่เคยแสดงเลย ต้องกดเข้าไปในฉบับถึงจะรู้ว่าส่งถึงใครและลงวันที่อะไร
+  test('หน้าทะเบียนต้องบอกได้ว่าหนังสือส่งถึงใคร และลงวันที่อะไร โดยไม่ต้องกดเข้าไปดู', async () => {
+    const req = await dispatchPost(teacher(), '/outgoing-requests', {
+      title: `หนังสือที่ต้องเห็นปลายทางในทะเบียน ${++n}`,
+      correspondentName: 'ผู้อำนวยการโรงเรียนบ้านหนองปลาไหล', departmentId: deptId,
+    });
+    const issued = await dispatchPost(registrar(), `/outgoing-requests/${req.json.id}/issue`,
+      { pin: userPin('reg001'), docDate: '2026-09-15' });
+    assert.equal(issued.status, 200, issued.body);
+
+    const page = await dispatchGet(registrar(), '/documents', { direction: 'outgoing' });
+    assert.equal(page.status, 200);
+    assert.match(page.body, /ถึง ผู้อำนวยการโรงเรียนบ้านหนองปลาไหล/,
+      'ทะเบียนหนังสือส่งต้องบอกปลายทางตั้งแต่ในรายการ');
+    assert.match(page.body, /ลงวันที่ 15 ก\.ย\. 2569/,
+      'ต้องบอกวันที่ที่พิมพ์อยู่บนหัวหนังสือ ไม่ใช่แค่วันที่กดบันทึกเข้าระบบ');
+  });
+
+  // เล่มรับใช้คำว่า "จาก" เพราะ correspondent ของหนังสือรับคือต้นทางที่ส่งมา ไม่ใช่ปลายทาง
+  test('ทะเบียนหนังสือรับต้องใช้คำว่า "จาก" ไม่ใช่ "ถึง"', async () => {
+    const made = makeDoc({
+      direction: 'incoming', title: `หนังสือรับที่ต้องเห็นต้นทาง ${++n}`,
+      correspondentName: 'สำนักงานเขตพื้นที่การศึกษาประถมศึกษาเชียงใหม่ เขต 9',
+    });
+    assert.ok(made.id);
+    const page = await dispatchGet(registrar(), '/documents', { direction: 'incoming' });
+    assert.match(page.body, /จาก สำนักงานเขตพื้นที่การศึกษาประถมศึกษาเชียงใหม่ เขต 9/,
+      'ทะเบียนหนังสือรับต้องบอกต้นทางด้วยคำว่า "จาก"');
+  });
+
   test('ทะเบียนหนังสือออกต้องติดป้ายบอกว่าฉบับไหนเป็นหนังสือเวียน', async () => {
     setPrefix('');
     const circ = getDocRow(make(true).id);

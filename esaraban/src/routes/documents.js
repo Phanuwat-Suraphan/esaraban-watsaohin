@@ -242,6 +242,11 @@ router.get('/documents', requirePage((ctx) => {
       ${direction === 'all' ? `<td data-label="ประเภท">${d.direction === 'incoming' ? '📥 เข้า' : '📤 ออก'}</td>` : ''}
       <td class="wrap cell-sub">${esc(d.title)}${d.secret_level !== 'normal' ? ' 🔒' : ''}${d.attachment_count
         ? ` <span class="clip-inline" title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? d.attachment_count : ''}</span>` : ''}
+        ${/* "จาก/ถึง" เป็นคอลัมน์หลักของเล่มทะเบียนตามระเบียบ และเป็นสิ่งที่ใช้ระบุหนังสือพอๆ กับชื่อเรื่อง
+             — หน้าพิมพ์มีมาตลอด แต่หน้าจอที่ธุรการเปิดดูทุกวันไม่เคยมีเลย ต้องกดเข้าไปในฉบับถึงจะเห็นว่า
+             หนังสือนี้ส่งถึงใคร วางเป็นบรรทัดรองใต้ชื่อเรื่อง ไม่ใช่คอลัมน์ใหม่ เพราะตารางมี 8 คอลัมน์แล้ว */ ''}
+        ${d.correspondent_name ? `<div class="text-muted" style="font-size:.78rem">${
+  d.direction === 'incoming' ? 'จาก' : 'ถึง'} ${esc(d.correspondent_name)}</div>` : ''}
         ${d.external_doc_number ? `<div class="text-muted" style="font-size:.78rem">ที่ ${esc(d.external_doc_number)}</div>` : ''}</td>
       <td class="clip-col" style="white-space:nowrap;text-align:center">${d.attachment_count
         ? `<span title="มีไฟล์แนบ ${d.attachment_count} ไฟล์">📎${d.attachment_count > 1 ? ` ${d.attachment_count}` : ''}</span>`
@@ -250,7 +255,14 @@ router.get('/documents', requirePage((ctx) => {
       <td data-label="ความเร็ว">${priorityBadge(d.priority)}</td>
       <td data-label="สถานะ">${statusBadge(d.status)}</td>
       <td data-label="ครบกำหนด">${d.due_date ? (n === null ? esc(fmtThaiDateShort(d.due_date)) : dueCell(d.due_date)) : '<span class="text-muted">—</span>'}</td>
-      <td data-label="ลงทะเบียน" class="text-muted">${fmtDate(d.created_at)}</td>
+      <!-- ช่องที่มีป้ายกำกับเป็น flex บนมือถือ (ป้าย + ค่า) ค่าจึงต้องเป็นก้อนเดียว ไม่งั้นวันที่ลงทะเบียน
+           กับวันที่บนหัวหนังสือจะไปเรียงข้างกันแทนที่จะซ้อนลงมา -->
+      <td data-label="ลงทะเบียน" class="text-muted"><div>${fmtDate(d.created_at)}${
+  /* หนังสือส่งมี "ลงวันที่" ของตัวเอง คือวันที่ที่พิมพ์อยู่บนหัวหนังสือจริง ซึ่งเป็นคนละวันกับวันที่
+     กดบันทึกเข้าระบบได้ (ออกเลขวันศุกร์ ลงวันที่ย้อนไปวันพฤหัส) และเป็นวันที่ที่ใช้อ้างอิงหนังสือ
+     ฉบับนั้นข้างนอก — เล่มที่พิมพ์มีช่องนี้ แต่หน้าจอไม่เคยแสดง */
+  d.direction === 'outgoing' && d.external_doc_date
+    ? `<div style="font-size:.78rem">ลงวันที่ ${esc(fmtThaiDateShort(d.external_doc_date))}</div>` : ''}</div></td>
     </tr>`;
   }).join('');
 

@@ -1212,8 +1212,12 @@ code { overflow-wrap: anywhere; }
     content: attr(data-label); flex: 0 0 8.5rem; color: var(--text-muted);
     font-size: .82rem; line-height: 1.5;
   }
-  /* ช่องเลขที่/เรื่อง เป็นหัวการ์ด ไม่ต้องมีป้ายกำกับ และตัวโตกว่าบรรทัดอื่น */
+  /* ช่องเลขที่/เรื่อง เป็นหัวการ์ด ไม่ต้องมีป้ายกำกับ และตัวโตกว่าบรรทัดอื่น
+     และต้องเป็น block ไม่ใช่ flex: ช่องพวกนี้มีหลายชิ้นอยู่ข้างใน (ชื่อเรื่อง + "ถึง ..." + "ที่ ...")
+     ถ้าเป็น flex แต่ละชิ้นจะไปเรียง "ข้างกัน" แทนที่จะซ้อนลงมา — ชื่อเรื่องไปอยู่ซ้าย ปลายทางไปอยู่ขวา
+     อ่านไม่ออกและดันการ์ดจนล้นจอ (ช่องที่มีป้ายกำกับยังต้องเป็น flex อยู่ เพราะป้ายกับค่าเรียงข้างกัน) */
   .table-cards td.cell-head::before, .table-cards td.cell-sub::before { content: none; }
+  .table-cards td.cell-head, .table-cards td.cell-sub { display: block; }
   .table-cards td.cell-head { font-size: 1.02rem; padding-right: 2.2rem; }
   .table-cards td.cell-sub { padding-bottom: .3rem; }
   /* ช่องติ๊กเลือกหลายฉบับ ลอยไปมุมขวาบนของการ์ด ไม่กินบรรทัดของตัวเอง */

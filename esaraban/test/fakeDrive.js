@@ -132,7 +132,10 @@ export function createFakeDrive({ idPrefix = 'fake', account } = {}) {
     fetch: fetchImpl,
     faults,
     /** ไฟล์สำเนาฐานข้อมูลทั้งหมดที่อยู่บน Drive จำลองตอนนี้ */
-    backupFiles: () => [...items.values()].filter((f) => f.name?.startsWith('esaraban-') && f.name.endsWith('.db')),
+    // นับทั้ง .db (สำเนาเก่าที่ยังไม่บีบอัด) และ .db.gz (ของใหม่) — ระบบจริงกรองด้วย "คำนำหน้า"
+    // ไม่ได้ดูนามสกุล ตัวจำลองจึงต้องยอมรับทั้งสองแบบเหมือนกัน ไม่งั้นเทสต์จะนับไฟล์ไม่เจอ
+    backupFiles: () => [...items.values()]
+      .filter((f) => f.name?.startsWith('esaraban-') && /\.db(\.gz)?$/.test(f.name)),
     folderNames: () => [...items.values()].filter((f) => f.mimeType === FOLDER_MIME).map((f) => f.name),
     size: () => items.size,
   };

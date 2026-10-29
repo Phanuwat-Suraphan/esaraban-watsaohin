@@ -3,10 +3,13 @@
 // ต้องแยกโปรเซส เพราะเทสต์ชุดหลักใช้ไฟล์ฐานข้อมูลร่วมกันทั้งชุดและเปิดค้างไว้ตลอด จะลบทิ้งกลางคัน
 // เพื่อจำลอง "ดิสก์ถูกล้าง" ไม่ได้ — และการแยกโปรเซสยังได้ทดสอบลำดับการบูตจริงไปด้วยในตัว
 //
-// รับชื่อสถานการณ์ทาง argv[2]: ok | download-fails | truncated | fallback | no-backup | guard | inspect | inspect-bad
+// รับชื่อสถานการณ์ทาง argv[2]:
+//   ok | download-fails | truncated | fallback | no-backup | guard | inspect | inspect-bad
+//   unchanged (ข้อมูลไม่เปลี่ยนต้องไม่อัปโหลดซ้ำ) | legacy (สำเนาเก่าแบบไม่บีบอัดต้องกู้คืนได้)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import { createFakeDrive } from './fakeDrive.js';
 
@@ -128,6 +131,19 @@ try {
 
   out.filesOnDrive = drive.backupFiles().length;
   out.folderNames = drive.folderNames();
+
+  // --- 2.6) สำเนาเก่าที่ "อัปโหลดไว้ก่อนจะเปลี่ยนมาบีบอัด" ต้องยังกู้คืนได้ ---
+  // บน Drive ของโรงเรียนตอนนี้มีสำเนาแบบไม่บีบอัด (.db) ค้างอยู่หลายร้อยไฟล์ ถ้าการกู้คืนดูแต่
+  // นามสกุลไฟล์หรือสั่งคลายบีบอัดทุกไฟล์ดื้อๆ ไฟล์เหล่านั้นจะกู้ไม่ได้ทั้งหมด — ซึ่งจะรู้ตัวตอนที่
+  // ดิสก์ถูกล้างแล้วเท่านั้น สายเกินแก้ ที่นี่จึงแปลงไฟล์บน Drive จำลองให้กลับเป็นรูปแบบเก่าจริงๆ
+  // (คลายบีบอัดเนื้อไฟล์ + เปลี่ยนชื่อกลับเป็น .db) แล้วให้ขั้นกู้คืนข้างล่างทำงานตามปกติ
+  if (scenario === 'legacy') {
+    const f = drive.backupFiles()[0];
+    f.body = gunzipSync(f.body);
+    f.name = f.name.replace(/\.gz$/, '');
+    out.legacyName = f.name;
+    out.legacyIsSqlite = f.body.subarray(0, 15).toString('latin1') === 'SQLite format 3';
+  }
 
   // --- 2.5) ปุ่ม "ตรวจสอบสำเนา" บนหน้าจัดการ: ดาวน์โหลดจาก Drive มาตรวจจริงโดยไม่แตะฐานข้อมูลที่ใช้อยู่ ---
   if (scenario === 'inspect' || scenario === 'inspect-bad') {

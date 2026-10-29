@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite'; // แค่คลาสเปล่าๆ ไม่ได้เปิดฐานข้อมูลของระบบ ต่างจากการ import ../db.js
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, ensureBackupFolder, ensureFolderPath, listSubfolders,
@@ -65,9 +66,33 @@ export function thaiDateParts(date = new Date()) {
   return { year, month: `${year}-${p.month}`, day: `${year}-${p.month}-${p.day}`, time: `${p.hour}${p.minute}` };
 }
 
-// ชื่อไฟล์: เวลาไทยของวันนั้น เช่น esaraban-1530.db (วันอยู่ที่ชื่อโฟลเดอร์แล้ว ไม่ต้องซ้ำในชื่อไฟล์)
+// ชื่อไฟล์: เวลาไทยของวันนั้น เช่น esaraban-1530.db.gz (วันอยู่ที่ชื่อโฟลเดอร์แล้ว ไม่ต้องซ้ำในชื่อไฟล์)
 function backupFilename(date = new Date()) {
-  return `${BACKUP_PREFIX}${thaiDateParts(date).time}.db`;
+  return `${BACKUP_PREFIX}${thaiDateParts(date).time}.db.gz`;
+}
+
+/*
+ * สำเนาถูกบีบอัดก่อนส่งขึ้น Drive
+ *
+ * ไฟล์ SQLite เป็นข้อความกับช่องว่างเป็นส่วนใหญ่ (บันทึกตรวจสอบ ชื่อเรื่อง ความเห็น) จึงบีบได้
+ * หลายเท่าตัว — ซึ่งสำคัญมากกับโฮสต์ที่คิดโควตาข้อมูลขาออก เพราะไฟล์นี้ถูกส่งออกซ้ำทุกรอบสำรอง
+ * และฐานข้อมูลมีแต่โตขึ้นเรื่อยๆ (ตาราง audit_logs ไม่เคยถูกลบ) ค่าใช้จ่ายต่อรอบจึงเพิ่มขึ้นตลอด
+ *
+ * ตรวจจาก "เลขประจำไฟล์ gzip" ไม่ใช่จากนามสกุล — สำเนาเก่าบน Drive ที่สร้างไว้ก่อนหน้านี้ยังเป็น
+ * .db ธรรมดา ต้องกู้คืนได้เหมือนเดิมทุกไฟล์ และการดูจากเนื้อไฟล์ก็ทนกับการที่ใครเผลอเปลี่ยนชื่อไฟล์
+ */
+const GZIP_MAGIC = Buffer.from([0x1f, 0x8b]);
+function maybeGunzip(buffer) {
+  if (!buffer.subarray(0, 2).equals(GZIP_MAGIC)) return buffer;
+  // การคลายบีบอัดล้มเหลว = ไฟล์ที่ดาวน์โหลดมาไม่ครบหรือเสียหาย ซึ่งเป็นเรื่องเดียวกับที่เคยตรวจเจอ
+  // ตอนเปิดไฟล์ด้วย SQLite — ต่างกันแค่ว่าตอนนี้รู้ตัวเร็วขึ้นหนึ่งขั้น ถ้าปล่อยข้อความของ zlib
+  // ไปตรงๆ ธุรการจะเห็นคำว่า "unexpected end of file" บนหน้าจอ ซึ่งอ่านไม่รู้เรื่องและไม่บอกว่า
+  // ต้องทำอะไรต่อ (คำตอบคือ: ลองตรวจสำเนาชุดก่อนหน้า)
+  try {
+    return gunzipSync(buffer);
+  } catch (err) {
+    throw new Error(`คลายไฟล์สำเนาที่บีบอัดไว้ไม่ได้ — ไฟล์น่าจะเสียหายหรือดาวน์โหลดมาไม่ครบ (${err.message})`);
+  }
 }
 
 /**
@@ -296,8 +321,10 @@ export async function backupNow(reason = 'manual') {
     // เก็บแยกเป็นโฟลเดอร์ ปี / เดือน / วัน เพื่อให้ธุรการเปิดหาสำเนาของวันที่ต้องการเองได้ใน Drive
     // และเพื่อให้ลบทั้งวัน/ทั้งเดือน/ทั้งปีได้ในคลิกเดียวจากหน้าจัดการสำเนาสำรอง
     const dayFolder = await ensureFolderPath(root, [at.year, at.month, at.day]);
-    await uploadFile({ buffer, filename: backupFilename(), mimeType: 'application/x-sqlite3', folderId: dayFolder });
-    log(`สำรองข้อมูลขึ้น Google Drive แล้ว (${reason}, ${(buffer.length / 1048576).toFixed(2)} MB) → ${at.day}`
+    const packed = gzipSync(buffer, { level: 9 });
+    await uploadFile({ buffer: packed, filename: backupFilename(), mimeType: 'application/gzip', folderId: dayFolder });
+    log(`สำรองข้อมูลขึ้น Google Drive แล้ว (${reason}, ${(buffer.length / 1048576).toFixed(2)} MB`
+      + ` → ส่งจริง ${(packed.length / 1048576).toFixed(2)} MB) → ${at.day}`
       + (status.skippedInARow ? ` [ข้ามไป ${status.skippedInARow} รอบก่อนหน้าเพราะข้อมูลไม่เปลี่ยน]` : ''));
     lastUploadedHash = hash;
     status.skippedInARow = 0;
@@ -559,7 +586,7 @@ export async function inspectBackup(fileId) {
     if (!stream) throw new Error('เปิดไฟล์บน Google Drive ไม่ได้');
     const chunks = [];
     for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
-    fs.writeFileSync(tmp, Buffer.concat(chunks));
+    fs.writeFileSync(tmp, maybeGunzip(Buffer.concat(chunks)));
     return inspectBackupFile(tmp);
   } finally {
     fs.rmSync(tmp, { force: true });
@@ -635,7 +662,7 @@ export async function restoreDatabaseIfMissing() {
         if (!stream) throw new Error('เปิดไฟล์บน Google Drive ไม่ได้');
         const chunks = [];
         for await (const chunk of Readable.fromWeb(stream)) chunks.push(chunk);
-        fs.writeFileSync(tmp, Buffer.concat(chunks));
+        fs.writeFileSync(tmp, maybeGunzip(Buffer.concat(chunks)));
 
         // ตรวจ "ก่อน" ย้ายเข้าที่เสมอ — ย้ายไปแล้วถอยกลับไม่ได้ เพราะรอบหน้าจะข้ามการกู้คืนทันที
         assertUsableSqlite(tmp);

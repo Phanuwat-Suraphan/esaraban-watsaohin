@@ -1235,11 +1235,24 @@ export function migrate() {
   }
 }
 
+/**
+ * ตัวรับแจ้งว่า "ข้อมูลในระบบเพิ่งเปลี่ยน" — services/dbBackup.js มาลงทะเบียนไว้ตอนเปิดระบบ
+ *
+ * ใช้วิธีลงทะเบียนแทนการ import ตรงๆ เพราะ dbBackup.js import ไฟล์นี้อยู่แล้ว ถ้า import กลับมา
+ * จะกลายเป็นวงอ้อม และยังทำให้ไฟล์ฐานข้อมูลพ่วงเรื่องการสำรองขึ้น Drive ไปด้วยโดยไม่จำเป็น
+ */
+let dataChangeHook = null;
+export function setDataChangeHook(fn) { dataChangeHook = fn; }
+
 export function audit({ userId, action, tableName, recordId, detail, ip }) {
   db.prepare(
     `INSERT INTO audit_logs (id, user_id, action, table_name, record_id, detail, ip, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(uuid(), userId || null, action, tableName || null, recordId || null, detail ? JSON.stringify(detail) : null, ip || null, nowIso());
+  // ทุกการกระทำที่สำคัญพอจะถูกบันทึกไว้ตรวจสอบ ก็สำคัญพอที่จะต้องไม่หายตอนดิสก์ถูกล้าง
+  // เกาะไว้ที่นี่จุดเดียวจึงครอบคลุมทั้งระบบ โดยที่แต่ละเส้นทางไม่ต้องไปเรียกเองให้ลืมได้
+  // (โยนทิ้งถ้าพัง — การสำรองล้มเหลวต้องไม่ทำให้การบันทึกหนังสือของธุรการล้มตามไปด้วย)
+  if (dataChangeHook) { try { dataChangeHook(); } catch { /* ไม่ให้กระทบงานหลัก */ } }
 }
 
 function seedIfEmpty() {

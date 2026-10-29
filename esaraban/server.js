@@ -155,6 +155,15 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '0.0.0.0', async () => {
   console.log(`e-Saraban prototype listening on http://0.0.0.0:${PORT}`);
   startAutoBackup();
+  // ต่อ "มีข้อมูลเปลี่ยน" เข้ากับ "นัดสำรองขึ้น Drive" — ต่อที่นี่เพราะ dbBackup.js import db.js ไม่ได้
+  // (จะทำให้ไฟล์ฐานข้อมูลถูกเปิดก่อนที่จะตรวจได้ว่าโปรเซสนี้เริ่มมาโดยไม่มีฐานข้อมูลเลยหรือไม่)
+  //
+  // จำเป็นเพราะบนโฮสต์ที่ไม่มีดิสก์ถาวร ดิสก์ถูกล้างทุกครั้งที่เครื่องหลับแล้วตื่นหรือ deploy ใหม่
+  // แล้วระบบกู้ฐานข้อมูลจากสำเนาล่าสุดบน Drive — งานทั้งหมดหลังสำเนานั้นหายถาวร ถ้าพึ่งแต่รอบเวลา
+  // ช่วงที่หายได้จะยาวเท่ารอบที่ตั้งไว้ (ตั้ง 60 นาที = หายได้ 1 ชั่วโมง)
+  const { setDataChangeHook } = await import('./src/db.js');
+  const { requestBackupSoon } = await import('./src/services/dbBackup.js');
+  setDataChangeHook(() => requestBackupSoon());
   // ตัวส่งแจ้งเตือนเข้าไลน์ — เงียบไปเองถ้ายังไม่ได้ตั้งค่า LINE (ดู src/services/lineNotify.js)
   const { startLineOutboxFlusher } = await import('./src/services/lineNotify.js');
   if (startLineOutboxFlusher()) console.log('[line] เปิดการแจ้งเตือนเข้าไลน์แล้ว');

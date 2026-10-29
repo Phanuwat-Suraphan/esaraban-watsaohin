@@ -17,6 +17,9 @@ const scenario = process.argv[2] || 'ok';
 const dbPath = path.join(os.tmpdir(), `esaraban-roundtrip-${process.pid}-${Date.now()}.db`);
 
 process.env.DB_PATH = dbPath;
+// ย่นเวลานัดสำรองเฉพาะสถานการณ์นี้ ไม่งั้นต้องนั่งรอ 45 วินาทีจริง — ตั้งตรงนี้เพราะ dbBackup.js
+// อ่านค่าตอนถูก import และ ESM ยก import ขึ้นไปทำก่อนโค้ดอื่นเสมอ
+if (scenario === 'on-change') process.env.CHANGE_BACKUP_DELAY_MS = '300';
 process.env.STORAGE_PROVIDER = 'google_drive';
 process.env.GOOGLE_OAUTH_CLIENT_ID = 'fake-client';
 process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'fake-secret';
@@ -104,6 +107,28 @@ try {
       .run(uuid(), typeId, deptId, userId, nowIso(), nowIso());
     out.secondBackupOk = await backupMod.backupNow('ทดสอบวงรอบ 2');
   }
+  // --- สถานการณ์ "ลงหนังสือแล้วต้องขึ้นสำเนาเอง ไม่ต้องรอครบรอบเวลา" ---
+  // โรงเรียนเจอจริง: ลงรับหนังสือไปสองฉบับแล้วหายทั้งคู่ พร้อมถูกเตะออกจากระบบเอง เพราะโฮสต์
+  // แผนฟรีไม่มีดิสก์ถาวร พอเครื่องหลับแล้วตื่นดิสก์ถูกล้าง ระบบกู้จากสำเนาล่าสุดบน Drive
+  // งานหลังสำเนานั้นหายหมด (ตาราง sessions อยู่ในฐานข้อมูลเดียวกัน จึงถูกย้อนกลับไปด้วย)
+  // ถ้าพึ่งแต่รอบเวลา ช่วงที่หายได้ยาวเท่ารอบที่ตั้งไว้ — ตั้ง 60 นาที = หายได้ 1 ชั่วโมง
+  if (scenario === 'on-change') {
+    out.filesAfterFirst = drive.backupFiles().length;
+    const { setDataChangeHook } = await import('../src/db.js');
+    setDataChangeHook(() => backupMod.requestBackupSoon());
+    // ลงหนังสือใหม่เหมือนธุรการลงรับ แล้ว "ไม่สั่งสำรองเอง" เลย ต้องขึ้นเองจากการเปลี่ยนแปลง
+    const { createDocument } = await import('../src/services/workflow.js');
+    createDocument({ direction: 'incoming', title: 'หนังสือที่ต้องไม่หายตอนดิสก์ถูกล้าง',
+      correspondentName: 'สพป.ชม.1', departmentId: deptId, docTypeId: typeId, createdBy: userId });
+    out.scheduled = backupMod.backupScheduled();
+    // รอให้ถึงรอบนัด (เทสต์ย่นเวลาด้วยตัวแปรสภาพแวดล้อม ไม่ต้องรอ 45 วินาทีจริง)
+    await new Promise((r) => setTimeout(r, 1200));
+    out.filesAfterChange = drive.backupFiles().length;
+    console.log(JSON.stringify(out));
+    cleanupPaths.forEach((p2) => { try { fs.rmSync(p2, { force: true }); } catch { /* ไม่เป็นไร */ } });
+    process.exit(0);
+  }
+
   // --- สถานการณ์ "ข้อมูลไม่เปลี่ยน ต้องไม่อัปโหลดซ้ำ" ---
   // เดิมระบบอัปโหลดฐานข้อมูลทั้งไฟล์ทุก 5 นาที ไม่ว่าข้อมูลจะเปลี่ยนหรือไม่ = 288 ครั้งต่อวัน
   // ตลอดคืน ตลอดวันหยุด จนข้อมูลขาออกของโฮสต์เต็มโควตา (โรงเรียนเจอจริง 5.35 GB ในเดือนเดียว)

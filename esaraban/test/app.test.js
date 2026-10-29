@@ -3008,6 +3008,54 @@ describe('ฟอร์มลงทะเบียนที่ถูกตีก�
     assert.match(appJs, /setCustomValidity\(''\)/, 'ต้องล้าง customValidity ตอนผู้ใช้แก้ค่า');
   });
 
+  // เมื่อระบบถามยืนยันก่อนทำซ้ำ (เช่น "เพิ่งลงทะเบียนเรื่องนี้ไปเมื่อครู่") แล้วผู้ใช้กด "ยกเลิก"
+  // เดิมระบบ "ไม่บันทึกและไม่บอกอะไรเลย" ปุ่มกลับเป็นปกติเฉยๆ ซึ่งหน้าตาเหมือนบันทึกสำเร็จทุกประการ
+  // ธุรการจึงปิดหน้าไปโดยเข้าใจว่าลงทะเบียนแล้ว แล้วไปรู้ทีหลังว่าหนังสือไม่อยู่ในทะเบียน
+  // (โรงเรียนเจอจริงกับหนังสือรับสองฉบับ ค้นเลขที่แล้วไม่พบเลย)
+  describe('กดยกเลิกตอนระบบถามยืนยัน ต้องบอกให้ชัดว่ายังไม่ได้บันทึก', () => {
+    const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const start = appJs.indexOf('window.postJson = async function');
+    const end = appJs.indexOf('window.submitWithFile =');
+    assert.ok(start > 0 && end > start, 'หา postJson ใน public/app.js ไม่เจอ');
+
+    // รันของจริง ไม่ใช่ค้นข้อความ — สิ่งที่ต้องล็อกคือ "พฤติกรรม" ไม่ใช่การมีอยู่ของข้อความ
+    const build = (confirmAnswer) => {
+      const calls = { sent: [], toasts: [] };
+      const win = {
+        toast: (msg, kind) => calls.toasts.push({ msg, kind }),
+        confirm: () => confirmAnswer,
+      };
+      const fetchStub = async (_url, opts) => {
+        calls.sent.push(JSON.parse(opts.body));
+        // ครั้งแรกตอบ 409 พร้อม confirmRetry ครั้งที่สองถือว่าผ่าน
+        if (calls.sent.length === 1) {
+          return { ok: false, json: async () => ({ error: 'ซ้ำ', confirmRetry: { field: 'allowDuplicate', message: 'ยืนยันหรือไม่' } }) };
+        }
+        return { ok: true, json: async () => ({ redirect: '/documents/abc?created=1' }) };
+      };
+      const fn = new Function('window', 'fetch', 'confirm', `${appJs.slice(start, end)}\nreturn window.postJson;`);
+      return { postJson: fn(win, fetchStub, win.confirm), calls };
+    };
+
+    test('กดยกเลิก — ต้องไม่ส่งซ้ำ และต้องเตือนว่ายังไม่ได้บันทึก', async () => {
+      const { postJson, calls } = build(false);
+      const result = await postJson('/documents', { title: 'เชิญประชุม' });
+      assert.equal(result, null, 'ต้องคืน null ให้ผู้เรียกรู้ว่าไม่ได้บันทึก');
+      assert.equal(calls.sent.length, 1, 'กดยกเลิกแล้วต้องไม่ยิงซ้ำ ไม่งั้นกินเลขทะเบียนฟรี');
+      assert.equal(calls.toasts.length, 1, 'ต้องมีข้อความบอกผู้ใช้ — จุดที่พลาดแล้วธุรการเข้าใจว่าบันทึกแล้ว');
+      assert.match(calls.toasts[0].msg, /ยังไม่ได้บันทึก/, 'ข้อความต้องบอกตรงๆ ว่ายังไม่ได้บันทึก');
+    });
+
+    test('กดตกลง — ต้องส่งซ้ำพร้อมธงยืนยัน และไม่ขึ้นคำเตือน', async () => {
+      const { postJson, calls } = build(true);
+      const result = await postJson('/documents', { title: 'เชิญประชุม' });
+      assert.equal(calls.sent.length, 2, 'ต้องยิงครั้งที่สอง');
+      assert.equal(calls.sent[1].allowDuplicate, true, 'ครั้งที่สองต้องติดธงยืนยันไปด้วย');
+      assert.equal(calls.toasts.length, 0, 'ยืนยันแล้วบันทึกสำเร็จ ต้องไม่ขึ้นคำเตือนว่าไม่ได้บันทึก');
+      assert.equal(result.redirect, '/documents/abc?created=1');
+    });
+  });
+
   // <input type="date"> แสดงผลตามภาษาของ "เครื่อง" ไม่ใช่ของเว็บ และเราสั่งไม่ได้ เครื่องส่วนใหญ่
   // ตั้งเป็นอังกฤษแบบอเมริกัน ช่องจึงขึ้นเป็น 09/18/2026 = เดือน/วัน/ปี ค.ศ. ซึ่งผิดจากที่ครูไทยอ่าน
   // ทั้งลำดับวัน-เดือน และยุคของปี — 05/06/2026 อ่านได้ทั้ง 5 มิ.ย. และ 6 พ.ค. โดยไม่มีอะไรบอกว่าอันไหน

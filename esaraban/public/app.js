@@ -211,7 +211,13 @@
 
     let { ok, data } = await send(payload);
     if (!ok && data.confirmRetry && data.confirmRetry.field) {
-      if (!confirm(data.confirmRetry.message)) return null;
+      if (!confirm(data.confirmRetry.message)) {
+        // ต้องบอกให้ชัดว่า "ยังไม่ได้บันทึก" — เดิมกดยกเลิกแล้วปุ่มกลับเป็นปกติเฉยๆ ไม่มีข้อความใดๆ
+        // ซึ่งหน้าตาเหมือนบันทึกสำเร็จทุกประการ ธุรการจึงปิดหน้าไปโดยเข้าใจว่าลงทะเบียนแล้ว
+        // แล้วไปรู้ทีหลังว่าหนังสือไม่อยู่ในทะเบียน (โรงเรียนเจอจริงกับหนังสือรับสองฉบับ)
+        if (window.toast) window.toast('ยกเลิกแล้ว — ยังไม่ได้บันทึกอะไรลงระบบ', 'warning');
+        return null;
+      }
       ({ ok, data } = await send(Object.assign({}, payload, { [data.confirmRetry.field]: true })));
     }
     if (!ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');

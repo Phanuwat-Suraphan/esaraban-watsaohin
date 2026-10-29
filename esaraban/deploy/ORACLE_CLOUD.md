@@ -61,11 +61,38 @@ layers — Security List and host firewall — must allow the traffic.)
 ## 3.5 Note on the Ampere (Arm) shape
 
 The A1 shape is arm64, not x86. Everything the app needs is packaged for arm64 on Ubuntu 24.04 —
-Node.js 22 from NodeSource, `poppler-utils`, `chromium`, `qpdf` — so `DEPLOY.md`
+Node.js 22 from NodeSource, `poppler-utils`, `chromium`, `qpdf`, `fonts-thai-tlwg` — so `DEPLOY.md`
 works unchanged. Nothing else in the app is architecture-specific: it has no npm dependencies and
 therefore no native modules to compile.
 
-## 4. Continue with the generic guide
+**Two things on Ubuntu that fail silently if you miss them** (both are checked automatically by
+`setup-ubuntu.sh` below, which is why using the script is recommended over pasting commands):
+
+- **`apt install chromium` on Ubuntu 22.04+ installs a *snap***, whose binary is at
+  `/snap/bin/chromium`, not on `PATH` as `chromium`. The app looks for `chromium` by default, so
+  the "ประทับตราลงไฟล์ PDF จริง" button returns a 501 error until you set
+  `CHROME_BIN=/snap/bin/chromium`. Everything else in the app keeps working, so this is easy to
+  ship without noticing.
+- **Thai fonts are not installed by default.** Without `fonts-thai-tlwg`, Chromium renders every
+  Thai character in the stamp as an empty box — onto the real PDF of a real official document,
+  with no error anywhere. Verify with `fc-match ':lang=th'`; it must print a Thai font file.
+
+## 4. ติดตั้งด้วยคำสั่งเดียว (แนะนำ)
+
+SSH เข้าเครื่องแล้วรัน:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Phanuwat-Suraphan/esaraban-watsaohin/claude/school-e-saraban-srs-0uzy7x/esaraban/deploy/setup-ubuntu.sh -o setup.sh
+sudo bash setup.sh
+```
+
+สคริปต์นี้ทำขั้นตอนที่ 2–4 ของ `DEPLOY.md` ให้ทั้งหมด (โปรแกรมที่ต้องใช้ · Node.js 22 · ผู้ใช้ระบบ ·
+ตัวแอป · รหัสลับที่สุ่มใหม่ · systemd) แล้ว**ตรวจผลจริงให้ตอนจบ** ว่าระบบตอบสนอง ฟอนต์ไทยมีจริง
+และหา Chromium เจอ — สองข้อหลังคือจุดที่พลาดแล้วตราประทับบนหนังสือราชการเสียโดยไม่มีอะไรเตือน
+
+เหลือแค่ **Nginx + HTTPS (ขั้นที่ 5 ของ `DEPLOY.md`)** ที่ต้องทำเอง เพราะต้องใช้ชื่อโดเมนของโรงเรียน
+
+## 4ข. หรือทำเองทีละขั้น
 
 From here on it's identical to a regular VPS — follow **`DEPLOY.md` from step 2 onward**
 (Node.js install, cloning the app, systemd service, Nginx + Certbot, backups), using:

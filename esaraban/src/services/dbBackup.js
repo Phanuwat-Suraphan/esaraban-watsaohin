@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite'; // แค่คลาสเปล่าๆ ไม่ได้เปิดฐานข้อมูลของระบบ ต่างจากการ import ../db.js
 import {
   isGoogleDriveEnabled, isGoogleDriveConnected, ensureBackupFolder, ensureFolderPath, listSubfolders,
@@ -156,7 +157,21 @@ async function snapshotBuffer() {
 
 // สถานะการสำรองล่าสุด — ใช้ขึ้นแถบเตือนในหน้าเว็บ ไม่ใช่แค่บรรทัดใน log ที่ไม่มีใครเปิดดู
 // (กรณีที่ต้องกันให้ได้: token ของ Google หมดอายุแล้วการสำรองหยุดเงียบๆ กว่าจะรู้ก็ตอนข้อมูลหายไปแล้ว)
-const status = { lastOkAt: null, lastError: null, lastAttemptAt: null };
+const status = { lastOkAt: null, lastError: null, lastAttemptAt: null, lastSkippedAt: null, skippedInARow: 0 };
+
+/*
+ * ลายนิ้วมือของฐานข้อมูลชุดที่อัปโหลดขึ้น Drive สำเร็จล่าสุด
+ *
+ * ทำไมต้องมี: เดิมระบบอัปโหลดไฟล์ฐานข้อมูล "ทั้งไฟล์" ขึ้น Drive ทุกรอบ ไม่ว่าข้อมูลจะเปลี่ยนหรือไม่
+ * = 288 ครั้งต่อวัน ตลอดคืน ตลอดวันหยุด ปิดเทอม ทั้งที่ไม่มีใครแตะระบบเลย ฐานข้อมูลไม่กี่เมกะไบต์
+ * จึงกลายเป็นข้อมูลขาออกหลายสิบกิกะไบต์ต่อเดือน ซึ่งกินโควตาแบนด์วิดท์ของโฮสต์จนเต็ม
+ * (โรงเรียนเจอจริง: ใช้ไป 5.35 GB ในเดือนเดียว โดยที่กราฟขาออกนิ่งอยู่ 20-35 MB ต่อชั่วโมงทั้งคืน)
+ *
+ * เทียบจากเนื้อไฟล์จริง ไม่ใช่เวลาแก้ไขไฟล์ เพราะ SQLite แตะไฟล์ตลอดแม้ไม่มีใครเปลี่ยนข้อมูล
+ * ถ้าเนื้อไฟล์เหมือนเดิมเป๊ะ สำเนาบน Drive ชุดล่าสุดก็คือไฟล์เดียวกันอยู่แล้ว การอัปโหลดซ้ำจึงไม่ได้
+ * อะไรเพิ่มเลยนอกจากกินแบนด์วิดท์ — เก็บไว้ในหน่วยความจำพอ ถ้าเซิร์ฟเวอร์รีสตาร์ทก็แค่อัปโหลดอีกรอบ
+ */
+let lastUploadedHash = null;
 
 /**
  * เดาว่าเซิร์ฟเวอร์นี้ใช้ดิสก์แบบ "ล้างทุกครั้งที่ deploy" หรือเปล่า
@@ -265,13 +280,27 @@ export async function backupNow(reason = 'manual') {
   status.lastAttemptAt = Date.now();
   try {
     const buffer = await snapshotBuffer();
+    const hash = createHash('sha256').update(buffer).digest('hex');
+    if (hash === lastUploadedHash) {
+      // ต้องนับว่า "สำรองเรียบร้อย" ไม่ใช่ปล่อยให้ lastOkAt ค้าง ไม่งั้นหน้าเว็บจะขึ้นเตือนว่า
+      // "สำเนาล่าสุดเก่าเกินไป" ทั้งที่ของบน Drive ตรงกับฐานข้อมูลปัจจุบันเป๊ะอยู่แล้ว
+      status.lastOkAt = Date.now();
+      status.lastSkippedAt = Date.now();
+      status.skippedInARow += 1;
+      status.lastError = null;
+      backingUp = false;
+      return false;
+    }
     const root = await ensureBackupFolder();
     const at = thaiDateParts();
     // เก็บแยกเป็นโฟลเดอร์ ปี / เดือน / วัน เพื่อให้ธุรการเปิดหาสำเนาของวันที่ต้องการเองได้ใน Drive
     // และเพื่อให้ลบทั้งวัน/ทั้งเดือน/ทั้งปีได้ในคลิกเดียวจากหน้าจัดการสำเนาสำรอง
     const dayFolder = await ensureFolderPath(root, [at.year, at.month, at.day]);
     await uploadFile({ buffer, filename: backupFilename(), mimeType: 'application/x-sqlite3', folderId: dayFolder });
-    log(`สำรองข้อมูลขึ้น Google Drive แล้ว (${reason}, ${(buffer.length / 1048576).toFixed(2)} MB) → ${at.day}`);
+    log(`สำรองข้อมูลขึ้น Google Drive แล้ว (${reason}, ${(buffer.length / 1048576).toFixed(2)} MB) → ${at.day}`
+      + (status.skippedInARow ? ` [ข้ามไป ${status.skippedInARow} รอบก่อนหน้าเพราะข้อมูลไม่เปลี่ยน]` : ''));
+    lastUploadedHash = hash;
+    status.skippedInARow = 0;
     status.lastOkAt = Date.now();
     status.lastError = null;
     // ข้อมูลขึ้น Drive ครบแล้วตรงนี้ ปลดล็อกก่อนเก็บกวาด — การตัดของเก่ารอบวันละครั้งใช้เวลาเป็นนาที

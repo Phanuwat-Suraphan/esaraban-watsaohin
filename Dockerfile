@@ -12,12 +12,29 @@
 # npm ci — คัดลอกซอร์สแล้วรันได้ทันที
 FROM node:22-slim
 
+# ล้างของที่ไม่ได้ใช้ตอนรันออกจาก image ในคำสั่ง RUN เดียวกัน — ต้องอยู่บรรทัดเดียวกันเท่านั้น
+# เพราะ Docker เก็บผลของแต่ละ RUN เป็นชั้นๆ ถ้าแยกไปลบในบรรทัดถัดไป ของเดิมยังอยู่ในชั้นก่อนหน้า
+# และ image ไม่เล็กลงเลยสักไบต์
+#
+# ทำไมถึงสำคัญ: image นี้ใหญ่เพราะต้องมี Chromium (ไว้ประทับตราลง PDF จริง) และทุกครั้งที่ push
+# ขึ้น GitHub โฮสต์จะ build แล้วเก็บ image ชุดใหม่ไว้ — ของเก่าสะสมจนเต็มโควตาพื้นที่ได้
+#
+# ⚠️ ห้ามลบ /usr/share/fonts เด็ดขาด — ฟอนต์ไทยอยู่ตรงนั้น ถ้าหายไปตราประทับบนหนังสือราชการ
+# จะกลายเป็นสี่เหลี่ยมว่างทั้งหมด ส่วน /usr/share/locale เป็นคำแปลข้อความของโปรแกรมบรรทัดคำสั่ง
+# คนละอย่างกัน ลบได้ ไม่กระทบตัวอักษรไทยที่พิมพ์ลงไฟล์
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     chromium \
     qpdf \
     fonts-thai-tlwg \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+             /var/cache/apt/archives/* \
+             /usr/share/doc \
+             /usr/share/man \
+             /usr/share/info \
+             /usr/share/lintian \
+             /usr/share/locale
 
 WORKDIR /app
 COPY esaraban/ .

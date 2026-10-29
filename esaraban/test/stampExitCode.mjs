@@ -42,7 +42,30 @@ exit 3
 
 fs.writeFileSync(path.join(binDir, 'qpdf'), SCRIPTS[mode], { mode: 0o755 });
 process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
-process.env.CHROME_BIN = process.env.CHROME_BIN || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+// หา chromium ที่ "มีอยู่จริงในเครื่องนี้" แทนการฝังเลขเวอร์ชันไว้ตายตัว — โฟลเดอร์ของ Playwright
+// มีเลขรุ่นอยู่ในชื่อ (chromium-1194, chromium-1243, ...) พอเครื่องทดสอบถูกอัปเดต เลขเปลี่ยน
+// แล้วเทสต์ชุดนี้ล้มทันทีโดยที่โค้ดของระบบไม่ได้ผิดอะไรเลย ซึ่งทำให้เสียเวลาไล่หาสาเหตุผิดทาง
+if (!process.env.CHROME_BIN) {
+  const roots = ['/opt/pw-browsers'];
+  // ไม่ยึดทั้งเลขรุ่น (chromium-1194 / chromium-1243) และชื่อโฟลเดอร์ย่อย (chrome-linux /
+  // chrome-linux64) เพราะเปลี่ยนมาแล้วทั้งสองอย่างระหว่างที่โปรเจกต์นี้ยังใช้งานอยู่
+  const found = roots.flatMap((root) => {
+    try {
+      return fs.readdirSync(root)
+        .filter((d) => d.startsWith('chromium-'))
+        .flatMap((d) => {
+          const dir = path.join(root, d);
+          try {
+            return fs.readdirSync(dir)
+              .filter((sub) => sub.startsWith('chrome-linux'))
+              .map((sub) => path.join(dir, sub, 'chrome'));
+          } catch { return []; }
+        });
+    } catch { return []; }
+  }).filter((p) => fs.existsSync(p));
+  // ไม่เจอก็ปล่อยเป็น 'chromium' ตามค่าเริ่มต้นของแอป เผื่อเครื่องไหนลงไว้ใน PATH ปกติ
+  if (found.length) process.env.CHROME_BIN = found[found.length - 1];
+}
 
 const out = { mode };
 try {

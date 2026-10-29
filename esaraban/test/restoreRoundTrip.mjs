@@ -101,6 +101,31 @@ try {
       .run(uuid(), typeId, deptId, userId, nowIso(), nowIso());
     out.secondBackupOk = await backupMod.backupNow('ทดสอบวงรอบ 2');
   }
+  // --- สถานการณ์ "ข้อมูลไม่เปลี่ยน ต้องไม่อัปโหลดซ้ำ" ---
+  // เดิมระบบอัปโหลดฐานข้อมูลทั้งไฟล์ทุก 5 นาที ไม่ว่าข้อมูลจะเปลี่ยนหรือไม่ = 288 ครั้งต่อวัน
+  // ตลอดคืน ตลอดวันหยุด จนข้อมูลขาออกของโฮสต์เต็มโควตา (โรงเรียนเจอจริง 5.35 GB ในเดือนเดียว)
+  if (scenario === 'unchanged') {
+    out.filesAfterFirst = drive.backupFiles().length;
+    // ไม่แตะฐานข้อมูลเลย แล้วสั่งสำรองอีกสองรอบ — ทั้งสองรอบต้องถูกข้าม
+    out.secondCallUploaded = await backupMod.backupNow('ตามเวลา');
+    out.thirdCallUploaded = await backupMod.backupNow('ตามเวลา');
+    out.filesAfterSkips = drive.backupFiles().length;
+    // ต้องยังนับว่าสำรองเรียบร้อย ไม่ใช่ขึ้นเตือนว่าสำเนาเก่าเกินไป ทั้งที่ของบน Drive ตรงอยู่แล้ว
+    const st = backupMod.getBackupStatus();
+    out.stateAfterSkips = st.state;
+    out.skippedInARow = st.skippedInARow;
+    // พอข้อมูลเปลี่ยนจริง ต้องกลับมาอัปโหลดทันที
+    db.prepare(`INSERT INTO documents (id, direction, running_number, year_be, doc_number_display, title,
+        doc_type_id, department_id, status, created_by, created_at, updated_at)
+      VALUES (?, 'incoming', 9997, 2569, '9997/2569', 'หนังสือที่ทำให้ข้อมูลเปลี่ยน', ?, ?, 'registered', ?, ?, ?)`)
+      .run(uuid(), typeId, deptId, userId, nowIso(), nowIso());
+    out.afterChangeUploaded = await backupMod.backupNow('ตามเวลา');
+    out.filesAfterChange = drive.backupFiles().length;
+    console.log(JSON.stringify(out));
+    cleanupPaths.forEach((p2) => { try { fs.rmSync(p2, { force: true }); } catch { /* ไม่เป็นไร */ } });
+    process.exit(0);
+  }
+
   out.filesOnDrive = drive.backupFiles().length;
   out.folderNames = drive.folderNames();
 

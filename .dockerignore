@@ -1,0 +1,22 @@
+# ต้องอยู่ที่ root ของ repo เท่านั้น — Docker อ่าน .dockerignore จาก "root ของ build context"
+# ซึ่งคือที่เดียวกับที่ Dockerfile อยู่ ไฟล์ esaraban/.dockerignore ที่มีอยู่เดิมจึงไม่เคยถูกใช้เลย
+#
+# ผลของการไม่มีไฟล์นี้: ทุกครั้งที่ build ตัว .git ทั้งก้อน (ประวัติ commit ทั้งหมด) ถูกส่งขึ้นไปให้
+# ตัว build ด้วย ซึ่งช้าโดยเปล่าประโยชน์ เพราะ Dockerfile คัดลอกแค่ esaraban/ เข้า image อยู่แล้ว
+.git
+.gitignore
+
+# ไฟล์ข้อมูลจริงของเครื่องที่ใช้พัฒนา — ห้ามติดเข้า image เด็ดขาด ไม่งั้นฐานข้อมูลกับไฟล์แนบของ
+# เครื่องหนึ่งจะถูกแจกไปทุกเครื่องที่ใช้ image นี้
+esaraban/data/*.db
+esaraban/data/*.db-shm
+esaraban/data/*.db-wal
+esaraban/uploads/*
+!esaraban/uploads/.gitkeep
+!esaraban/data/.gitkeep
+esaraban/node_modules
+
+# หน้าเว็บโปรไฟล์ GitHub ที่อยู่ root ของ repo — คนละเรื่องกับระบบสารบรรณ
+index.html
+script.js
+style.css

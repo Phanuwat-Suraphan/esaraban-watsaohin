@@ -56,10 +56,28 @@ apt install -y poppler-utils
 # stamp box as a one-page PDF (headless print-to-pdf); qpdf overlays that page onto page 1 of
 # the original PDF without touching any other page or re-encoding the rest of the file.
 apt install -y chromium qpdf
-# Debian sometimes names the binary "chromium", Ubuntu older releases "chromium-browser" — if
-# `which chromium` comes back empty after install, set CHROME_BIN=chromium-browser (or the
-# actual binary name) as an environment variable for the esaraban service.
+
+# Thai fonts — REQUIRED whenever you install chromium above, not optional.
+# Chromium renders the stamp as HTML; without a Thai font installed on the server every Thai
+# character in that stamp comes out as an empty box (tofu) on the real PDF. Nothing errors,
+# nothing warns — the stamp just prints blank squares onto official documents. The Docker image
+# has always installed this; this VPS guide did not, which is a bug that was fixed here.
+apt install -y fonts-thai-tlwg fontconfig
+
+# Debian sometimes names the binary "chromium", Ubuntu older releases "chromium-browser", and
+# Ubuntu 22.04+ installs chromium as a *snap* whose binary lives at /snap/bin/chromium — if
+# `which chromium` comes back empty after install, set CHROME_BIN to the actual path (e.g.
+# CHROME_BIN=/snap/bin/chromium) as an environment variable for the esaraban service.
+
+# verify both of the easy-to-miss parts before trusting the stamp button:
+which chromium || which chromium-browser || ls /snap/bin/chromium   # must print a path
+fc-match ':lang=th'                                                 # must print a Thai font
 ```
+
+> 💡 ขั้นตอน 2–4 ทั้งหมดนี้รันได้ด้วยคำสั่งเดียวด้วย [`deploy/setup-ubuntu.sh`](./deploy/setup-ubuntu.sh)
+> ซึ่งลงให้ครบแล้ว**ตรวจผลจริง**ทั้งเรื่องฟอนต์ไทยและที่อยู่ของ Chromium ให้ด้วย
+> (`sudo bash esaraban/deploy/setup-ubuntu.sh`) — ส่วน Nginx/HTTPS ในขั้นที่ 5 ยังต้องทำเอง
+> เพราะต้องใช้ชื่อโดเมนของโรงเรียน
 
 ## 3. Deploy the app
 

@@ -48,7 +48,8 @@ route handlers here map cleanly to REST endpoints, and the SQL schema maps to a 
   documents. A VPS with a real disk (below) avoids the whole problem.
 - **Real deployment**: [`DEPLOY.md`](./DEPLOY.md) — cloud VPS runbook (Ubuntu + systemd + Nginx +
   Let's Encrypt, matching the Part 10 deployment architecture from the spec), with a free-forever
-  option at [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md). `deploy/` also has ready-to-use
+  free-forever options at [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md) and
+  [`deploy/GOOGLE_CLOUD.md`](./deploy/GOOGLE_CLOUD.md). `deploy/` also has ready-to-use
   `esaraban.service` (systemd unit), `nginx.conf` (reverse proxy), and `backup.sh`.
 - **File storage**: local disk by default. [`deploy/GOOGLE_DRIVE.md`](./deploy/GOOGLE_DRIVE.md)
   covers switching attached PDFs to Google Drive instead (`STORAGE_PROVIDER=google_drive`),

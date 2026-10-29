@@ -161,7 +161,18 @@ async function overlayHtmlOnFirstPage(originalBuffer, buildHtml) {
     for (let attempt = 0; attempt < MAX_FIT_ATTEMPTS; attempt++) {
       fs.rmSync(stampPdfPath, { force: true });
       fs.writeFileSync(stampHtmlPath, buildHtml(attempt * FIT_STEP_PT));
-      await run(CHROME_BIN, ['--headless', '--disable-gpu', '--no-sandbox', `--print-to-pdf=${stampPdfPath}`, '--print-to-pdf-no-header', stampHtmlPath]);
+      // --disable-dev-shm-usage: ให้ Chromium ใช้ /tmp แทน /dev/shm
+      //   ใน container /dev/shm มักถูกตั้งไว้แค่ 64 MB และบนเครื่องที่ RAM 1 GB ก็เล็กตามไปด้วย
+      //   เมื่อไม่พอ Chromium จะตายกลางทางโดยไม่บอกสาเหตุ แล้วปุ่มประทับตราก็ล้มเฉยๆ
+      // --disable-software-rasterizer: ไม่ต้องเตรียมตัววาดภาพด้วย CPU ไว้เผื่อ เพราะงานที่ทำคือ
+      //   พิมพ์ HTML หน้าเดียวเป็น PDF ไม่มีการวาดภาพสามมิติอะไรให้ต้องรองรับ
+      //   (ไม่ใส่ --single-process/--no-zygote เพราะลดหน่วยความจำได้อีกนิดแต่แลกกับความเสถียร
+      //    ซึ่งไม่คุ้มกับงานที่พิมพ์ลงหนังสือราชการจริง — ใช้ swap แก้ที่ฝั่งเครื่องดีกว่า)
+      await run(CHROME_BIN, [
+        '--headless', '--disable-gpu', '--no-sandbox',
+        '--disable-dev-shm-usage', '--disable-software-rasterizer',
+        `--print-to-pdf=${stampPdfPath}`, '--print-to-pdf-no-header', stampHtmlPath,
+      ]);
       if (!fs.existsSync(stampPdfPath)) throw httpError(500, 'สร้างภาพตราประทับไม่สำเร็จ');
       pages = countPdfPages(fs.readFileSync(stampPdfPath));
       if (pages === 1) break;

@@ -9,10 +9,17 @@ Any provider works (DigitalOcean, Vultr, Linode, Hetzner, AWS Lightsail...) — 
 DigitalOcean/Vultr naming but are the same everywhere. Budget: cheapest Ubuntu droplet is
 usually $4–6/month.
 
-**Want it free?** [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md) covers Oracle Cloud's
-"Always Free" tier, which gives a real persistent VPS at no cost indefinitely (not a trial).
-Read that first if you're going that route — steps 1-2 below differ slightly on Oracle, then
-everything from step 3 onward is identical.
+**Want it free?** Two providers give a real persistent VPS at no cost indefinitely (not a trial).
+Read the matching page first — their steps 1-2 differ, then everything from step 3 onward is
+identical:
+
+- [`deploy/ORACLE_CLOUD.md`](./deploy/ORACLE_CLOUD.md) — Oracle Cloud "Always Free". The roomier
+  machine (up to 4 OCPU / 24GB RAM) and can sit in Singapore, so it's the faster one from Thailand.
+  Oracle's signup rejects some cards.
+- [`deploy/GOOGLE_CLOUD.md`](./deploy/GOOGLE_CLOUD.md) — Google Cloud `e2-micro`. A different card
+  processor, so worth trying if Oracle refused yours. Two catches to read before committing: only
+  **1 GB RAM** (stamping a PDF needs swap — measured numbers are in that page) and only **1 GB/month
+  of free egress**, which this app spends on serving attachment PDFs.
 
 ## 1. Create the server
 

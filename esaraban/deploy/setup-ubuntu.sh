@@ -36,7 +36,7 @@ die()  { printf '\n\033[0;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "ต้องรันด้วย sudo — ลองใหม่: sudo bash $0"
 command -v apt-get >/dev/null || die "สคริปต์นี้ใช้ได้กับ Ubuntu/Debian เท่านั้น (ไม่พบ apt-get)"
 
-say "1/6 ติดตั้งโปรแกรมที่ระบบต้องใช้"
+say "1/7 ติดตั้งโปรแกรมที่ระบบต้องใช้"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 # fonts-thai-tlwg + fontconfig: ตัวอักษรไทยบนตราประทับที่ถูกพิมพ์ลงไฟล์ PDF จริง
@@ -50,7 +50,45 @@ apt-get install -y -qq --no-install-recommends \
   fonts-thai-tlwg fontconfig
 ok "ลงโปรแกรมพื้นฐานแล้ว"
 
-say "2/6 ติดตั้ง Chromium (ใช้พิมพ์ตราประทับลงไฟล์ PDF)"
+say "2/7 เตรียมหน่วยความจำสำรอง (swap) ให้เครื่องที่ RAM น้อย"
+# ที่มาของขั้นนี้: เครื่องฟรีของผู้ให้บริการบางรายมี RAM แค่ 1 GB (เช่น Google Cloud e2-micro)
+# ซึ่งพอใช้งานปกติ แต่ตอนประทับตราลง PDF ต้องเปิด Chromium ซึ่งกินหน่วยความจำเพิ่มเป็นก้อน
+#
+# วัดจากของจริงใต้เพดานหน่วยความจำ 1 GB (cgroup) ด้วยไฟล์และโปรแกรมชุดเดียวกับที่ใช้งานจริง:
+#   ประทับตรา 1 รายการพร้อมกัน  ใช้สูงสุด 309 MB  ผ่าน
+#   ประทับตรา 3 รายการพร้อมกัน  ใช้สูงสุด 870 MB  ผ่าน แต่เหลือที่ว่างแค่ 154 MB
+# ตัวเลข 870 MB นั้น "ยังไม่รวม" ตัวระบบปฏิบัติการกับตัวแอปที่ค้างอยู่ในหน่วยความจำอีกราว 300 MB
+# แปลว่าบนเครื่อง 1 GB จริง ถ้าครูสามคนกดประทับตราพร้อมกัน เคอร์เนลจะฆ่าโปรเซสทิ้ง (OOM)
+# ซึ่งอาการที่ครูเห็นคือหน้าเว็บค้างหรือระบบหลุดไปเฉยๆ โดยไม่มีข้อความบอกสาเหตุ
+#
+# swap ทำให้กรณีนั้นกลายเป็น "ช้าลง" แทนที่จะเป็น "ระบบล่ม" — ช้ากว่าแต่ยังได้งาน
+RAM_MB="$(free -m | awk '/^Mem:/{print $2}')"
+SWAP_MB="$(free -m | awk '/^Swap:/{print $2}')"
+ok "RAM ที่เครื่องนี้มี: ${RAM_MB} MB · swap เดิม: ${SWAP_MB} MB"
+if [ "$RAM_MB" -ge 2048 ]; then
+  ok "RAM ตั้งแต่ 2 GB ขึ้นไป ไม่ต้องเพิ่ม swap"
+elif [ "$SWAP_MB" -ge 1024 ]; then
+  ok "มี swap พออยู่แล้ว ไม่ต้องเพิ่ม"
+elif [ -f /swapfile ]; then
+  warn "มี /swapfile อยู่แล้วแต่ยังไม่ได้เปิดใช้ — ข้ามไป ตรวจเองด้วย: swapon --show"
+else
+  # 2 GB พอรับกรณีประทับตราพร้อมกันหลายรายบนเครื่อง 1 GB โดยไม่กินดิสก์มาก
+  if fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none; then
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+    swapon /swapfile
+    # ต้องใส่ /etc/fstab ด้วย ไม่งั้น swap หายทุกครั้งที่เครื่องรีสตาร์ท แล้วปัญหากลับมาเงียบๆ
+    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    # เครื่อง RAM น้อยควรยอมใช้ swap เร็วขึ้นกว่าค่าเริ่มต้น (60) แต่ไม่ถึงกับใช้ตลอดเวลา
+    sysctl -q -w vm.swappiness=20
+    grep -q '^vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=20' >> /etc/sysctl.conf
+    ok "เพิ่ม swap 2 GB แล้ว และตั้งให้กลับมาเองหลังรีสตาร์ท"
+  else
+    warn "สร้างไฟล์ swap ไม่สำเร็จ (ดิสก์อาจไม่พอ) — ระบบยังใช้ได้ แต่ถ้าประทับตราพร้อมกันหลายคนอาจล่ม"
+  fi
+fi
+
+say "3/7 ติดตั้ง Chromium (ใช้พิมพ์ตราประทับลงไฟล์ PDF)"
 # Ubuntu รุ่นใหม่ให้ chromium เป็น snap ส่วน Debian ให้เป็น .deb ธรรมดา — ลองตามลำดับแล้วค่อยหาไบนารีจริง
 if ! apt-get install -y -qq --no-install-recommends chromium 2>/dev/null; then
   apt-get install -y -qq --no-install-recommends chromium-browser 2>/dev/null \
@@ -63,14 +101,14 @@ for c in chromium chromium-browser /snap/bin/chromium /usr/lib/chromium/chromium
 done
 if [ -n "$CHROME_BIN" ]; then ok "พบ Chromium ที่: $CHROME_BIN"; else warn "ยังไม่พบ Chromium"; fi
 
-say "3/6 ติดตั้ง Node.js 22"
+say "4/7 ติดตั้ง Node.js 22"
 if ! command -v node >/dev/null 2>&1 || ! node -e 'process.exit(process.versions.node.split(".")[0] >= 22 ? 0 : 1)' 2>/dev/null; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
   apt-get install -y -qq nodejs
 fi
 ok "Node $(node -v)"
 
-say "4/6 สร้างผู้ใช้และวางตัวแอป"
+say "5/7 สร้างผู้ใช้และวางตัวแอป"
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --create-home --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 if [ -d "$APP_DIR/.git" ]; then
   git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH"
@@ -86,7 +124,7 @@ install -d -o "$APP_USER" -g "$APP_USER" "$APP_DIR/esaraban/data" "$APP_DIR/esar
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 ok "ตัวแอปอยู่ที่ $APP_DIR (สาขา $BRANCH)"
 
-say "5/6 ตั้งค่าและเปิดเป็นบริการ (systemd)"
+say "6/7 ตั้งค่าและเปิดเป็นบริการ (systemd)"
 ENV_FILE="/etc/esaraban.env"
 if [ ! -f "$ENV_FILE" ]; then
   # SESSION_SECRET ต้องสุ่มของตัวเองเสมอ และต้องไม่เปลี่ยนทีหลัง ไม่งั้นทุกคนหลุดออกจากระบบ
@@ -127,7 +165,7 @@ systemctl enable --now esaraban >/dev/null
 sleep 2
 systemctl is-active --quiet esaraban && ok "บริการทำงานอยู่" || die "บริการไม่ขึ้น — ดูสาเหตุด้วย: journalctl -u esaraban -n 50"
 
-say "6/6 ตรวจผลจริง (ไม่ใช่แค่ลงแล้วจบ)"
+say "7/7 ตรวจผลจริง (ไม่ใช่แค่ลงแล้วจบ)"
 FAIL=0
 
 # ก) ตัวระบบตอบกลับไหม
@@ -157,6 +195,17 @@ else
   FAIL=1
 fi
 
+# ง) หน่วยความจำรวม (RAM + swap) ต้องพอรับการประทับตราพร้อมกันหลายราย
+# เกณฑ์ 1.5 GB มาจากที่วัดจริง: 3 รายพร้อมกันใช้ 870 MB บวกระบบปฏิบัติการกับตัวแอปอีกราว 300 MB
+TOTAL_MB=$(( $(free -m | awk '/^Mem:/{print $2}') + $(free -m | awk '/^Swap:/{print $2}') ))
+if [ "$TOTAL_MB" -ge 1536 ]; then
+  ok "หน่วยความจำรวม (RAM+swap): ${TOTAL_MB} MB — พอรับการประทับตราพร้อมกันหลายราย"
+else
+  warn "หน่วยความจำรวมแค่ ${TOTAL_MB} MB — ถ้าครูหลายคนกดประทับตราพร้อมกัน ระบบอาจถูกเคอร์เนลฆ่าทิ้ง"
+  warn "แก้โดยเพิ่ม swap: sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile"
+  FAIL=1
+fi
+
 say "เสร็จแล้ว"
 if [ "$FAIL" -eq 0 ]; then
   ok "ตรวจผ่านทุกข้อ"
@@ -167,7 +216,8 @@ cat <<NEXT
 
 ขั้นต่อไป (ยังต้องทำเองเพราะต้องใช้ชื่อโดเมนของโรงเรียน):
 
-  1. เปิดพอร์ต 80/443 — บน Oracle Cloud ต้องเปิด "สองชั้น" ดู deploy/ORACLE_CLOUD.md ข้อ 3
+  1. เปิดพอร์ต 80/443 — Oracle Cloud ต้องเปิด "สองชั้น" ดู deploy/ORACLE_CLOUD.md ข้อ 3
+     ส่วน Google Cloud ติ๊กสองช่องตอนสร้างเครื่อง ดู deploy/GOOGLE_CLOUD.md ข้อ 2
   2. Nginx + ใบรับรอง HTTPS — ดู DEPLOY.md ข้อ 5
   3. ตั้ง PUBLIC_BASE_URL=https://<โดเมนของโรงเรียน> ใน $ENV_FILE แล้ว systemctl restart esaraban
   4. ถ้าย้ายมาจากที่เดิม — คัดลอกฐานข้อมูลกับไฟล์แนบเข้ามา ดู deploy/ORACLE_CLOUD.md หัวข้อ "ย้ายมาจาก Render"

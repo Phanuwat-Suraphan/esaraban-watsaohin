@@ -22,6 +22,16 @@ import { pendingDigestText, lineShareBlock } from '../services/line.js';
 // เพื่อไม่ให้ audit_logs/workflow_steps ที่อ้างถึงเสียหาย และไม่ให้เลขทะเบียนถูกนำไปใช้ซ้ำ) ขั้นตอน
 // ที่ค้างอยู่จึงยังอยู่ในตารางตามเดิม ถ้าไม่กรองตรงนี้ ครูจะยังเห็นงานค้างของเอกสารที่ถูกลบไปแล้ว
 // กดเข้าไปก็เจอ "ไม่พบเอกสาร" แล้วเคลียร์ทิ้งเองก็ไม่ได้ ค้างอยู่อย่างนั้นถาวร (ผู้ใช้แจ้งเข้ามาเอง)
+// รายการงานค้างบนหน้าแรกแสดง "ทั้งหมด" ไม่ตัดที่ 8 ฉบับเหมือนเดิม
+//
+// ของเดิมตัดที่ 8 เงียบๆ โดยไม่บอกว่ายังมีต่อ ซึ่งแปลว่า ผอ. ที่มีงานค้าง 34 เรื่องเห็นแค่ 8 เรื่องแรก
+// แล้วเข้าใจว่าหมดแล้ว (โรงเรียนแจ้งเข้ามาเองว่า "ผอ. ไม่ได้เอกสารจากธุรการ") การตัดจึงไม่ใช่แค่
+// เรื่องความสวยงามของหน้าจอ แต่ทำให้คนตัดสินใจผิดว่างานหมดแล้ว
+//
+// ยังคงเพดานไว้กันหน้าพังเวลามีงานค้างมหาศาล — แต่สูงพอที่โรงเรียนจริงจะไม่มีวันชน และถ้าชนจริง
+// จะขึ้นข้อความบอกตรงๆ พร้อมลิงก์ไปหน้าที่แบ่งหน้าให้ ไม่ตัดหายเงียบๆ อีก
+const MY_PENDING_CEILING = 200;
+
 const LIVE_DOC_STEP_SQL = `ws.status = 'waiting' AND EXISTS (
   SELECT 1 FROM documents d2 WHERE d2.id = ws.document_id AND d2.deleted_at IS NULL
 )`;
@@ -148,8 +158,12 @@ router.get('/', requirePage((ctx) => {
     SELECT d.*, dt.name as type_name, ws.id as step_id, (ws.assignee_id != :me) as is_delegated FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
     WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' AND d.deleted_at IS NULL
-    ORDER BY ${PRIORITY_ORDER_SQL} ASC, ws.created_at ASC LIMIT 8
+    ORDER BY ${PRIORITY_ORDER_SQL} ASC, ws.created_at ASC LIMIT ${MY_PENDING_CEILING + 1}
   `).all(scope);
+
+  // ดึงมาเกินเพดานหนึ่งแถวเพื่อ "รู้ว่าโดนตัดหรือเปล่า" โดยไม่ต้องนับซ้ำอีกรอบ แล้วค่อยตัดทิ้งแถวเกิน
+  const pendingTrimmed = myPending.length > MY_PENDING_CEILING;
+  if (pendingTrimmed) myPending.length = MY_PENDING_CEILING;
 
   // กรองซ้ำด้วยตัวตรวจรายฉบับอีกชั้นเหมือนหน้าทะเบียน — การเปิดเผยหนังสือลับเป็นความผิดพลาด
   // ที่ยอมเสี่ยงไม่ได้ ดึงมาเผื่อแล้วค่อยตัดให้เหลือ 8 หลังกรอง
@@ -459,7 +473,12 @@ router.get('/', requirePage((ctx) => {
 
     <div class="grid-2">
       <div class="card">
-        <div class="card-header"><h3 class="mt-0">📌 งานของฉัน — ต้องดำเนินการ</h3><a class="text-muted" href="/tasks" style="font-size:.82rem">ดูทั้งหมด →</a></div>
+        <div class="card-header"><h3 class="mt-0">📌 งานของฉัน — ต้องดำเนินการ${myPending.length
+    ? ` <span class="text-muted" style="font-weight:400;font-size:.86rem">· ${fmtCount(myTasks)} เรื่อง</span>` : ''}</h3><a class="text-muted" href="/tasks" style="font-size:.82rem">ดูแบบแบ่งหน้า →</a></div>
+        ${pendingTrimmed ? `<p class="text-muted" style="font-size:.86rem;margin:.25rem 0 .5rem">
+          งานค้างเยอะมาก (${fmtCount(myTasks)} เรื่อง) หน้านี้แสดงให้ ${fmtCount(MY_PENDING_CEILING)} เรื่องแรก —
+          <a href="/tasks">ดูทั้งหมดแบบแบ่งหน้า</a>
+        </p>` : ''}
         ${myPending.length ? `<div class="table-wrap"><table>
           <thead><tr><th>เลขที่</th><th>เรื่อง</th><th>ความเร็ว</th><th>สถานะ</th></tr></thead>
           <tbody>${myPending.map((d) => `<tr ${rowAttrs(`/documents/${d.id}`)}>

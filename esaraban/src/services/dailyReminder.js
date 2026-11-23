@@ -18,6 +18,21 @@ import { holidaySetBetween } from './holidays.js';
 import { getSetting } from './settings.js';
 import { visibleDocumentsSqlFilter } from './workflow.js';
 import { unassignedIncoming, unassignedReminderLine, canSeeUnassigned } from './unassigned.js';
+
+/**
+ * จำนวนเรื่องที่ยกชื่อมาในข้อความเตือนหนึ่งฉบับ
+ *
+ * เดิมยกมา 3 เรื่องแล้วต่อท้ายว่า "และอีก N เรื่อง" ซึ่งทำให้คนที่มีงานค้างเยอะต้องกดเข้ามาดูทุกครั้ง
+ * ว่าเหลืออะไรบ้าง โรงเรียนขอให้แจ้งทั้งหมด จึงยกมาทุกเรื่อง
+ *
+ * ยังมีเพดานไว้กันข้อความยาวเกินที่ไลน์ส่งได้ (ข้อความเดียวจำกัดที่ 5000 ตัวอักษร) — ถ้าชนเพดานจริง
+ * ยังต่อท้ายว่าเหลืออีกกี่เรื่องเหมือนเดิม ไม่หายเงียบๆ
+ *
+ * ข้อ 1 ของหลักการข้างบนยังอยู่ครบ: ยังเป็น "ข้อความเดียวต่อคนต่อวัน" ไม่ใช่หนึ่งข้อความต่อหนึ่งฉบับ
+ * ซึ่งเป็นสิ่งที่ทำให้คนปิดการแจ้งเตือนทิ้ง — ข้อความเดียวที่ยาวขึ้นเป็นคนละเรื่องกับหลายข้อความติดกัน
+ */
+const MAX_LISTED_DOCS = 60;
+
 import { myUnreadBroadcasts } from './broadcastReads.js';
 
 /** อีกกี่วันถึงจะนับว่า "ใกล้ครบกำหนด" — สั้นพอให้ยังทำทัน และไม่ยาวจนเตือนทุกวันเป็นสัปดาห์ */
@@ -100,7 +115,7 @@ export function reminderTargets(today = todayInBangkok()) {
   // ผนวกเข้ากับข้อความเดิมของคนนั้น ไม่ส่งแยกอีกฉบับ ธุรการที่มีงานของตัวเองค้างด้วยจะได้ข้อความเดียว
   // ตามหลักการข้อ 1 ของไฟล์นี้ (วันละครั้งต่อคน ไม่ใช่ต่อเรื่อง)
   for (const u of assignReminderUsers()) {
-    const summary = unassignedIncoming(u, visibleDocumentsSqlFilter(u), { limit: 3 });
+    const summary = unassignedIncoming(u, visibleDocumentsSqlFilter(u), { limit: MAX_LISTED_DOCS });
     if (summary.total) entry(u.id).unassigned = summary;
   }
   // หนังสือเวียนที่ยังไม่ได้อ่าน — กองที่ตกสำรวจมาตลอด เพราะไม่มีขั้นตอน workflow และไม่มีวันครบ
@@ -117,7 +132,7 @@ export function reminderTargets(today = todayInBangkok()) {
     const unread = myUnreadBroadcasts(u, { limit: 3 });
     const due = unread.docs.filter((d) => String(d.sentAt || '').slice(0, 10) < today);
     if (!due.length) continue;
-    entry(u).circulars = { total: due.length, docs: due.slice(0, 3) };
+    entry(u).circulars = { total: due.length, docs: due.slice(0, MAX_LISTED_DOCS) };
   }
 
   return [...byUser.values()];
@@ -155,7 +170,7 @@ export function reminderMessage(target) {
   if (target.soon.length) parts.push(`ใกล้ครบกำหนด ${target.soon.length} เรื่อง`);
   const head = parts.join(' · ');
   // ยกตัวอย่างเรื่องที่ด่วนที่สุดมาให้เห็นเลย ไม่ใช่มีแต่ตัวเลข — คนอ่านจะได้รู้ว่าเรื่องอะไรโดยไม่ต้องกด
-  const first = [...target.overdue, ...target.today, ...target.soon].slice(0, 3)
+  const first = [...target.overdue, ...target.today, ...target.soon].slice(0, MAX_LISTED_DOCS)
     .map((d) => `• ${d.doc_number_display || ''} ${d.title}`.trim());
   const more = target.overdue.length + target.today.length + target.soon.length - first.length;
   if (more > 0) first.push(`• และอีก ${more} เรื่อง`);

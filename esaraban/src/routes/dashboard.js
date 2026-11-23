@@ -8,7 +8,7 @@ import { getBackupStatus } from '../services/dbBackup.js';
 import { driveFullSince } from '../services/driveAccounts.js';
 import { isGoogleDriveEnabled } from '../services/googleDrive.js';
 import { appShortName } from '../services/settings.js';
-import { pendingChaseGroups } from '../services/documentQuery.js';
+import { pendingChaseGroups, PRIORITY_ORDER_SQL } from '../services/documentQuery.js';
 import { unassignedIncoming } from '../services/unassigned.js';
 import { unstampedIncoming } from '../services/unstamped.js';
 import { pendingBroadcasts, myUnreadBroadcasts } from '../services/broadcastReads.js';
@@ -148,7 +148,7 @@ router.get('/', requirePage((ctx) => {
     SELECT d.*, dt.name as type_name, ws.id as step_id, (ws.assignee_id != :me) as is_delegated FROM workflow_steps ws
     JOIN documents d ON d.id = ws.document_id JOIN document_types dt ON dt.id = d.doc_type_id
     WHERE ${MY_OR_DELEGATED_STEP_SQL} AND ws.status = 'waiting' AND d.deleted_at IS NULL
-    ORDER BY d.priority DESC, ws.created_at ASC LIMIT 8
+    ORDER BY ${PRIORITY_ORDER_SQL} ASC, ws.created_at ASC LIMIT 8
   `).all(scope);
 
   // กรองซ้ำด้วยตัวตรวจรายฉบับอีกชั้นเหมือนหน้าทะเบียน — การเปิดเผยหนังสือลับเป็นความผิดพลาด
@@ -603,7 +603,7 @@ router.get('/summary', requirePage((ctx) => {
       AND d.due_date IS NOT NULL AND d.due_date != ''
       AND d.status NOT IN ('completed', 'archived', 'voided', 'destroyed', 'rejected')
     ORDER BY d.due_date ASC,
-      CASE d.priority WHEN 'most_urgent' THEN 0 WHEN 'very_urgent' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END ASC
+      ${PRIORITY_ORDER_SQL} ASC
     LIMIT 301
   `).all();
   // ดึงมา 301 เพื่อรู้ว่าโดนตัดหรือเปล่า (LIMIT ทำงานก่อนกรองสิทธิ์ในระดับ JS ด้านล่าง ตัวเลขสรุปด้านบน

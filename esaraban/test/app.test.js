@@ -281,6 +281,54 @@ describe('เลขทะเบียนหนังสือ: เรียง�
   });
 });
 
+// โรงเรียนแจ้งว่า "ผอ. ไม่ได้เอกสารจากธุรการ" — ไล่แล้วเจอว่ารายการงานค้างบนแดชบอร์ดเรียงด้วย
+// ORDER BY d.priority DESC ซึ่งคอลัมน์นั้นเก็บเป็นข้อความ SQLite จึงเรียงตามตัวอักษรให้:
+//   very_urgent > urgent > normal > most_urgent
+// แปลว่า "ด่วนที่สุด" ไปอยู่ท้ายสุด ตรงข้ามกับที่ตั้งใจ และเพราะรายการตัดที่ 8 ฉบับ หนังสือด่วนที่สุด
+// จึงถูกตัดหายไปจากหน้าจอ ผอ. ได้เลย ไม่ใช่แค่เรียงผิดที่ — ซึ่งคือหนังสือที่ต้องเห็นก่อนใครเพื่อน
+//
+// เป็นบั๊กชนิดเดียวกับที่เคยแก้ไปแล้วที่หน้าสรุปงาน จึงรวม CASE ไว้ที่เดียว (PRIORITY_ORDER_SQL)
+describe('รายการงานค้างของ ผอ. ต้องเอาหนังสือด่วนที่สุดขึ้นก่อน และต้องไม่ถูกตัดหาย', () => {
+  test('ด่วนที่สุดต้องอยู่ในรายการ แม้งานค้างจะเกินจำนวนที่รายการแสดงได้', async () => {
+    // ผู้รับงานของตัวเองโดยเฉพาะ ไม่ใช้ร่วมกับเทสต์อื่น — ชุดนี้รัน describe พร้อมกัน ถ้าใช้ร่วมกัน
+    // งานค้างของเทสต์อื่นจะไหลเข้ามาปนจนนับไม่ได้
+    const boss = { id: uuid(), roleCodes: ['director'] };
+    db.prepare(`INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position,
+        department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+      VALUES (?, ?, 'นาย', 'ผอ.', 'ทดสอบลำดับ', ?, 'ผู้อำนวยการ', ?, 'x', 'x', 'active', 0, ?, ?)`)
+      .run(boss.id, `dirorder-${boss.id.slice(0, 8)}`, `dirorder-${boss.id.slice(0, 8)}@school.local`,
+        deptId, nowIso(), nowIso());
+
+    // ฉบับด่วนที่สุดมาถึงก่อนเพื่อน แล้วตามด้วยงานปกติอีกเพียบจนเกินเพดานรายการ
+    // ใต้บั๊กเดิม ฉบับนี้จะร่วงไปท้ายสุดแล้วถูก LIMIT ตัดทิ้ง ทั้งที่มาก่อนและด่วนที่สุด
+    const urgent = makeDoc({ title: 'หนังสือด่วนที่สุดที่ต้องไม่หลุดจากหน้า ผอ.', priority: 'most_urgent' });
+    assignStep({ documentId: urgent.id, assigneeId: boss.id, instruction: 'โปรดพิจารณา', actorUser: registrarUser });
+    for (let i = 0; i < 10; i++) {
+      const d = makeDoc({ title: `หนังสือปกติลำดับที่ ${i + 1}`, priority: 'normal' });
+      assignStep({ documentId: d.id, assigneeId: boss.id, actorUser: registrarUser });
+    }
+
+    const res = await dispatchGet(boss, '/');
+    assert.equal(res.status, 200);
+
+    // ต้องตัดมาดูเฉพาะกล่อง "งานของฉัน" เท่านั้น ไม่ใช่ทั้งหน้า — หน้าเดียวกันมีกล่อง "เอกสารล่าสุด
+    // ในระบบ" อยู่ถัดลงไป ซึ่งโชว์ 8 ฉบับล่าสุดโดยไม่สนว่ามอบหมายให้ใคร ถ้าค้นทั้งหน้าจะเจอชื่อเรื่อง
+    // จากกล่องนั้นแล้วเทสต์ผ่านทั้งที่งานค้างถูกตัดหายจริง (พลาดมาแล้วตอนเขียนเทสต์นี้รอบแรก)
+    const openBox = res.body.indexOf('งานของฉัน — ต้องดำเนินการ');
+    assert.ok(openBox > 0, 'หากล่องงานค้างบนแดชบอร์ดไม่เจอ');
+    const endBox = res.body.indexOf('เอกสารล่าสุดในระบบ', openBox);
+    const box = res.body.slice(openBox, endBox > openBox ? endBox : undefined);
+
+    assert.ok(box.includes('หนังสือด่วนที่สุดที่ต้องไม่หลุดจากหน้า ผอ.'),
+      'หนังสือด่วนที่สุดต้องอยู่ในกล่องงานค้าง — ถ้าหลุด ผอ. จะไม่เห็นหนังสือที่ด่วนที่สุดเลย');
+
+    // และต้องมาก่อนงานปกติด้วย ไม่ใช่แค่มีอยู่ที่ไหนสักแห่งในกล่อง
+    const posUrgent = box.indexOf('หนังสือด่วนที่สุดที่ต้องไม่หลุดจากหน้า ผอ.');
+    const posNormal = box.indexOf('หนังสือปกติลำดับที่ ');
+    assert.ok(posNormal === -1 || posUrgent < posNormal, 'ด่วนที่สุดต้องขึ้นก่อนงานปกติ');
+  });
+});
+
 describe('document lifecycle: assign -> approve -> acknowledge', () => {
   test('full happy path reaches status=completed', () => {
     const doc = makeDoc({ title: 'ทดสอบ workflow เต็มรูปแบบ' });

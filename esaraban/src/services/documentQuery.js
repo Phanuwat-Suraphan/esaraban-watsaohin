@@ -12,6 +12,19 @@ import { awaitingReplySql } from './replyLink.js';
 export const CLOSED_STATUSES = ['completed', 'archived', 'voided', 'destroyed', 'rejected'];
 
 /**
+ * เรียงตามชั้นความเร็ว ด่วนที่สุด → ปกติ
+ *
+ * ต้องเขียนเป็น CASE เสมอ ห้ามใช้ ORDER BY priority DESC เด็ดขาด — คอลัมน์นี้เก็บเป็นข้อความ
+ * ('normal' 'urgent' 'very_urgent' 'most_urgent') SQLite จึงเรียงตามตัวอักษรให้ ผลที่ได้คือ
+ * very_urgent > urgent > normal > most_urgent แปลว่า "ด่วนที่สุด" ไปอยู่ท้ายสุด ตรงข้ามกับที่ต้องการ
+ * และถ้ารายการนั้นมี LIMIT หนังสือด่วนที่สุดจะถูกตัดหายไปจากหน้าจอเลย ไม่ใช่แค่เรียงผิดที่
+ *
+ * พลาดมาแล้วสองที่ (หน้าสรุปงาน และรายการงานค้างบนแดชบอร์ดของ ผอ.) จึงรวมไว้ที่เดียว
+ */
+export const PRIORITY_ORDER_SQL =
+  "CASE d.priority WHEN 'most_urgent' THEN 0 WHEN 'very_urgent' THEN 1 WHEN 'urgent' THEN 2 ELSE 3 END";
+
+/**
  * "ยังไม่ได้เสนอใคร" — หนังสือเข้าที่ลงทะเบียนแล้วแต่ยังไม่มีขั้นตอนใดๆ เลยสักขั้น
  *
  * ดูเหตุผลเต็มว่าทำไมกองนี้อันตรายที่สุดใน services/unassigned.js (สรุป: ไม่มีใครถืออยู่ จึงไม่โผล่

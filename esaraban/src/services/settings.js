@@ -58,12 +58,23 @@ const DEFAULTS = {
   // รอบถัดไปทะเบียนจะย้อนไปเริ่มที่ 1 เงียบๆ แล้วหนังสือที่ส่งออกไปจริงจะมีเลขซ้ำกับของเก่า
   outgoing_number_start: '',
   outgoing_number_start_year: '',
+  // ผู้ที่ฟอร์มลงรับหนังสือเข้าจะ "เสนอถึง" ให้เป็นค่าตั้งต้น (ปกติคือ ผอ.)
+  //
+  // ทำไมต้องมี: การลงทะเบียนหนังสือเข้ากับการเสนอให้ใครดำเนินการเป็นคนละขั้นกันโดยการออกแบบ
+  // ลงทะเบียนเฉยๆ จะไม่มีใครได้รับและไม่มีการแจ้งเตือนใดๆ หนังสือไปกองอยู่ในสถานะ "ยังไม่ได้เสนอใคร"
+  // โรงเรียนเจอจริง: ธุรการลงหนังสือเข้าแล้วเข้าใจว่า ผอ. จะได้รับเอง แต่ ผอ. ไม่เคยได้รับเลย
+  //
+  // ค่านี้ทำให้ฟอร์มเลือก "เสนอถึง" ไว้ให้ล่วงหน้า ธุรการจึงได้ทั้งสองขั้นในการกดครั้งเดียว
+  // แต่ยังเปลี่ยนเป็นคนอื่นหรือเว้นว่างรายฉบับได้เสมอ — บางฉบับส่งหัวหน้าฝ่ายตรงๆ เร็วกว่าผ่าน ผอ.
+  // ค่าว่าง = ไม่เลือกใครไว้ให้ ซึ่งเป็นพฤติกรรมเดิมทุกประการ
+  default_assignee_id: '',
 };
 
 export const MAX_SETTING_LENGTH = {
   school_name: 200, school_short_name: 100, school_initials: 8, outgoing_number_prefix: 40,
   daily_reminder_time: 5, daily_reminder_enabled: 3,
   outgoing_number_start: 7, outgoing_number_start_year: 4,
+  default_assignee_id: 36,
 };
 
 /** รหัสหนังสือที่นำหน้าเลขทะเบียนส่ง — ค่าว่างแปลว่ายังไม่ได้ตั้ง ให้ออกเลขแบบเดิม */
@@ -132,12 +143,34 @@ export function setSetting({ key, value, actorUser }) {
     if (!/^\d+$/.test(clean)) throw httpError(400, 'ค่านี้ต้องเป็นตัวเลขเท่านั้น');
     if (Number(clean) <= 0) throw httpError(400, 'ค่านี้ต้องมากกว่า 0');
   }
+  // ต้องเป็นคนที่มีอยู่จริงและยังใช้งานอยู่ ไม่งั้นฟอร์มจะเลือกคนที่ลาออกไปแล้วไว้ให้ทุกครั้ง
+  // แล้วการเสนอจะล้มทุกฉบับ หรือเสนอไปถึงบัญชีที่ไม่มีใครเปิดอ่าน
+  if (key === 'default_assignee_id' && clean) {
+    const u = db.prepare("SELECT status FROM users WHERE id = ?").get(clean);
+    if (!u) throw httpError(400, 'ไม่พบผู้ใช้ที่เลือก');
+    if (u.status !== 'active') throw httpError(400, 'ผู้ใช้ที่เลือกไม่ได้อยู่ในสถานะใช้งาน');
+  }
   db.prepare(`
     INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at
   `).run(key, clean, actorUser?.id || null, nowIso());
   invalidateSettingsCache();
   audit({ userId: actorUser?.id, action: 'setting_changed', tableName: 'app_settings', recordId: key, detail: { key, value: clean } });
+}
+
+/**
+ * ผู้รับเริ่มต้นของฟอร์มลงรับหนังสือเข้า — คืน null ถ้ายังไม่ได้ตั้ง หรือคนที่ตั้งไว้ใช้งานไม่ได้แล้ว
+ *
+ * ตรวจสถานะซ้ำตอนอ่านด้วย ไม่ใช่เชื่อตอนบันทึกอย่างเดียว เพราะคนที่ตั้งไว้ถูกปิดบัญชี/ลาออกทีหลังได้
+ * ถ้าไม่ตรวจ ฟอร์มจะเลือกคนที่ใช้งานไม่ได้ไว้ให้ทุกครั้ง แล้วการเสนอจะล้มทุกฉบับโดยธุรการไม่รู้สาเหตุ
+ */
+export function defaultAssignee() {
+  const id = getSetting('default_assignee_id');
+  if (!id) return null;
+  const u = db.prepare(`SELECT id, prefix, first_name, last_name, position FROM users
+    WHERE id = ? AND status = 'active'`).get(id);
+  if (!u) return null;
+  return { id: u.id, name: `${u.prefix || ''}${u.first_name} ${u.last_name}`.trim(), position: u.position || '' };
 }
 
 /** ชื่อโรงเรียนเต็ม ที่พิมพ์ลงหัวเอกสารราชการทุกใบ — ต้องมีคำว่า "โรงเรียน" นำหน้าอยู่ในตัวค่าเอง

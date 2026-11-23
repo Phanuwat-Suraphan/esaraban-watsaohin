@@ -2,6 +2,15 @@ import { router, html, json, redirect, contentDispositionHeader } from '../route
 import { layout, esc, fmtDate, fmtThaiDateLong, emptyState, schoolName, schoolShortName, schoolInitials, envNumberWarningBox } from '../render.js';
 import { requirePage, requireApi, requireRole } from '../middleware.js';
 import { db, uuid, nowIso, hashSecret, audit, beYear, todayInBangkok, starterModeActive, clearStarterCredentials, TEST_MODE_ON } from '../db.js';
+
+/** คนที่เลือกเป็น "ผู้รับเริ่มต้นของหนังสือเข้า" ได้ — ทุกคนที่ยังใช้งานอยู่ (ตรงกับรายชื่อในฟอร์มลงรับ) */
+function settingsPeople() {
+  return db.prepare(`
+    SELECT u.id, u.prefix, u.first_name, u.last_name, u.position
+    FROM users u WHERE u.deleted_at IS NULL AND u.status = 'active'
+    ORDER BY u.first_name, u.last_name
+  `).all();
+}
 import { seedFixedHolidays, listHolidays, holidayYears, addHoliday, removeHoliday } from '../services/holidays.js';
 import { readTable, planUserImport, applyUserImport, templateCsv, generatePassword, generatePin } from '../services/userImport.js';
 import { httpError } from '../services/workflow.js';
@@ -124,6 +133,22 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           <div class="help-text">ตัวอักษรในวงกลมมุมบนซ้ายและหน้าเข้าสู่ระบบ — 1-2 ตัวกำลังดี</div>
         </div>
         <div class="field">
+          <label for="default_assignee_id">เสนอหนังสือเข้าถึงใครเป็นค่าตั้งต้น <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <select id="default_assignee_id" style="max-width:22rem">
+            <option value="">— ไม่เลือกใครไว้ให้ —</option>
+            ${settingsPeople().map((u) => `<option value="${esc(u.id)}"${u.id === getSetting('default_assignee_id') ? ' selected' : ''}>${esc(`${u.prefix || ''}${u.first_name} ${u.last_name}`.trim())}${u.position ? ` · ${esc(u.position)}` : ''}</option>`).join('')}
+          </select>
+          <div class="help-text">
+            <strong>การลงทะเบียนหนังสือเข้ากับการเสนอให้ใครดำเนินการเป็นคนละขั้นกัน</strong> —
+            ลงทะเบียนเฉยๆ หนังสือจะไปกองอยู่ที่ “ยังไม่ได้เสนอใคร” โดยไม่มีใครได้รับและไม่มีการแจ้งเตือน
+            <div style="margin-top:.35rem">
+              ตั้งค่านี้ไว้แล้วฟอร์มลงรับหนังสือเข้าจะ<strong>เลือก “เสนอถึง” ไว้ให้ล่วงหน้า</strong>
+              ธุรการจึงได้ทั้งสองขั้นในการกดครั้งเดียว — แต่ยัง<strong>เปลี่ยนเป็นคนอื่นหรือเว้นว่างรายฉบับได้เสมอ</strong>
+              เพราะหนังสือบางฉบับเสนอถึงหัวหน้าฝ่ายหรือครูเจ้าของเรื่องตรงๆ เร็วกว่า
+            </div>
+          </div>
+        </div>
+        <div class="field">
           <label for="outgoing_number_prefix">รหัสหนังสือของโรงเรียน <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <input type="text" id="outgoing_number_prefix" maxlength="${MAX_SETTING_LENGTH.outgoing_number_prefix}"
             value="${esc(getSetting('outgoing_number_prefix'))}" placeholder="เช่น ศธ 04056.12" style="max-width:16rem"
@@ -235,6 +260,7 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           outgoing_number_start_year: document.getElementById('outgoing_number_start_year').value,
           daily_reminder_enabled: document.getElementById('daily_reminder_enabled').checked ? 'on' : 'off',
           daily_reminder_time: document.getElementById('daily_reminder_time').value,
+          default_assignee_id: document.getElementById('default_assignee_id').value,
         };
         window.setBtnLoading(btn, 'กำลังบันทึก...');
         fetch('/admin/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
@@ -264,7 +290,7 @@ router.post('/admin/settings', requireApi(async (ctx) => {
   }
   for (const key of ['school_name', 'school_short_name', 'school_initials', 'outgoing_number_prefix',
     'outgoing_number_start', 'outgoing_number_start_year',
-    'daily_reminder_enabled', 'daily_reminder_time']) {
+    'daily_reminder_enabled', 'daily_reminder_time', 'default_assignee_id']) {
     if (ctx.body[key] === undefined) continue;
     setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
   }

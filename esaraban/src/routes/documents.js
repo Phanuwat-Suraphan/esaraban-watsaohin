@@ -28,6 +28,7 @@ import {
   lineShareBlock,
 } from '../services/line.js';
 import { getActiveDelegateFor } from '../services/delegation.js';
+import { defaultAssignee } from '../services/settings.js';
 import {
   buildDocumentQuery, countDocuments, listDocuments, describeFilters, listRegisterYears, CLOSED_STATUSES,
   pendingChaseGroups,
@@ -149,6 +150,22 @@ const REGISTRAR_MARK_OPTIONS = [
   { value: 'เสนอความคิดเห็น', label: 'เสนอความคิดเห็น ........', fill: 'comment' },
 ];
 const REGISTRAR_MARK_VALUES = REGISTRAR_MARK_OPTIONS.map((m) => m.value);
+
+const personName = (u) => `${u.prefix || ''}${u.first_name} ${u.last_name}`.trim();
+
+/**
+ * คนที่ฟอร์มลงรับหนังสือเข้าเสนอถึงได้ — ทุกคนที่ยังใช้งานอยู่
+ *
+ * ไม่จำกัดเฉพาะ ผอ./หัวหน้าฝ่าย เพราะหนังสือเข้าบางฉบับเสนอถึงครูเจ้าของเรื่องตรงๆ เร็วกว่า
+ * (ตรงกับรายชื่อที่หน้ามอบหมายงานให้เลือกอยู่แล้ว จะได้ไม่มีคนหายไปจากที่หนึ่งแต่มีอีกที่หนึ่ง)
+ */
+function assignCandidates() {
+  return db.prepare(`
+    SELECT u.id, u.prefix, u.first_name, u.last_name, u.position
+    FROM users u WHERE u.deleted_at IS NULL AND u.status = 'active'
+    ORDER BY u.first_name, u.last_name
+  `).all();
+}
 
 function listDeptOptions(selected) {
   return db.prepare('SELECT * FROM departments ORDER BY name').all()
@@ -560,6 +577,8 @@ router.post('/share-target', requirePage((ctx) => {
 
 router.get('/documents/new', requirePage((ctx) => {
   const direction = ctx.query.direction === 'outgoing' ? 'outgoing' : 'incoming';
+  // ผู้รับเริ่มต้นที่ผู้ดูแลตั้งไว้ (ปกติคือ ผอ.) — เว้นว่างได้ และธุรการเปลี่ยนรายฉบับได้เสมอ
+  const defaultAssigneeId = direction === 'incoming' ? (defaultAssignee()?.id || '') : '';
   const content = `
     <h2>${direction === 'incoming' ? '📥 รับหนังสือใหม่' : '📤 สร้างหนังสือส่ง'}</h2>
     <div class="card">
@@ -578,6 +597,16 @@ router.get('/documents/new', requirePage((ctx) => {
             <label>ฝ่ายที่รับผิดชอบ *</label>
             <select name="departmentId" required>${listDeptOptions(ctx.user.department_id)}</select>
           </div>
+          ${direction !== 'incoming' ? '' : `<div class="field">
+            <label>เสนอถึง</label>
+            <select name="assigneeId">
+              <option value="">— ยังไม่เสนอใคร (ลงทะเบียนไว้ก่อน) —</option>
+              ${assignCandidates().map((u) => `<option value="${esc(u.id)}"${u.id === defaultAssigneeId ? ' selected' : ''}>${esc(personName(u))}${u.position ? ` · ${esc(u.position)}` : ''}</option>`).join('')}
+            </select>
+            <small class="text-muted">${defaultAssigneeId
+    ? 'เลือกไว้ให้ตามค่าตั้งต้น เปลี่ยนเป็นคนอื่นหรือเว้นว่างได้'
+    : 'การลงทะเบียนเฉยๆ จะยังไม่มีใครได้รับและไม่มีการแจ้งเตือน — เลือกคนที่นี่ได้เลยในครั้งเดียว'}</small>
+          </div>`}
           <div class="field">
             <label>ความเร็ว</label>
             <select name="priority">
@@ -808,6 +837,22 @@ router.post('/documents', requireApi(async (ctx) => {
   });
   const warnParts = [];
   if (doc.duplicateDocNumberWarning) warnParts.push(doc.duplicateDocNumberWarning);
+
+  // เสนอให้คนที่เลือกไว้ในฟอร์มทันที — การลงทะเบียนกับการเสนอเป็นคนละขั้นกันโดยการออกแบบ ถ้าไม่ทำ
+  // ตรงนี้ หนังสือจะไปกองอยู่ในสถานะ "ยังไม่ได้เสนอใคร" โดยไม่มีใครได้รับและไม่มีการแจ้งเตือนเลย
+  // (โรงเรียนเจอจริง: ธุรการลงหนังสือแล้วเข้าใจว่า ผอ. ได้รับเอง แต่ ผอ. ไม่เคยได้รับ)
+  //
+  // ไม่รวมเข้าธุรกรรมเดียวกับการสร้างหนังสือโดยตั้งใจ: เลขทะเบียนออกไปแล้วและใช้ซ้ำไม่ได้ ถ้าการเสนอ
+  // ล้มแล้วย้อนทั้งหมด ธุรการจะเห็นแค่ "ผิดพลาด" แล้วกรอกใหม่ = ได้หนังสือซ้ำสองฉบับกินสองเลข
+  // (เหตุผลเดียวกับการแนบไฟล์ด้านล่าง) จึงเก็บหนังสือไว้แล้วบอกให้ชัดว่าเหลือแค่กดเสนอเองอีกที
+  const assigneeId = typeof b.assigneeId === 'string' ? b.assigneeId.trim() : '';
+  if (b.direction !== 'outgoing' && assigneeId) {
+    try {
+      assignStep({ documentId: doc.id, assigneeId, instruction: null, actorUser: ctx.user });
+    } catch (err) {
+      warnParts.push(`บันทึกหนังสือและออกเลขเรียบร้อยแล้ว แต่เสนอให้ผู้รับไม่สำเร็จ: ${err.message} — ไม่ต้องลงทะเบียนซ้ำ กด "เสนอ/มอบหมาย" ที่หน้านี้ได้เลย`);
+    }
+  }
   // ตรงนี้เลขที่หนังสือถูกออกไปแล้วและใช้ซ้ำไม่ได้ตามหลักงานสารบรรณ จึงไม่โยน error ทิ้งทั้งฟอร์ม
   // แต่เตือนผ่าน ?warn= ให้ธุรการรู้ทันทีว่าต้องแนบไฟล์ใหม่ที่หน้ารายละเอียด
   if (isEmptyUpload(b)) {

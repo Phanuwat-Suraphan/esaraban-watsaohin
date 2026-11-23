@@ -41,7 +41,7 @@ const { planUserImport, MAX_IMPORT_ROWS } = await import('../src/services/userIm
 const { truncateFilename, MAX_HEADER_FILENAME_CHARS } = await import('../src/router.js');
 const { buildDocumentQuery, describeFilters, listRegisterYears, listDocuments } = await import('../src/services/documentQuery.js');
 const { asText, asTextOrNull } = await import('../src/services/validate.js');
-const { setSetting, getSetting, invalidateSettingsCache } = await import('../src/services/settings.js');
+const { setSetting, getSetting, invalidateSettingsCache, defaultAssignee } = await import('../src/services/settings.js');
 const { schoolName, schoolShortName, schoolInitials } = await import('../src/render.js');
 const { createDelegation, cancelDelegation } = await import('../src/services/delegation.js');
 const { isBackupEnabled, restoreDatabaseIfMissing, backupNow, planBackupCleanup, thaiDateParts, decideBackupBlock } = await import('../src/services/dbBackup.js');
@@ -335,6 +335,94 @@ describe('รายการงานค้างของ ผอ. ต้อง�
     }
     // และต้องบอกจำนวนจริงไว้บนหัวกล่อง เพื่อให้รู้ได้ทันทีว่ามีกี่เรื่องโดยไม่ต้องนับแถวเอง
     assert.ok(box.includes('11 เรื่อง'), 'หัวกล่องต้องบอกจำนวนงานค้างทั้งหมด');
+  });
+});
+
+// โรงเรียนเจอจริงว่า "ผอ. ไม่ได้เอกสารจากธุรการ" — ต้นเหตุคือการลงทะเบียนหนังสือเข้ากับการเสนอให้ใคร
+// ดำเนินการเป็นคนละขั้นกันโดยการออกแบบ ลงทะเบียนเฉยๆ จะไม่สร้างขั้นตอนและไม่แจ้งเตือนใครเลย
+// (เดินจริงแล้วได้ ขั้นตอน 0 / แจ้งเตือน 0) หนังสือไปกองอยู่ที่ "ยังไม่ได้เสนอใคร" เงียบๆ
+//
+// ทางแก้ที่โรงเรียนเลือก: ตั้งผู้รับเริ่มต้นไว้ได้ (ปกติคือ ผอ.) ฟอร์มจะเลือกไว้ให้ล่วงหน้า ธุรการจึง
+// ได้ทั้งสองขั้นในการกดครั้งเดียว แต่ยังเปลี่ยนเป็นคนอื่นหรือเว้นว่างรายฉบับได้
+describe('ลงรับหนังสือเข้าแล้วเสนอถึงผู้รับได้ในครั้งเดียว', () => {
+  // ผู้รับของตัวเองโดยเฉพาะ ไม่ใช้ร่วมกับเทสต์อื่น — ชุดนี้รัน describe พร้อมกัน ถ้าใช้ร่วมกันจะนับ
+  // แจ้งเตือนของเทสต์อื่นปนเข้ามา
+  const makeBoss = (label) => {
+    const id = uuid();
+    db.prepare(`INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position,
+        department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+      VALUES (?, ?, 'นาย', 'ผอ.', ?, ?, 'ผู้อำนวยการ', ?, 'x', 'x', 'active', 0, ?, ?)`)
+      .run(id, `${label}-${id.slice(0, 8)}`, label, `${label}-${id.slice(0, 8)}@school.local`,
+        deptId, nowIso(), nowIso());
+    return id;
+  };
+  const notifCount = (uid) => db.prepare('SELECT COUNT(*) c FROM notifications WHERE user_id = ?').get(uid).c;
+  const stepCount = (docId) => db.prepare('SELECT COUNT(*) c FROM workflow_steps WHERE document_id = ?').get(docId).c;
+  const register = (body) => dispatchPost(registrarUser, '/documents', {
+    direction: 'incoming', title: 'หนังสือเข้าทดสอบการเสนอ', correspondentName: 'สพป.ชม.1',
+    departmentId: deptId, priority: 'normal', secretLevel: 'normal', allowDuplicate: true, ...body,
+  });
+
+  test('เลือกผู้รับในฟอร์ม → ผอ. ได้ทั้งคิวงานและแจ้งเตือน ในการกดครั้งเดียว', async () => {
+    const boss = makeBoss('รับเลย');
+    const before = notifCount(boss);
+    const res = await register({ assigneeId: boss });
+    assert.equal(res.status, 201, res.body);
+    const docId = /documents\/([a-f0-9-]+)/.exec(res.body)[1];
+
+    assert.equal(stepCount(docId), 1, 'ต้องสร้างขั้นตอนให้ผู้รับทันที ไม่ใช่ค้างที่ "ยังไม่ได้เสนอใคร"');
+    assert.equal(notifCount(boss) - before, 1, 'และต้องแจ้งเตือนผู้รับด้วย');
+    assert.equal(getDocument(docId).status, 'in_progress');
+  });
+
+  test('เว้นว่างไว้ → ยังเป็นพฤติกรรมเดิมทุกประการ ไม่เสนอใครและไม่แจ้งเตือน', async () => {
+    const boss = makeBoss('ไม่รับ');
+    const before = notifCount(boss);
+    const res = await register({ title: 'หนังสือเข้าที่ยังไม่เสนอใคร', assigneeId: '' });
+    assert.equal(res.status, 201, res.body);
+    const docId = /documents\/([a-f0-9-]+)/.exec(res.body)[1];
+
+    assert.equal(stepCount(docId), 0, 'เว้นว่างต้องไม่เสนอใคร — ธุรการบางฉบับตั้งใจลงไว้ก่อน');
+    assert.equal(notifCount(boss) - before, 0);
+  });
+
+  // เลขทะเบียนออกไปแล้วใช้ซ้ำไม่ได้ ถ้าการเสนอล้มแล้วย้อนทั้งหมด ธุรการจะเห็นแค่ "ผิดพลาด" แล้วกรอกใหม่
+  // = ได้หนังสือซ้ำสองฉบับกินสองเลข จึงต้องเก็บหนังสือไว้แล้วบอกว่าเหลือแค่กดเสนอเองอีกที
+  test('ผู้รับใช้ไม่ได้ ต้องไม่ทิ้งหนังสือทั้งฉบับ แต่บอกให้ชัดว่าเหลืออะไร', async () => {
+    const res = await register({ title: 'หนังสือเข้าที่เสนอไม่สำเร็จ', assigneeId: 'ไม่มีผู้ใช้คนนี้' });
+    assert.equal(res.status, 201, 'หนังสือต้องยังถูกบันทึกไว้ ไม่ใช่ล้มทั้งฟอร์มจนเลขทะเบียนหายไปเปล่าๆ');
+    const docId = /documents\/([a-f0-9-]+)/.exec(res.body)[1];
+    assert.ok(getDocument(docId), 'หนังสือต้องมีอยู่จริง');
+    assert.equal(stepCount(docId), 0);
+    assert.match(decodeURIComponent(res.body), /เสนอให้ผู้รับไม่สำเร็จ/,
+      'ต้องบอกตรงๆ ว่าเหลือแค่กดเสนอเอง ไม่ใช่เงียบแล้วเข้าใจว่าเสนอไปแล้ว');
+  });
+
+  test('ค่าตั้งต้นที่ผู้ดูแลตั้งไว้ ต้องถูกเลือกไว้ให้ในฟอร์มลงรับ', async () => {
+    const boss = makeBoss('ตั้งต้น');
+    setSetting({ key: 'default_assignee_id', value: boss, actorUser: adminUser });
+    try {
+      const res = await dispatchGet(registrarUser, '/documents/new', { direction: 'incoming' });
+      assert.equal(res.status, 200);
+      assert.match(res.body, new RegExp(`<option value="${boss}" selected>`),
+        'ฟอร์มต้องเลือกผู้รับเริ่มต้นไว้ให้ล่วงหน้า');
+    } finally {
+      setSetting({ key: 'default_assignee_id', value: '', actorUser: adminUser });
+    }
+  });
+
+  test('คนที่ถูกปิดบัญชีไปแล้ว ต้องไม่ถูกเลือกไว้ให้', () => {
+    const boss = makeBoss('ปิดบัญชี');
+    setSetting({ key: 'default_assignee_id', value: boss, actorUser: adminUser });
+    try {
+      db.prepare("UPDATE users SET status = 'inactive' WHERE id = ?").run(boss);
+      invalidateSettingsCache();
+      assert.equal(defaultAssignee(), null,
+        'ตั้งไว้แล้วคนนั้นลาออกทีหลังได้ ถ้ายังเลือกไว้ให้ การเสนอจะล้มทุกฉบับโดยไม่รู้สาเหตุ');
+    } finally {
+      db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(boss);
+      setSetting({ key: 'default_assignee_id', value: '', actorUser: adminUser });
+    }
   });
 });
 

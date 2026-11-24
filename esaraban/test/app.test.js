@@ -9275,6 +9275,65 @@ describe('เตือนงานค้างประจำวัน', () => {
   // ทั้งหมด ไม่ว่าจะค้างนานแค่ไหน — ฉบับ 1034 ที่ ผอ. ได้รับคือฉบับที่บังเอิญมีคนกรอกวันครบกำหนดไว้
   // รอบเช้าพลาดได้จริงบนโฮสต์ที่เครื่องหลับเมื่อไม่มีคนใช้ (ตัวเดินเวลาไม่ทำงานตอนหลับ) ผู้ดูแลจึง
   // ต้องสั่งส่งเองได้ ไม่ใช่รอข้ามคืนแล้วลุ้นว่าพรุ่งนี้จะได้ไหม
+  // หัวใจของการเตือนอัตโนมัติบนโฮสต์ที่เครื่องหลับเมื่อไม่มีคนใช้ (Render แพ็กฟรี)
+  //
+  // ตัวเดินเวลาทำงานในโปรเซสเดียวกับเว็บ ตอนเครื่องหลับมันก็หลับไปด้วย ถ้าเทียบเวลาแบบ "ตรงนาทีเป๊ะ"
+  // วันไหนที่ไม่มีใครเข้าเว็บตอน 07:30 พอดี จะไม่มีการเตือนเลยทั้งวัน — ซึ่งคือสิ่งที่โรงเรียนเจอ
+  // (วันนี้ไม่ได้รับอะไรเลย) จึงต้องส่งแบบ "ถึงเวลาแล้วหรือเลยมาแล้ว" เพื่อให้คนแรกที่เปิดระบบ
+  // ตอนเช้าเป็นคนปลุกเซิร์ฟเวอร์ แล้วการเตือนของวันนั้นออกตามทันที
+  describe('ตัวเดินเวลาของการเตือนอัตโนมัติ', () => {
+    const withWork = () => {
+      const uid = uuid();
+      db.prepare(`INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position,
+          department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+        VALUES (?, ?, 'นาย', 'ผอ.', 'ตัวเดินเวลา', ?, 'ผู้อำนวยการ', ?, 'x', 'x', 'active', 0, ?, ?)`)
+        .run(uid, `sched-${uid.slice(0, 8)}`, `sched-${uid.slice(0, 8)}@school.local`, deptId, nowIso(), nowIso());
+      const doc = makeDoc({ title: `หนังสือค้างของตัวเดินเวลา ${uid.slice(0, 6)}` });
+      assignStep({ documentId: doc.id, assigneeId: uid, actorUser: registrarUser });
+      return uid;
+    };
+    const notifCountOf = (uid) => db.prepare('SELECT COUNT(*) c FROM notifications WHERE user_id = ?').get(uid).c;
+    const tick = () => new Promise((r) => setTimeout(r, 60));
+
+    afterEach(() => { rem._stopDailyReminderForTest(); });
+
+    test('เครื่องหลับข้ามเวลาเตือน พอตื่นมาต้องส่งของวันนั้นให้ ไม่ใช่ข้ามไปเลย', async () => {
+      const uid = withWork();
+      // 00:00 = เลยเวลามาแล้วเสมอไม่ว่าจะรันเทสต์ตอนกี่โมง — จำลอง "ตื่นมาหลังเวลาเตือน"
+      setSetting({ key: 'daily_reminder_time', value: '00:00', actorUser: adminUser });
+      const before = notifCountOf(uid);
+      assert.equal(rem.startDailyReminder({ intervalMs: 20 }), true);
+      await tick();
+      assert.equal(notifCountOf(uid), before + 1,
+        'เลยเวลาเตือนมาแล้วต้องส่งทันทีที่เครื่องตื่น ไม่งั้นวันที่ไม่มีใครเข้าเว็บตอน 07:30 จะเงียบทั้งวัน');
+    });
+
+    test('ยังไม่ถึงเวลาที่ตั้งไว้ ต้องยังไม่ส่ง', async () => {
+      const uid = withWork();
+      const now = rem.bangkokHourMinute();
+      // ตั้งเวลาไว้ข้างหน้า 2 นาที — ถ้าใกล้เที่ยงคืนจนล้นวัน ข้ามข้อนี้ไปแทนที่จะได้ผลลวง
+      const ahead = now.hour * 60 + now.minute + 2;
+      if (ahead >= 24 * 60) return;
+      setSetting({ key: 'daily_reminder_time',
+        value: `${String(Math.floor(ahead / 60)).padStart(2, '0')}:${String(ahead % 60).padStart(2, '0')}`,
+        actorUser: adminUser });
+      const before = notifCountOf(uid);
+      rem.startDailyReminder({ intervalMs: 20 });
+      await tick();
+      assert.equal(notifCountOf(uid), before, 'ยังไม่ถึงเวลาต้องไม่ส่ง');
+    });
+
+    test('ส่งไปแล้ววันนี้ กดปุ่มส่งซ้ำต้องไม่ยิงซ้ำให้คนเดิม', async () => {
+      const uid = withWork();
+      setSetting({ key: 'daily_reminder_time', value: '00:00', actorUser: adminUser });
+      rem.sendDailyReminders({ force: true });
+      const after1 = notifCountOf(uid);
+      rem.sendDailyReminders({ force: true });
+      assert.equal(notifCountOf(uid), after1,
+        'ด่านกันส่งซ้ำอยู่ที่ฐานข้อมูล จึงกันได้แม้สั่งส่งเองซ้ำๆ — ของที่ไปโผล่ในไลน์แล้วเรียกคืนไม่ได้');
+    });
+  });
+
   describe('ปุ่มส่งเตือนให้ทุกคนเดี๋ยวนี้', () => {
     test('ผู้ดูแลสั่งส่งได้ และส่งถึงเฉพาะคนที่มีงานค้างจริง', async () => {
       const uid = uuid();

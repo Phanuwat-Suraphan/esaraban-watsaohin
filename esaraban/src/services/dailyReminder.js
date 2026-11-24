@@ -95,17 +95,33 @@ export function reminderTargets(today = todayInBangkok()) {
       AND d.deleted_at IS NULL
       AND d.status NOT IN ('completed', 'archived', 'voided', 'destroyed', 'rejected')
       AND u.deleted_at IS NULL AND u.status = 'active'
-      AND d.due_date IS NOT NULL AND d.due_date != '' AND d.due_date <= :soon
-    ORDER BY d.due_date, d.doc_number_display
+      -- เอาทั้งงานที่ถึงกำหนดแล้ว และงานที่ "ไม่ได้กรอกวันครบกำหนดไว้เลย"
+      --
+      -- เดิมบังคับว่าต้องมีวันครบกำหนดเสมอ ผลคือหนังสือที่ไม่ได้กรอกช่องนั้น (ซึ่งคือหนังสือรับ
+      -- จากหน่วยงานเกือบทุกฉบับ เพราะเป็นช่องไม่บังคับ) ไม่เข้าการแจ้งเตือนเลยสักครั้ง ไม่ว่าจะ
+      -- ค้างนานแค่ไหนหรือมีกี่ร้อยฉบับ — โรงเรียนเจอจริง: ทะเบียนเดินไปถึงเลข 1100 กว่าแล้ว
+      -- แต่ ผอ. ได้แจ้งเตือนแค่ฉบับเดียวซึ่งเป็นฉบับที่บังเอิญมีวันครบกำหนด ส่วนงานค้างที่เหลือ
+      -- ทั้งกองเงียบสนิท
+      --
+      -- ยังไม่เอาของที่ "ครบกำหนดอีกนาน" (เกิน :soon) ตามหลักการข้อ 2 — ของที่ยังไม่ถึงเวลา
+      -- ไม่ใช่ของที่ต้องรู้วันนี้ แต่ของที่ไม่มีกำหนดเลยคือของที่ค้างอยู่จริงและไม่มีอะไรมาปลุก
+      AND (d.due_date IS NULL OR d.due_date = '' OR d.due_date <= :soon)
+    ORDER BY d.due_date IS NULL OR d.due_date = '', d.due_date, ws.created_at
   `).all({ soon: soonDate });
 
   const byUser = new Map();
   const entry = (userId) => {
-    if (!byUser.has(userId)) byUser.set(userId, { userId, overdue: [], today: [], soon: [], unassigned: null, circulars: null });
+    if (!byUser.has(userId)) {
+      byUser.set(userId, { userId, overdue: [], today: [], soon: [], waiting: [], unassigned: null, circulars: null });
+    }
     return byUser.get(userId);
   };
   for (const r of rows) {
-    const bucket = r.due_date < today ? 'overdue' : r.due_date === today ? 'today' : 'soon';
+    // "waiting" = ค้างอยู่แต่ไม่ได้กำหนดวันครบ — แยกกองของตัวเองเพราะเร่งด่วนคนละระดับกับที่เลยกำหนด
+    // ถ้าปนเข้ากองเดียวกัน ของที่เลยกำหนดจริงจะจมหายไปในกองใหญ่
+    const bucket = !r.due_date ? 'waiting'
+      : r.due_date < today ? 'overdue'
+        : r.due_date === today ? 'today' : 'soon';
     entry(r.assignee_id)[bucket].push(r);
   }
 
@@ -168,11 +184,15 @@ export function reminderMessage(target) {
   if (target.overdue.length) parts.push(`เลยกำหนดแล้ว ${target.overdue.length} เรื่อง`);
   if (target.today.length) parts.push(`ครบกำหนดวันนี้ ${target.today.length} เรื่อง`);
   if (target.soon.length) parts.push(`ใกล้ครบกำหนด ${target.soon.length} เรื่อง`);
+  // งานค้างที่ไม่ได้กำหนดวันครบ นับรวมไว้ด้วยเสมอ — เป็นกองใหญ่ที่สุดของโรงเรียนและเดิมเงียบสนิท
+  if (target.waiting?.length) parts.push(`ค้างอยู่ ${target.waiting.length} เรื่อง`);
   const head = parts.join(' · ');
   // ยกตัวอย่างเรื่องที่ด่วนที่สุดมาให้เห็นเลย ไม่ใช่มีแต่ตัวเลข — คนอ่านจะได้รู้ว่าเรื่องอะไรโดยไม่ต้องกด
-  const first = [...target.overdue, ...target.today, ...target.soon].slice(0, MAX_LISTED_DOCS)
+  // เรียงให้ของที่เลยกำหนดมาก่อนของที่ยังไม่มีกำหนดเสมอ ไม่งั้นของด่วนจริงจะจมอยู่ท้ายกองใหญ่
+  const first = [...target.overdue, ...target.today, ...target.soon, ...(target.waiting || [])].slice(0, MAX_LISTED_DOCS)
     .map((d) => `• ${d.doc_number_display || ''} ${d.title}`.trim());
-  const more = target.overdue.length + target.today.length + target.soon.length - first.length;
+  const more = target.overdue.length + target.today.length + target.soon.length
+    + (target.waiting?.length || 0) - first.length;
   if (more > 0) first.push(`• และอีก ${more} เรื่อง`);
   const own = head ? `${head}\n${first.join('\n')}` : '';
 

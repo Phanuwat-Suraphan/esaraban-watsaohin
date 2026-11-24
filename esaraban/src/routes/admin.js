@@ -17,7 +17,7 @@ import { httpError } from '../services/workflow.js';
 import { positionInput } from '../services/positions.js';
 import { asText, asTextOrNull, normalizeEmployeeCode, MAX_EMPLOYEE_CODE } from '../services/validate.js';
 import { getSetting, setSetting, MAX_SETTING_LENGTH, missingOutgoingNumberEnv } from '../services/settings.js';
-import { reminderTime, sendTestReminder } from '../services/dailyReminder.js';
+import { reminderTime, sendTestReminder, sendDailyReminders } from '../services/dailyReminder.js';
 import { previewNextNumber } from '../numbering.js';
 import { originFromHeaders } from '../services/publicUrl.js';
 import {
@@ -209,6 +209,7 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
                ย้ายลงมาเป็นชิปในแถวเดียวกับปุ่มอื่น ที่มี min-height 44px บนจอเล็กอยู่แล้ว -->
           <div class="chip-row" style="margin-top:.4rem">
             <button class="btn btn-outline btn-sm" type="button" onclick="testReminder(this)">🔔 ส่งตัวอย่างให้ตัวเองดูเดี๋ยวนี้</button>
+            <button class="btn btn-outline btn-sm" type="button" onclick="sendRemindersNow(this)">📣 ส่งเตือนให้ทุกคนเดี๋ยวนี้</button>
             <a class="btn btn-outline btn-sm" href="/admin/holidays">🎌 ปฏิทินวันหยุด</a>
           </div>
         </div>
@@ -245,6 +246,18 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           if (d === null) { window.restoreBtn(btn); return; }
           window.restoreBtn(btn);
           window.toast('ส่งตัวอย่างแล้ว — ดูที่กระดิ่งแจ้งเตือน (และไลน์ ถ้าผูกบัญชีไว้)', 'success');
+        }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
+      };
+
+      // ส่งของจริงให้ทุกคนทันที ไม่ต้องรอรอบเช้าพรุ่งนี้ — ใช้ตอนเพิ่งแก้ค่าหรือเพิ่งรู้ว่ารอบเช้า
+      // ไม่ได้ส่ง (เช่นเซิร์ฟเวอร์หลับอยู่ตอนถึงเวลา) ส่งถึงเฉพาะคนที่มีงานค้างจริงเหมือนรอบปกติ
+      window.sendRemindersNow = function (btn) {
+        if (!confirm('ส่งข้อความเตือนงานค้างให้ทุกคนที่มีงานค้างตอนนี้เลยหรือไม่?\\n\\nคนที่ไม่มีงานค้างจะไม่ได้รับ')) return;
+        window.setBtnLoading(btn, 'กำลังส่ง...');
+        window.postJson('/admin/settings/send-reminder-now', {}).then(function (d) {
+          if (d === null) { window.restoreBtn(btn); return; }
+          window.restoreBtn(btn);
+          window.toast('ส่งแล้ว ' + d.sent + ' คน' + (d.sent ? '' : ' — ไม่มีใครมีงานค้างตอนนี้'), 'success');
         }).catch(function (e) { window.toast(e.message, 'danger'); window.restoreBtn(btn); });
       };
 
@@ -300,6 +313,19 @@ router.post('/admin/settings', requireApi(async (ctx) => {
 router.post('/admin/settings/test-reminder', requireApi((ctx) => {
   if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
   json(ctx, 200, sendTestReminder(ctx.user));
+}));
+
+// ส่งรอบจริงทันที ไม่ต้องรอเวลาเตือนของพรุ่งนี้
+//
+// ทำไมต้องมี: รอบเช้าพลาดได้จริงบนโฮสต์ที่เครื่องหลับเมื่อไม่มีคนใช้ (ตัวเดินเวลาไม่ทำงานตอนหลับ)
+// และเวลาเพิ่งแก้ค่าอะไรที่กระทบการเตือน ผู้ดูแลไม่ควรต้องรอข้ามคืนถึงจะรู้ว่าได้ผลไหม
+//
+// force = ข้ามด่านกันส่งซ้ำของวันนี้โดยตั้งใจ — ปุ่มนี้คนกดเอง ไม่ใช่ตัวเดินเวลาเรียกซ้ำ
+router.post('/admin/settings/send-reminder-now', requireApi((ctx) => {
+  if (!ctx.user.roleCodes.includes('admin')) return json(ctx, 403, { error: 'เฉพาะผู้ดูแลระบบเท่านั้น' });
+  const result = sendDailyReminders({ force: true });
+  audit({ userId: ctx.user.id, action: 'daily_reminder_sent_manually', detail: { sent: result.sent } });
+  json(ctx, 200, result);
 }));
 
 router.get('/admin/users', requireRole('admin')(requirePage((ctx) => {

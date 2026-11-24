@@ -9267,6 +9267,63 @@ describe('เตือนงานค้างประจำวัน', () => {
       'อ่านแล้วต้องหายจากรายการเตือนเอง ไม่ต้องมีใครมากดปิด');
   });
 
+  // โรงเรียนแจ้งว่าทะเบียนเดินไปถึงเลข 1100 กว่าแล้ว แต่ ผอ. ได้แจ้งเตือนในไลน์แค่ฉบับเดียว (1034)
+  // ส่วนงานค้างที่เหลือทั้งกองเงียบสนิท
+  //
+  // ต้นเหตุ: คิวรีของตัวเตือนบังคับว่า d.due_date ต้องไม่ว่างเสมอ แต่ "วันครบกำหนด" เป็นช่องไม่บังคับ
+  // ในฟอร์มลงรับ หนังสือรับจากหน่วยงานเกือบทุกฉบับจึงไม่มีค่าในช่องนั้น แล้วหลุดจากการแจ้งเตือน
+  // ทั้งหมด ไม่ว่าจะค้างนานแค่ไหน — ฉบับ 1034 ที่ ผอ. ได้รับคือฉบับที่บังเอิญมีคนกรอกวันครบกำหนดไว้
+  // รอบเช้าพลาดได้จริงบนโฮสต์ที่เครื่องหลับเมื่อไม่มีคนใช้ (ตัวเดินเวลาไม่ทำงานตอนหลับ) ผู้ดูแลจึง
+  // ต้องสั่งส่งเองได้ ไม่ใช่รอข้ามคืนแล้วลุ้นว่าพรุ่งนี้จะได้ไหม
+  describe('ปุ่มส่งเตือนให้ทุกคนเดี๋ยวนี้', () => {
+    test('ผู้ดูแลสั่งส่งได้ และส่งถึงเฉพาะคนที่มีงานค้างจริง', async () => {
+      const uid = uuid();
+      db.prepare(`INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position,
+          department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+        VALUES (?, ?, 'นาย', 'ผอ.', 'สั่งส่งเอง', ?, 'ผู้อำนวยการ', ?, 'x', 'x', 'active', 0, ?, ?)`)
+        .run(uid, `sendnow-${uid.slice(0, 8)}`, `sendnow-${uid.slice(0, 8)}@school.local`, deptId, nowIso(), nowIso());
+      const doc = makeDoc({ title: 'หนังสือค้างสำหรับปุ่มส่งเดี๋ยวนี้' });
+      assignStep({ documentId: doc.id, assigneeId: uid, actorUser: registrarUser });
+
+      const before = db.prepare('SELECT COUNT(*) c FROM notifications WHERE user_id = ?').get(uid).c;
+      const res = await dispatchPost(adminUser, '/admin/settings/send-reminder-now', {});
+      assert.equal(res.status, 200, res.body);
+      assert.ok(JSON.parse(res.body).sent >= 1, 'ต้องรายงานจำนวนคนที่ส่งถึง');
+      assert.equal(db.prepare('SELECT COUNT(*) c FROM notifications WHERE user_id = ?').get(uid).c,
+        before + 1, 'คนที่มีงานค้างต้องได้ข้อความเดียว');
+    });
+
+    test('ครูสั่งส่งเองไม่ได้', async () => {
+      const res = await dispatchPost(teacherUser, '/admin/settings/send-reminder-now', {});
+      assert.equal(res.status, 403, 'เฉพาะผู้ดูแลระบบเท่านั้น');
+    });
+  });
+
+  test('งานค้างที่ไม่ได้กรอกวันครบกำหนด ต้องถูกเตือนด้วย', () => {
+    // ผู้รับของตัวเองโดยเฉพาะ ไม่ใช้ teacher001 ร่วมกับเทสต์อื่น — ชุดนี้รัน describe พร้อมกัน
+    const uid = uuid();
+    db.prepare(`INSERT INTO users (id, employee_code, prefix, first_name, last_name, email, position,
+        department_id, password_hash, pin_hash, status, must_change_password, created_at, updated_at)
+      VALUES (?, ?, 'นาย', 'ผอ.', 'ไม่มีกำหนด', ?, 'ผู้อำนวยการ', ?, 'x', 'x', 'active', 0, ?, ?)`)
+      .run(uid, `nodue-${uid.slice(0, 8)}`, `nodue-${uid.slice(0, 8)}@school.local`, deptId, nowIso(), nowIso());
+
+    // หนังสือรับตามปกติของโรงเรียน: ไม่ได้กรอกวันครบกำหนด
+    for (const t of ['หนังสือค้างไม่มีกำหนด ฉบับหนึ่ง', 'หนังสือค้างไม่มีกำหนด ฉบับสอง']) {
+      const doc = makeDoc({ title: t });
+      assignStep({ documentId: doc.id, assigneeId: uid, actorUser: registrarUser });
+    }
+
+    const target = rem.reminderTargets().find((t) => t.userId === uid);
+    assert.ok(target, 'คนที่มีงานค้างแต่ไม่มีวันครบกำหนด ต้องอยู่ในรายชื่อที่ต้องเตือน');
+    assert.equal(target.waiting.length, 2, 'ต้องเก็บไว้ในกอง "ค้างอยู่" ของตัวเอง');
+    assert.equal(target.overdue.length, 0, 'และต้องไม่ปนกับกองที่เลยกำหนดจริง');
+
+    const msg = rem.reminderMessage(target);
+    assert.match(msg, /ค้างอยู่ 2 เรื่อง/, 'ข้อความต้องบอกจำนวนงานค้างที่ไม่มีกำหนด');
+    assert.match(msg, /ฉบับหนึ่ง/, 'และยกชื่อเรื่องมาให้เห็นว่าเรื่องอะไร');
+    assert.match(msg, /ฉบับสอง/);
+  });
+
   test('สรุปงานเลยกำหนด/ครบวันนี้/ใกล้ครบ เป็นข้อความเดียวต่อคน ไม่ใช่ต่อฉบับ', () => {
     assignWithDue('หนังสือเลยกำหนดสำหรับทดสอบการเตือน', at(-3));
     assignWithDue('หนังสือครบกำหนดวันนี้สำหรับทดสอบการเตือน', at(0));
@@ -9282,7 +9339,12 @@ describe('เตือนงานค้างประจำวัน', () => {
     const msg = rem.reminderMessage(target);
     assert.match(msg, /เลยกำหนดแล้ว \d+ เรื่อง/);
     assert.match(msg, /ครบกำหนดวันนี้ \d+ เรื่อง/);
-    assert.ok(msg.split('\n').length <= 5, `ข้อความต้องสั้นพออ่านจบในแจ้งเตือน — ได้\n${msg}`);
+    // เดิมบังคับว่าต้องไม่เกิน 5 บรรทัด ซึ่งมาจากตอนที่ยกตัวอย่างแค่ 3 เรื่อง โรงเรียนขอให้แจ้ง
+    // ทั้งหมดแล้ว (ดูเทสต์ "ยกมาในข้อความเตือนให้ครบ") จำนวนบรรทัดจึงมากตามงานค้างโดยตั้งใจ
+    // สิ่งที่ยังต้องจริงคือหลักการข้อ 1 — "ข้อความเดียวต่อคน ไม่ใช่ต่อฉบับ" ซึ่งเห็นได้จากการที่
+    // ทุกกองถูกสรุปรวมไว้ในบรรทัดแรกของข้อความเดียวกัน ไม่ได้แยกเป็นคนละข้อความ
+    assert.match(msg.split('\n')[0], /เลยกำหนดแล้ว \d+ เรื่อง/,
+      'บรรทัดแรกต้องเป็นบรรทัดสรุปจำนวนของทุกกองรวมกันในข้อความเดียว');
   });
 
   test('ส่งแล้ววันละครั้ง เรียกซ้ำกี่รอบก็ไม่ส่งซ้ำ (เซิร์ฟเวอร์ถูกรีสตาร์ทระหว่างวันได้)', () => {

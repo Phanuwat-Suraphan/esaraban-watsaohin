@@ -313,6 +313,21 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
         ${dataOriginRow()}
         <tr><td class="text-muted">คิวที่รอส่ง</td><td>${s.pending} ฉบับ${s.givenUp ? ` · <span style="color:var(--danger)">เลิกส่งแล้ว ${s.givenUp} ฉบับ</span>` : ''}</td></tr>
         ${s.lastError ? `<tr><td class="text-muted">ข้อผิดพลาดล่าสุด</td><td style="color:var(--danger);font-size:.85rem">${esc(s.lastError)}</td></tr>` : ''}
+        ${!s.monthlyLimitHit ? '' : `<tr><td class="text-muted">โควตารายเดือน</td><td>
+          <strong style="color:var(--danger)">หมดแล้ว</strong>
+          <div class="text-muted" style="font-size:.85rem;margin-top:.35rem">
+            บัญชีทางการของ LINE จำกัดจำนวนข้อความที่ส่งออกได้ต่อเดือน เมื่อเต็มแล้ว<strong>รอไม่หาย</strong>
+            ต้องขึ้นเดือนใหม่หรือเปลี่ยนแพ็กเกจเท่านั้น (ดูโควตาและวันเริ่มรอบใหม่ได้ที่ LINE Official Account Manager)
+            <div style="margin-top:.35rem">
+              <strong>ระหว่างนี้ระบบยังทำงานครบทุกอย่าง</strong> — การแจ้งเตือนในระบบ (กระดิ่งมุมบนขวา)
+              ไม่ได้พึ่ง LINE เลย ทุกคนยังเห็นงานค้างของตัวเองตามปกติ ขาดแค่ข้อความที่เด้งเข้าไลน์
+            </div>
+            <div style="margin-top:.35rem">
+              ถ้าอยากประหยัดโควตา ลดได้ที่ “ใครเปิดรับแจ้งเตือนเข้าไลน์บ้าง” ด้านล่าง —
+              ปิดของคนที่ไม่จำเป็นต้องรู้ทันที แล้วเก็บโควตาไว้ให้คนที่ต้องรู้จริง
+            </div>
+          </div>
+        </td></tr>`}
       </table>
       ${s.configured ? `<div class="chip-row" style="margin-top:.8rem">
         <button class="btn btn-outline btn-sm" onclick="flushLineQueue(this)">📤 ส่งคิวที่ค้างเดี๋ยวนี้</button>

@@ -12156,6 +12156,50 @@ describe('แจ้งเตือนเข้าไลน์', () => {
       assert.equal(after.failed, 0, 'ครบจำนวนครั้งแล้วต้องไม่ลองอีก');
     });
 
+    // โรงเรียนเจอจริง: LINE ตอบ {"message":"You have reached your monthly limit."}
+    //
+    // บัญชีทางการของ LINE จำกัดจำนวนข้อความต่อเดือน พอเต็มแล้ว "รอไม่หาย" ต้องขึ้นเดือนใหม่เท่านั้น
+    // แต่โค้ดเดิมถือว่า 429 ทุกแบบคือ "ส่งถี่เกินไปชั่วคราว" จึงไล่ยิงข้อความที่เหลือในคิวต่อไป
+    // ได้ 429 ทุกใบ แล้วเผา attempts จนครบ 5 ครั้ง สุดท้ายข้อความหายทั้งคิวโดยไม่มีใครได้อ่าน
+    // และหน้าผู้ดูแลยังบอกว่า "รอสักครู่แล้วลองใหม่" ซึ่งเป็นคำแนะนำที่ผิดสำหรับกรณีนี้
+    test('โควตารายเดือนของ LINE หมด ต้องหยุดทั้งรอบ ไม่เผาคิวทิ้ง', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      for (const t of ['ฉบับที่หนึ่ง', 'ฉบับที่สอง', 'ฉบับที่สาม']) {
+        notifyUserForTest({ userId: target, title: t, message: 'x' });
+      }
+      nextReply = { ok: false, status: 429, error: 'LINE ตอบ 429: {"message":"You have reached your monthly limit."}' };
+
+      const r = await ln.flushLineOutbox();
+      assert.equal(r.monthlyLimit, true, 'ต้องรู้ตัวว่าเป็นโควตารายเดือน ไม่ใช่การส่งถี่เกินไป');
+      assert.equal(outbound.length, 1, 'ต้องหยุดทันทีที่ใบแรก ไม่ไล่ยิงทั้งคิวให้เสียเปล่า');
+
+      // ข้อความต้องยังอยู่ในคิวและยังไม่ถูกเผา attempts — ถ้าโควตากลับมาก่อนคิวหมดอายุ ยังได้ส่ง
+      for (const row of outboxOf(target)) {
+        assert.equal(row.sent_at, null);
+        assert.equal(row.attempts, 0, 'โควตาหมดไม่ใช่ความผิดของข้อความใบนั้น ต้องไม่นับเป็นการลองส่ง');
+      }
+
+      // หน้าผู้ดูแลต้องบอกให้ชัดว่าต้องทำอะไรต่อ ไม่ใช่บอกให้รอสักครู่
+      const st = ln.lineNotifyStatus();
+      assert.equal(st.monthlyLimitHit, true, 'สถานะต้องบอกได้ว่าโควตารายเดือนหมด');
+    });
+
+    // 429 อีกแบบคือส่งถี่เกินไปจริงๆ ซึ่งรอแล้วหาย ต้องยังลองใหม่ตามเดิม ไม่เหมาเป็นโควตารายเดือน
+    test('429 แบบส่งถี่เกินไป ต้องยังลองใหม่ตามเดิม', async () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-รับแจ้งเตือน');
+      notifyUserForTest({ userId: target, title: 'ฉบับที่ส่งถี่', message: 'x' });
+      nextReply = { ok: false, status: 429, error: 'LINE ตอบ 429: {"message":"Too many requests"}' };
+
+      const r = await ln.flushLineOutbox();
+      assert.ok(!r.monthlyLimit, 'ส่งถี่เกินไปไม่ใช่โควตารายเดือน');
+      assert.equal(outboxOf(target)[0].attempts, 1, 'ต้องนับเป็นการลองส่งหนึ่งครั้งตามเดิม');
+      assert.equal(ln.lineNotifyStatus().monthlyLimitHit, false);
+    });
+
     // โทเคนผิด/ครูบล็อกบัญชีไป = ส่งอีกกี่ครั้งก็ไม่ผ่าน การลองซ้ำมีแต่ทำให้ข้อความของคนอื่นรอคิวอยู่ข้างหลัง
     test('ความผิดพลาดถาวร (4xx) ต้องเลิกส่งทันที ไม่ลองซ้ำ', async () => {
       reset();

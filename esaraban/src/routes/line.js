@@ -1,6 +1,6 @@
 // เส้นทางที่เกี่ยวกับ LINE — ตัวรับ webhook, การเชื่อมบัญชีของแต่ละคน และหน้าตั้งค่าของผู้ดูแล
 import { router, html, json, redirect } from '../router.js';
-import { layout, esc, fmtDate } from '../render.js';
+import { layout, esc, fmtDate, fmtCount } from '../render.js';
 import { requireApi, requireRole, requirePage } from '../middleware.js';
 import { audit, DB_WAS_NEW, PROCESS_STARTED_AT } from '../db.js';
 import { restoredFromBackupAtBoot } from '../services/dbBackup.js';
@@ -312,6 +312,23 @@ router.get('/admin/line', ADMIN_ONLY(requirePage((ctx) => {
           </div>` : ''}</td></tr>
         ${dataOriginRow()}
         <tr><td class="text-muted">คิวที่รอส่ง</td><td>${s.pending} ฉบับ${s.givenUp ? ` · <span style="color:var(--danger)">เลิกส่งแล้ว ${s.givenUp} ฉบับ</span>` : ''}</td></tr>
+        <tr><td class="text-muted">ใช้โควตาเดือนนี้</td><td>
+          <strong>${fmtCount(s.sentThisMonth)}</strong> ข้อความ${s.monthlyQuota
+    ? ` จาก ${fmtCount(s.monthlyQuota)} (${Math.round((s.sentThisMonth / s.monthlyQuota) * 100)}%)` : ''}
+          ${s.monthlyQuota ? '' : `<div class="text-muted" style="font-size:.85rem">
+            ยังไม่ได้กรอกโควตาต่อเดือนของแพ็กเกจที่ใช้อยู่ — กรอกแล้วระบบจะเตือนล่วงหน้าตอนใช้ไปถึง 80%
+            แทนที่จะรู้ตอนเงียบไปแล้วทั้งระบบ (ดูตัวเลขได้ที่ LINE Official Account Manager)
+          </div>`}
+        </td></tr>
+        <tr><td class="text-muted">ส่งเข้าไลน์เมื่อไร</td><td>
+          ${s.pushMode === 'all'
+    ? 'ทุกการแจ้งเตือน <span class="text-muted">— เปลืองโควตาที่สุด</span>'
+    : '<strong>เฉพาะเรื่องด่วน</strong> ที่เหลือไปรวมในสรุปเช้าวันถัดไป'}
+          <div class="text-muted" style="font-size:.85rem;margin-top:.25rem">
+            ไม่ว่าตั้งเป็นแบบไหน การแจ้งเตือนในระบบ (กระดิ่ง) ก็ขึ้นครบทุกเรื่องเหมือนเดิม
+            ค่านี้คุมแค่ว่าอะไรจะเด้งเข้าไลน์ทันที — เปลี่ยนได้ที่หน้าตั้งค่าโรงเรียน
+          </div>
+        </td></tr>
         ${s.lastError ? `<tr><td class="text-muted">ข้อผิดพลาดล่าสุด</td><td style="color:var(--danger);font-size:.85rem">${esc(s.lastError)}</td></tr>` : ''}
         ${!s.monthlyLimitHit ? '' : `<tr><td class="text-muted">โควตารายเดือน</td><td>
           <strong style="color:var(--danger)">หมดแล้ว</strong>

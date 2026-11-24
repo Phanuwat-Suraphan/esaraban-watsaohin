@@ -11670,7 +11670,7 @@ describe('แจ้งเตือนเข้าไลน์', () => {
   let ln;
   const TOKEN = 'test-channel-access-token';
   const SECRET = 'test-channel-secret';
-  let savedToken; let savedSecret; let savedBase;
+  let savedToken; let savedSecret; let savedBase; let savedPushMode;
   // เก็บทุกอย่างที่ "ส่งออกไปหา LINE" ไว้ตรวจ แทนการยิงออกอินเทอร์เน็ตจริง
   let outbound = [];
   let nextReply = { ok: true, status: 200 };
@@ -11687,9 +11687,15 @@ describe('แจ้งเตือนเข้าไลน์', () => {
       outbound.push({ pathname, payload });
       return typeof nextReply === 'function' ? nextReply(outbound.length) : nextReply;
     });
+    // ชุดนี้ทดสอบ "กลไกการส่ง" (เข้าคิว ลองใหม่ เลิกส่ง เก็บกวาด) ไม่ใช่นโยบายว่าเรื่องไหนควรเข้าไลน์
+    // ค่าตั้งต้นของระบบคือส่งเฉพาะเรื่องด่วนเพื่อประหยัดโควตา ซึ่งจะกรองข้อความธรรมดาของเทสต์ทิ้งหมด
+    // จึงเปิดเป็น "ทุกการแจ้งเตือน" ไว้ตรงนี้ ส่วนนโยบายมีเทสต์แยกของตัวเองด้านล่าง
+    savedPushMode = getSetting('line_push_mode');
+    setSetting({ key: 'line_push_mode', value: 'all', actorUser: adminUser });
   });
   after(() => {
     ln._setLineSenderForTest(null);
+    setSetting({ key: 'line_push_mode', value: savedPushMode, actorUser: adminUser });
     if (savedToken === undefined) delete process.env.LINE_CHANNEL_ACCESS_TOKEN; else process.env.LINE_CHANNEL_ACCESS_TOKEN = savedToken;
     if (savedSecret === undefined) delete process.env.LINE_CHANNEL_SECRET; else process.env.LINE_CHANNEL_SECRET = savedSecret;
     if (savedBase === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = savedBase;
@@ -12115,6 +12121,92 @@ describe('แจ้งเตือนเข้าไลน์', () => {
       assert.equal(outboxOf(target).length, 1, 'ระหว่างธุรกรรมต้องเห็นแถวที่เพิ่งเขียน');
       db.exec('ROLLBACK');
       assert.equal(outboxOf(target).length, 0, 'ธุรกรรมล้มแล้วข้อความยังค้างอยู่ในคิว — ครูจะได้ไลน์แจ้งเรื่องที่ไม่ได้เกิดขึ้นจริง');
+    });
+  });
+
+  // โรงเรียนใช้โควตาข้อความรายเดือนของ LINE หมดภายในเดือนเดียว (252 ฉบับ) แล้วทุกคนเงียบหมด
+  // รวมทั้งเรื่องด่วน — ซึ่งแย่กว่าการที่เรื่องไม่ด่วนไปรออยู่ในสรุปเช้า
+  describe('ประหยัดโควตาไลน์: ส่งเฉพาะเรื่องด่วน', () => {
+    const urgentOnly = () => setSetting({ key: 'line_push_mode', value: 'urgent', actorUser: adminUser });
+    const restore = () => setSetting({ key: 'line_push_mode', value: 'all', actorUser: adminUser });
+
+    test('เรื่องด่วนต้องเด้งเข้าไลน์ทันที ส่วนเรื่องไม่ด่วนต้องไม่กินโควตา', () => {
+      reset(); urgentOnly();
+      try {
+        const target = seed.userIds.teacher001;
+        linkDirect(target, 'U-ประหยัดโควตา');
+        notifyUserForTest({ userId: target, title: 'เรื่องด่วนที่สุด', message: 'x', priority: 'urgent' });
+        notifyUserForTest({ userId: target, title: 'เรื่องปกติ', message: 'y' });
+
+        const queued = outboxOf(target);
+        assert.equal(queued.length, 1, 'ต้องเข้าคิวไลน์แค่เรื่องด่วนเรื่องเดียว');
+        assert.match(queued[0].body, /เรื่องด่วนที่สุด/);
+
+        // แต่กระดิ่งในระบบต้องขึ้นครบทั้งสองเรื่อง — การประหยัดโควตาต้องไม่ทำให้ใครพลาดงาน
+        const titles = db.prepare('SELECT title FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 2')
+          .all(target).map((r) => r.title);
+        assert.ok(titles.includes('เรื่องด่วนที่สุด') && titles.includes('เรื่องปกติ'),
+          'กระดิ่งในระบบต้องขึ้นครบทุกเรื่องเหมือนเดิม ไม่ว่าจะตั้งโหมดประหยัดไว้หรือไม่');
+      } finally { restore(); }
+    });
+
+    // สรุปงานค้างประจำวันคือปลายทางของเรื่องที่ไม่ด่วนซึ่งถูกกรองไม่ให้เด้งทีละฉบับ
+    // ถ้ามันถูกกรองด้วย จะไม่มีอะไรไปถึงไลน์เลยสักอย่าง = ปิดการแจ้งเตือนทางไลน์ทั้งระบบโดยไม่ตั้งใจ
+    test('สรุปงานค้างประจำวันต้องถึงไลน์เสมอ แม้ไม่ได้ติดธงด่วน', () => {
+      reset(); urgentOnly();
+      try {
+        const target = seed.userIds.teacher001;
+        linkDirect(target, 'U-ประหยัดโควตา');
+        notifyUserForTest({ userId: target, title: '📌 งานที่ต้องทำวันนี้', message: 'ค้างอยู่ 5 เรื่อง', alwaysLine: true });
+        assert.equal(outboxOf(target).length, 1, 'สรุปประจำวันต้องเข้าคิวไลน์เสมอ');
+      } finally { restore(); }
+    });
+
+    test('ตั้งเป็น "ทุกการแจ้งเตือน" แล้วต้องกลับไปส่งทุกเรื่องเหมือนเดิม', () => {
+      reset();
+      const target = seed.userIds.teacher001;
+      linkDirect(target, 'U-ประหยัดโควตา');
+      notifyUserForTest({ userId: target, title: 'เรื่องปกติที่ต้องส่ง', message: 'y' });
+      assert.equal(outboxOf(target).length, 1, 'โหมด all ต้องส่งเรื่องไม่ด่วนด้วย');
+    });
+  });
+
+  // เดิมไม่มีอะไรบอกเลยว่าใช้โควตาไปเท่าไร กว่าจะรู้ก็ตอนที่ LINE ปฏิเสธและทุกคนเงียบไปแล้ว
+  // และนับจาก line_outbox ย้อนหลังทั้งเดือนไม่ได้ เพราะแถวที่ส่งสำเร็จถูกล้างทิ้งหลัง 14 วัน
+  describe('นับโควตาไลน์รายเดือนและเตือนล่วงหน้า', () => {
+    test('นับข้อความที่ส่งสำเร็จ และเตือนผู้ดูแลเมื่อใช้ถึง 80%', async () => {
+      reset();
+      db.prepare('DELETE FROM line_monthly_usage').run();
+      const saved = getSetting('line_monthly_quota');
+      setSetting({ key: 'line_monthly_quota', value: '5', actorUser: adminUser });
+      try {
+        const target = seed.userIds.teacher001;
+        linkDirect(target, 'U-นับโควตา');
+        const adminNotifBefore = db.prepare(
+          "SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND title LIKE '%โควตา%'").get(adminUser.id).c;
+
+        for (let i = 0; i < 4; i++) notifyUserForTest({ userId: target, title: `ฉบับที่ ${i + 1}`, message: 'x' });
+        await ln.flushLineOutbox();
+
+        assert.equal(ln.lineSentThisMonth(), 4, 'ต้องนับจำนวนที่ส่งสำเร็จได้จริง');
+        const after = db.prepare(
+          "SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND title LIKE '%โควตา%'").get(adminUser.id).c;
+        assert.equal(after, adminNotifBefore + 1, 'ใช้ถึง 80% (4 จาก 5) ต้องเตือนผู้ดูแลหนึ่งครั้ง');
+
+        // ต้องเตือนครั้งเดียวต่อเดือน ไม่ใช่เตือนทุกข้อความหลังข้ามเส้น ไม่งั้นกระดิ่งผู้ดูแลจะท่วม
+        notifyUserForTest({ userId: target, title: 'ฉบับที่ 5', message: 'x' });
+        await ln.flushLineOutbox();
+        const again = db.prepare(
+          "SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND title LIKE '%โควตา%'").get(adminUser.id).c;
+        assert.equal(again, adminNotifBefore + 1, 'ข้ามเส้นแล้วต้องไม่เตือนซ้ำทุกข้อความ');
+
+        // คำเตือนต้องไม่ถูกส่งเข้าไลน์เอง — เตือนว่าโควตาใกล้หมดด้วยการกินโควตาเพิ่มคือเรื่องที่ขัดกันเอง
+        assert.ok(!outboxOf(adminUser.id).some((r) => /โควตา/.test(r.body)),
+          'คำเตือนเรื่องโควตาต้องขึ้นแค่ในระบบ ห้ามส่งเข้าไลน์');
+      } finally {
+        setSetting({ key: 'line_monthly_quota', value: saved, actorUser: adminUser });
+        db.prepare('DELETE FROM line_monthly_usage').run();
+      }
     });
   });
 

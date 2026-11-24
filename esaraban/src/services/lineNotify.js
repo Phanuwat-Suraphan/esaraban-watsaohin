@@ -14,11 +14,12 @@
 //
 // ถ้ายังไม่ได้ตั้ง ทุกอย่างในไฟล์นี้จะเงียบและไม่ทำอะไรเลย ระบบส่วนอื่นทำงานปกติทุกประการ
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
-import { db, uuid, nowIso, audit } from '../db.js';
+import { db, uuid, nowIso, audit, todayInBangkok } from '../db.js';
 import { absoluteUrl } from './publicUrl.js';
 // esc มาจาก render.js ซึ่งไม่ได้ import ไฟล์นี้กลับ จึงไม่เกิดวงวน — ใช้เพราะข้อความอธิบายผลการตรวจ
 // มีค่าที่ LINE ส่งกลับมาปนอยู่ (URL ที่ LINE ถืออยู่, เหตุผลที่ยิงไม่สำเร็จ) ซึ่งเป็นข้อมูลจากนอกระบบ
 import { esc } from '../render.js';
+import { getSetting } from './settings.js';
 
 const LINE_API = 'https://api.line.me/v2/bot';
 
@@ -203,6 +204,48 @@ const SECRET_LEVELS_NO_DETAIL = ['secret', 'top_secret'];
  * LINE ใช้รหัสเดียวกันสำหรับสองเรื่องที่รับมือคนละแบบสิ้นเชิง ต้องดูจากเนื้อคำตอบเท่านั้น
  * ของจริงที่โรงเรียนเจอ: {"message":"You have reached your monthly limit."}
  */
+/** เดือนปัจจุบันตามเวลาไทย 'YYYY-MM' — โควตาของ LINE นับเป็นเดือนปฏิทิน */
+function currentMonth() { return todayInBangkok().slice(0, 7); }
+
+/** จำนวนข้อความที่ส่งเข้าไลน์สำเร็จในเดือนนี้ */
+export function lineSentThisMonth() {
+  return db.prepare('SELECT sent FROM line_monthly_usage WHERE month = ?').get(currentMonth())?.sent || 0;
+}
+
+/**
+ * นับว่าส่งสำเร็จอีกหนึ่งฉบับ แล้วเตือนผู้ดูแลถ้าใกล้เต็มโควตา
+ *
+ * เตือนผ่านกระดิ่งในระบบเท่านั้น ห้ามเตือนเข้าไลน์เด็ดขาด — การเตือนว่า "โควตาใกล้หมด" ด้วยการ
+ * กินโควตาเพิ่มเป็นเรื่องที่ขัดกันเอง และถ้าเตือนตอนเต็มพอดีก็จะส่งไม่ออกอยู่ดี
+ *
+ * เตือนครั้งเดียวต่อเดือน (จด warned_at ไว้) ไม่ใช่เตือนทุกข้อความหลังข้ามเส้น
+ */
+function countSentAndWarn() {
+  const month = currentMonth();
+  db.prepare(`INSERT INTO line_monthly_usage (month, sent) VALUES (?, 1)
+    ON CONFLICT(month) DO UPDATE SET sent = sent + 1`).run(month);
+
+  const quota = Number(getSetting('line_monthly_quota')) || 0;
+  if (!quota) return;
+  const row = db.prepare('SELECT sent, warned_at FROM line_monthly_usage WHERE month = ?').get(month);
+  if (row.warned_at || row.sent < Math.floor(quota * WARN_AT_PERCENT)) return;
+  db.prepare('UPDATE line_monthly_usage SET warned_at = ? WHERE month = ?').run(nowIso(), month);
+
+  const admins = db.prepare(`SELECT u.id FROM users u
+    JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+    WHERE r.name = 'admin' AND u.deleted_at IS NULL AND u.status = 'active'`).all();
+  for (const a of admins) {
+    db.prepare(`INSERT INTO notifications (id, user_id, document_id, link_url, title, message, priority, is_read, created_at)
+      VALUES (?, ?, NULL, '/admin/line', ?, ?, 'urgent', 0, ?)`)
+      .run(uuid(), a.id,
+        'โควตาข้อความไลน์ใกล้เต็มแล้ว',
+        `เดือนนี้ส่งเข้าไลน์ไปแล้ว ${row.sent} จาก ${quota} ข้อความ — เมื่อเต็มแล้วจะส่งไม่ได้จนกว่าจะขึ้นเดือนใหม่ `
+        + 'ลดการใช้ได้ที่หน้าแจ้งเตือนเข้าไลน์ (ปิดของคนที่ไม่จำเป็นต้องรู้ทันที) '
+        + 'ส่วนการแจ้งเตือนในระบบยังทำงานปกติไม่ว่าโควตาจะหมดหรือไม่',
+        nowIso());
+  }
+}
+
 function isMonthlyLimitBody(raw) {
   return /monthly\s*limit/i.test(String(raw || ''));
 }
@@ -235,9 +278,19 @@ export function composeLineMessage({ title, message, documentId, linkUrl, secret
  * ต้องไม่โยน error ออกไปไม่ว่าจะเกิดอะไรขึ้น เพราะตัวเรียกคือการลงทะเบียนหนังสือ/การลงนาม ซึ่งสำคัญ
  * กว่าการแจ้งเตือนมาก ถ้าเรื่องไลน์พังแล้วลากให้ลงทะเบียนหนังสือไม่ได้ด้วย ถือว่าเสียหายกว่าเดิม
  */
-export function queueLineNotification({ userId, documentId, linkUrl, title, message }) {
+export function queueLineNotification({ userId, documentId, linkUrl, title, message, priority = 'info', alwaysLine = false }) {
   try {
     if (!isLineNotifyConfigured()) return false;
+    // ประหยัดโควตารายเดือนของ LINE: ส่งเข้าไลน์เฉพาะเรื่องด่วน ที่เหลือไปรวมในสรุปเช้าวันถัดไป
+    //
+    // โควตาของแพ็กฟรีหมดได้จริงภายในเดือนเดียว (โรงเรียนเจอที่ 252 ข้อความ) พอหมดแล้วทุกคนเงียบหมด
+    // รวมทั้งเรื่องด่วน ซึ่งแย่กว่าการที่เรื่องไม่ด่วนไปรออยู่ในสรุปเช้า — ยอมเสียความทันทีของเรื่อง
+    // ไม่ด่วน เพื่อรักษาความทันทีของเรื่องด่วนไว้
+    //
+    // ไม่กระทบการแจ้งเตือนในระบบเลย กระดิ่งยังขึ้นครบทุกเรื่องเหมือนเดิม ตรงนี้คุมแค่ "ขาไลน์"
+    // alwaysLine ไว้ให้สรุปงานค้างประจำวัน ซึ่งตัวมันเองคือปลายทางของเรื่องที่ไม่ด่วน ถ้าถูกกรองด้วย
+    // ก็จะไม่มีอะไรไปถึงไลน์เลยสักอย่าง
+    if (!alwaysLine && priority !== 'urgent' && getSetting('line_push_mode') !== 'all') return false;
     const u = db.prepare('SELECT line_user_id, line_notify_enabled FROM users WHERE id = ? AND deleted_at IS NULL').get(userId);
     if (!u?.line_user_id || u.line_notify_enabled === 0) return false;
     let secretLevel = null;
@@ -414,6 +467,8 @@ export function interpretWebhookProbe(probe) {
 
 // ───────────────────────────────── ตัวส่งคิว ─────────────────────────────────
 
+// เตือนผู้ดูแลเมื่อใช้โควตาไปถึงสัดส่วนนี้ — 80% เหลือที่ให้ขยับก่อนเงียบทั้งระบบ
+const WARN_AT_PERCENT = 0.8;
 const MAX_ATTEMPTS = 5;
 // ข้อความที่ค้างเกินหนึ่งวันไม่มีประโยชน์แล้ว — "หนังสือด่วนรอคุณ" ที่เด้งมาหลังจากผ่านไปสามวันมีแต่
 // ทำให้สับสน และถ้า LINE ล่มยาวแล้วกลับมา ครูจะโดนถล่มด้วยข้อความเก่าทีเดียวเป็นสิบฉบับ
@@ -452,6 +507,7 @@ export async function flushLineOutbox({ limit = 25 } = {}) {
     if (res?.ok) {
       db.prepare('UPDATE line_outbox SET sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE id = ?')
         .run(nowIso(), row.id);
+      countSentAndWarn();
       result.sent++;
       continue;
     }
@@ -713,6 +769,9 @@ export function lineNotifyStatus() {
     // โควตารายเดือนหมดต่างจากความล้มเหลวอื่นตรงที่ "รอไม่หาย" และไม่ได้แปลว่าตั้งค่าอะไรผิด
     // หน้าผู้ดูแลต้องบอกให้ชัดว่าต้องทำอะไรต่อ ไม่ใช่โชว์ข้อความดิบภาษาอังกฤษของ LINE แล้วจบ
     monthlyLimitHit: isMonthlyLimitBody(lastError?.last_error),
+    sentThisMonth: lineSentThisMonth(),
+    monthlyQuota: Number(getSetting('line_monthly_quota')) || 0,
+    pushMode: getSetting('line_push_mode') === 'all' ? 'all' : 'urgent',
   };
 }
 

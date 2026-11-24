@@ -133,6 +133,31 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           <div class="help-text">ตัวอักษรในวงกลมมุมบนซ้ายและหน้าเข้าสู่ระบบ — 1-2 ตัวกำลังดี</div>
         </div>
         <div class="field">
+          <label for="line_push_mode">ส่งอะไรเข้าไลน์บ้าง</label>
+          <select id="line_push_mode" style="max-width:26rem">
+            <option value="urgent"${getSetting('line_push_mode') !== 'all' ? ' selected' : ''}>เฉพาะเรื่องด่วน — ที่เหลือรวมในสรุปเช้า (ประหยัดโควตา)</option>
+            <option value="all"${getSetting('line_push_mode') === 'all' ? ' selected' : ''}>ทุกการแจ้งเตือน — เด้งทันทีทุกเรื่อง</option>
+          </select>
+          <div class="help-text">
+            บัญชีทางการของ LINE <strong>จำกัดจำนวนข้อความต่อเดือน</strong> พอเต็มแล้วทุกคนเงียบหมด
+            รวมทั้งเรื่องด่วน ซึ่งแย่กว่าการที่เรื่องไม่ด่วนไปรออยู่ในสรุปเช้า
+            <div style="margin-top:.35rem">
+              ไม่ว่าตั้งเป็นแบบไหน <strong>การแจ้งเตือนในระบบ (กระดิ่ง) ขึ้นครบทุกเรื่องเหมือนเดิม</strong>
+              ค่านี้คุมแค่ว่าอะไรจะเด้งเข้าไลน์ทันที
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <label for="line_monthly_quota">โควตาข้อความไลน์ต่อเดือน <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
+          <input type="text" id="line_monthly_quota" inputmode="numeric" maxlength="${MAX_SETTING_LENGTH.line_monthly_quota}"
+            value="${esc(getSetting('line_monthly_quota'))}" placeholder="เช่น 300" style="max-width:8rem" autocomplete="off" />
+          <div class="help-text">
+            กรอกตามแพ็กเกจที่โรงเรียนใช้อยู่ (ดูที่ LINE Official Account Manager) —
+            ระบบจะ<strong>เตือนผู้ดูแลล่วงหน้าตอนใช้ไปถึง 80%</strong> แทนที่จะรู้ตอนที่แจ้งเตือนเงียบไปแล้วทั้งระบบ
+            <div style="margin-top:.35rem">LINE ไม่มีช่องทางให้ระบบถามโควตาเอง จึงต้องกรอกเอง เว้นว่างไว้ก็ได้ แค่จะไม่มีการเตือนล่วงหน้า</div>
+          </div>
+        </div>
+        <div class="field">
           <label for="default_assignee_id">เสนอหนังสือเข้าถึงใครเป็นค่าตั้งต้น <span class="text-muted" style="font-weight:400">(เว้นว่างได้)</span></label>
           <select id="default_assignee_id" style="max-width:22rem">
             <option value="">— ไม่เลือกใครไว้ให้ —</option>
@@ -274,6 +299,8 @@ router.get('/admin/settings', requireRole('admin')(requirePage((ctx) => {
           daily_reminder_enabled: document.getElementById('daily_reminder_enabled').checked ? 'on' : 'off',
           daily_reminder_time: document.getElementById('daily_reminder_time').value,
           default_assignee_id: document.getElementById('default_assignee_id').value,
+          line_push_mode: document.getElementById('line_push_mode').value,
+          line_monthly_quota: document.getElementById('line_monthly_quota').value,
         };
         window.setBtnLoading(btn, 'กำลังบันทึก...');
         fetch('/admin/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })
@@ -303,7 +330,8 @@ router.post('/admin/settings', requireApi(async (ctx) => {
   }
   for (const key of ['school_name', 'school_short_name', 'school_initials', 'outgoing_number_prefix',
     'outgoing_number_start', 'outgoing_number_start_year',
-    'daily_reminder_enabled', 'daily_reminder_time', 'default_assignee_id']) {
+    'daily_reminder_enabled', 'daily_reminder_time', 'default_assignee_id',
+    'line_push_mode', 'line_monthly_quota']) {
     if (ctx.body[key] === undefined) continue;
     setSetting({ key, value: ctx.body[key], actorUser: ctx.user });
   }

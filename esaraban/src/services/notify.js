@@ -3,7 +3,7 @@ import { queueLineNotification } from './lineNotify.js';
 
 // linkUrl = ปลายทางของปุ่ม "เปิด" สำหรับเรื่องที่ไม่ได้ผูกกับเอกสาร (ใบลา/การมอบหมายรักษาการแทน)
 // ถ้าส่ง documentId มาก็ไม่ต้องส่ง linkUrl — หน้าแจ้งเตือนจะทำลิงก์ไปหน้าเอกสารให้เอง
-export function notifyUser({ userId, documentId, linkUrl, title, message, priority = 'info' }) {
+export function notifyUser({ userId, documentId, linkUrl, title, message, priority = 'info', alwaysLine = false }) {
   db.prepare(
     `INSERT INTO notifications (id, user_id, document_id, link_url, title, message, priority, is_read, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
@@ -14,5 +14,6 @@ export function notifyUser({ userId, documentId, linkUrl, title, message, priori
   //
   // เป็นการ "เขียนลงคิว" ไม่ใช่ส่งออกทันที จึงอยู่ในธุรกรรมเดียวกับการแจ้งเตือนด้านบน — ถ้าตัวเรียก
   // ROLLBACK ข้อความก็หายไปด้วย ไม่เกิดกรณีที่ครูได้ไลน์แจ้งเรื่องที่สุดท้ายแล้วบันทึกไม่สำเร็จ
-  queueLineNotification({ userId, documentId, linkUrl, title, message });
+  // ส่ง priority ต่อไปด้วย เพราะฝั่งไลน์ใช้ตัดสินว่าจะเด้งทันทีหรือรอไปรวมในสรุปเช้า (ประหยัดโควตา)
+  queueLineNotification({ userId, documentId, linkUrl, title, message, priority, alwaysLine });
 }

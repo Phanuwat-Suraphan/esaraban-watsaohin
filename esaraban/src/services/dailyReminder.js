@@ -243,6 +243,9 @@ export function sendDailyReminders({ today = todayInBangkok(), force = false } =
       title: t.overdue.length ? '⏰ มีงานเลยกำหนดรอคุณอยู่'
         : onlyUnassigned ? '📥 มีหนังสือเข้ารอเสนอ' : '📌 งานที่ต้องทำวันนี้',
       message: reminderMessage(t),
+      // สรุปประจำวันต้องถึงไลน์เสมอ ไม่ว่าจะตั้งโหมดประหยัดโควตาไว้หรือไม่ — ตัวมันเองคือปลายทาง
+      // ของเรื่องที่ไม่ด่วนซึ่งถูกกรองไม่ให้เด้งทีละฉบับ ถ้าถูกกรองด้วยก็จะไม่เหลืออะไรถึงไลน์เลย
+      alwaysLine: true,
       priority: urgent ? 'urgent' : 'info',
     });
     sent++;
